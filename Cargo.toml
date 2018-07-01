@@ -1,0 +1,24 @@
+[package]
+name = "asswecan"
+version = "0.1.0"
+authors = ["wayslog"]
+
+[lib]
+name="libass"
+path="src/lib.rs"
+
+[[bin]]
+name="asswecan"
+path="bin/main.rs"
+
+[dependencies]
+tokio = "0.1.7"
+futures="0.1"
+log="*"
+env_logger="*"
+bytes="*"
+num_cpus="*"
+crossbeam="*"
+lazy_static="*"
+btoi="*"
+aho-corasick="*"
