@@ -77,7 +77,7 @@ fn handle(addr: &str) -> std::result::Result<(), ()> {
             let handler = Handler {
                 tx: tx.clone(),
                 cluster: cluster.clone(),
-                state: State::Empty,
+                batch: MsgBatch::default(),
                 sock: Socket {
                     sock: sock,
                     buf: BytesMut::new(),
@@ -173,8 +173,11 @@ impl Future for Handler {
                 },
                 Err(Error::MoreData)  => {
                     let mut batch = MsgBatch::default();
-                    mem::swap(&mut self.batch, &mut batch);
-                    self.tx.send(batch);
+                    {
+                        mem::swap(&mut self.batch, &mut batch);
+                    }
+                    // Call as stream
+                    self.tx.start_send(batch);
                 }
                 Err(err) => {
                     error!("fail to parse {:?}", err);
