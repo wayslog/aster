@@ -76,7 +76,7 @@ pub fn proxy() {
 pub struct Handler<T, U>
 where
     T: Stream<Item = MsgBatch, Error = Error>,
-    U: Sink<SinkItem = MsgBatch, SinkError = Error>,
+    U: Sink<SinkItem = Rc<RefCell<MsgBatch>>, SinkError = Error>,
 {
     stream: Option<Fuse<T>>,
     sink: Option<U>,
@@ -86,34 +86,72 @@ where
 }
 
 pub enum HandlerState<T> {
+    Done,
     Buffered(Rc<RefCell<T>>),
     Batching(Rc<RefCell<T>>),
-    Done,
+    Write(Rc<RefCell<T>>),
 }
+
+impl<T> Clone for HandlerState<T> {
+    fn clone(&self) -> HandlerState<T> {
+        match self {
+            HandlerState::Done => HandlerState::Done,
+            HandlerState::Buffered(rc) =>HandlerState::Buffered(rc.clone()),
+            HandlerState::Batching(rc) => HandlerState::Batching(rc.clone()),
+            HandlerState::Write(rc) => HandlerState::Write(rc.clone()),
+        }
+    }
+}
+
+impl<T> HandlerState<T> {
+    fn rc(&mut self) -> Option<Rc<RefCell<T>>> {
+        match self {
+            HandlerState::Done => None,
+            HandlerState::Buffered(rc) => Some(rc.clone()),
+            HandlerState::Batching(rc) => Some(rc.clone()),
+            HandlerState::Write(rc) => Some(rc.clone()),
+        }
+    }
+}
+
 
 impl<T, U> Handler<T, U>
 where
     T: Stream<Item = MsgBatch, Error = Error>,
-    U: Sink<SinkItem = MsgBatch, SinkError = Error>,
+    U: Sink<SinkItem = Rc<RefCell<MsgBatch>>, SinkError = Error>,
 {
-    fn stream_mut(&mut self) -> Option<&mut T> {
+    pub fn stream_mut(&mut self) -> Option<&mut T> {
         self.stream.as_mut().map(|x| x.get_mut())
     }
 
-    fn stream_ref(&self) -> Option<&T> {
+    pub fn stream_ref(&self) -> Option<&T> {
         self.stream.as_ref().map(|x| x.get_ref())
     }
 
-    fn sink_mut(&mut self) -> Option<&mut U> {
+    pub fn sink_mut(&mut self) -> Option<&mut U> {
         self.sink.as_mut()
     }
 
-    fn sink_ref(&self) -> Option<&U> {
+    pub fn sink_ref(&self) -> Option<&U> {
         self.sink.as_ref()
     }
 
-    fn try_to_send(&mut self, item: Weak<RefCell<MsgBatch>>) -> Poll<(), U::SinkError> {
+    fn try_write(&mut self, item: Rc<RefCell<MsgBatch>>) -> Poll<(), U::SinkError> {
+        match self.sink_mut().take().expect("sink never empty").start_send(item.clone()).map_err(|err|{
+            error!("fail to send :{:?}", err);
+            Error::Critical
+        })? {
+            AsyncSink::NotReady(_) => {
+                // self.state = HandlerState::Buffered(item);
+                Ok(Async::NotReady)
+            }
+            AsyncSink::Ready => Ok(Async::Ready(())),
+        }
+    }
+
+    fn try_send(&mut self, item: Weak<RefCell<MsgBatch>>) -> Poll<(), Error> {
         // add debug_assert
+        // TODO: store task into state
         let task = AsTask {
             task: task::current(),
             mb: item.clone(),
@@ -123,10 +161,34 @@ where
             Error::Critical
         })? {
             AsyncSink::NotReady(_) => {
-                self.state = HandlerState::Buffered(item.upgrade().expect("item never empty"));
+                // self.state = HandlerState::Buffered(item.upgrade().expect("item never empty"));
                 Ok(Async::NotReady)
             }
             AsyncSink::Ready => Ok(Async::Ready(())),
+        }
+    }
+
+    fn try_to_wait(&mut self, item: Rc<RefCell<MsgBatch>>) -> Poll<(), Error> {
+        unimplemented!()
+    }
+
+    fn try_to_execute(&mut self, item: Async<Option<MsgBatch>>) -> Poll<(), Error> {
+        match item {
+            Async::NotReady => {
+                Ok(Async::NotReady)
+            }
+            Async::Ready(Some(batch)) => {
+                let item = Rc::new(RefCell::new(batch));
+                self.state = HandlerState::Buffered(item);
+                Ok(Async::Ready(()))
+            }
+            Async::Ready(None) => {
+                try_ready!(self.tx.close().map_err(|err| {
+                    error!("fail to send :{:?}", err);
+                    Error::Critical
+                }));
+                Ok(Async::Ready(()))
+            },
         }
     }
 }
@@ -134,25 +196,54 @@ where
 impl<S, U> Future for Handler<S, U>
 where
     S: Stream<Item = MsgBatch, Error = Error>,
-    U: Sink<SinkItem = MsgBatch, SinkError = Error>,
+    U: Sink<SinkItem = Rc<RefCell<MsgBatch>>, SinkError = Error>,
 {
     type Item = ();
     type Error = Error;
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        // TODO: check state
-        let state = mem::replace(&mut self.state, HandlerState::Done);
-        match state {
-            HandlerState::Buffered(rc) => {
-                try_ready!(self.try_to_send(Rc::downgrade(&rc)));
-            }
-            HandlerState::Batching(rc) => {
-                if !rc.borrow().is_done() {
-                    //TODO: start to send back by using encode
+        loop {
+            let state = self.state.clone();
+            match state {
+                HandlerState::Done => {
+                    let batch = self.stream_mut().take().expect("stream never empty").poll()?;
+                    try_ready!(self.try_to_execute(batch));
                 }
-                return Ok(Async::NotReady);
+                HandlerState::Buffered(rc) => {
+                    let rc = rc.clone();
+                    try_ready!(self.try_send(Rc::downgrade(&rc)));
+                    self.state = HandlerState::Batching(rc);
+                }
+                HandlerState::Batching(rc) => {
+                    let rc = rc.clone();
+                    try_ready!(self.try_write(rc));
+                }
+                _ => unreachable!(),
             }
-            HandlerState::Done => {
-                trace!("trying to read next from stream");
+
+        }
+
+
+        // TODO: check state
+        loop {
+            let state = mem::replace(&mut self.state, HandlerState::Done);
+            match state {
+                HandlerState::Buffered(rc) => {
+                    try_ready!(self.try_send(Rc::downgrade(&rc)));
+                }
+                HandlerState::Batching(rc) => {
+                    if rc.borrow().is_done() {
+                        self.state = HandlerState::Write(rc);
+                    }
+                    return Ok(Async::NotReady);
+                }
+                HandlerState::Write(rc) => {
+                    try_ready!(self.try_write(rc));
+                    return Ok(Async::NotReady);
+                }
+                HandlerState::Done => {
+                    trace!("trying to read next from stream");
+                    break;
+                }
             }
         }
 
@@ -165,7 +256,7 @@ where
             {
                 Async::Ready(Some(batch)) => {
                     let batch = Rc::new(RefCell::new(batch));
-                    try_ready!(self.try_to_send(Rc::downgrade(&batch)));
+                    try_ready!(self.try_send(Rc::downgrade(&batch)));
                 }
                 Async::Ready(None) => {
                     try_ready!(self.sink_mut().take().expect("sink never empty").close());
@@ -203,14 +294,14 @@ impl Decoder for MsgBatchCodec {
 }
 
 impl Encoder for MsgBatchCodec {
-    type Item = MsgBatch;
+    type Item = Rc<RefCell<MsgBatch>>;
     type Error = Error;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         if dst.len() == 0 {
-            dst.clone_from_slice(&item.buf);
+            dst.clone_from_slice(&item.borrow().buf);
         } else {
-            dst.extend_from_slice(&item.buf);
+            dst.extend_from_slice(&item.borrow().buf);
         }
         Ok(())
     }
