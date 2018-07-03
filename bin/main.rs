@@ -1,5 +1,5 @@
 extern crate libass;
 
 fn main() {
-    libass::proxy().unwrap();
+    libass::run().unwrap();
 }

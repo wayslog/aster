@@ -10,223 +10,224 @@ extern crate num_cpus;
 extern crate lazy_static;
 extern crate aho_corasick;
 extern crate btoi;
+extern crate tokio_codec;
+extern crate tokio_io;
 
 pub mod com;
-
 pub use com::*;
 
-use std::mem;
 use std::cell::RefCell;
+use std::mem;
 use std::rc::{Rc, Weak};
 
-use futures::future::join_all;
-use futures::unsync::mpsc::{channel, Receiver, Sender};
-use futures::{Async, Future, IntoFuture, Poll, Stream};
-
-use bytes::{BufMut, BytesMut};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::prelude::*;
+// use futures::future::join_all;
+use futures::stream::Fuse;
+use futures::task::{self, Task};
+use futures::unsync::mpsc::{channel, Receiver, SendError, Sender};
+use futures::{Async, AsyncSink, Future, IntoFuture, Poll, Sink};
 
 use aho_corasick::{AcAutomaton, Automaton, Match};
-use std::io::Error as IoError;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use bytes::BytesMut;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::prelude::Stream;
+use tokio_codec::{BytesCodec, Decoder, Encoder};
+// use tokio::prelude::*;
+
+use std::convert::From;
+// use std::io::Error as IoError;
+// use std::sync::atomic::bool;
+// use std::sync::Arc;
 
 const delim: u8 = '\n' as u8;
 const SPACE: u8 = ' ' as u8;
 
-pub fn proxy() -> Result<()> {
+pub fn run() -> AsResult<()> {
     env_logger::init();
     info!("ass we can!");
     Ok(())
 }
 
-fn handle(addr: &str) -> std::result::Result<(), ()> {
-    let (tx, rx) = channel(1024);
-    let cluster = Rc::new(RefCell::new(Cluster {
-        cc: ClusterConfig {
-            servers: Vec::new(),
-        },
-    }));
-
-    let pcluster = cluster.clone();
-    let dcluster = cluster.clone();
-
-    let dispatch = Dispatch {
-        cluster: dcluster,
-        rx: rx,
-        txs: vec![tx.clone()],
-    };
-
-    // TODO: add cluster to executor
-    let nodes: Vec<_> = (&*pcluster.borrow())
-        .cc
-        .servers
-        .clone()
-        .into_iter()
-        .map(|server| forword(server.to_owned()))
-        .collect();
-
+pub fn proxy() {
+    // let (tx, rx) = channel(1024);
+    let addr = "127.0.0.1:7788";
     let taddr = addr.parse().expect("bad listen address");
     let listener = TcpListener::bind(&taddr).unwrap();
     let server = listener
         .incoming()
         .map_err(|e| error!("accept fail: {}", e))
         .for_each(move |sock| {
-            let handler = Handler {
-                tx: tx.clone(),
-                cluster: cluster.clone(),
-                batch: MsgBatch::default(),
-                sock: Socket {
-                    sock: sock,
-                    buf: BytesMut::new(),
-                    eof: false,
-                },
-            };
-            tokio::executor::current_thread::spawn(handler);
+            // let mbc = MsgBatchCodec {};
+            // let (sink, stream) = mbc.framed(sock).split();
+            // let forward = stream
+            //     .map_err(|err| {
+            //         error!("read msg from batch fail: {:?}", err);
+            //     })
+            //     .forward(tx.clone().sink_map_err(|err| {
+            //         error!("forword msg fail:{:?}", err);
+            //     }))
+            //     .map(|_| ());
+
+            // tokio::executor::current_thread::spawn(forward);
             Ok(())
         });
-
-    let amt = join_all(nodes).join3(dispatch, server).map(|_| ());
-    tokio::executor::current_thread::block_on_all(amt)
 }
 
-fn forword(
-    addr: String,
-) -> impl Future<Item = tokio::executor::Spawn, Error = ()> + 'static + Send {
-    let taddr = addr.parse().expect("bad server address");
-    TcpStream::connect(&taddr)
-        .map(move |sock| {
-            let node = Executor {
-                addr: addr.to_owned(),
-                sock: Socket {
-                    buf: BytesMut::new(),
-                    sock: sock,
-                    eof: false,
-                },
-            };
-            tokio::executor::spawn(node)
-        })
-        .map_err(|err| error!("erro {:?}", err))
+pub struct Handler<T, U>
+where
+    T: Stream<Item = MsgBatch, Error = Error>,
+    U: Sink<SinkItem = MsgBatch, SinkError = Error>,
+{
+    stream: Option<Fuse<T>>,
+    sink: Option<U>,
+
+    state: HandlerState<T::Item>,
+    tx: Sender<AsTask>,
 }
 
-pub struct Socket {
-    buf: BytesMut,
-    sock: TcpStream,
-    eof: bool,
+pub enum HandlerState<T> {
+    Buffered(Rc<RefCell<T>>),
+    Batching(Rc<RefCell<T>>),
+    Done,
 }
 
-impl Socket {
-    fn buffer_mut(&mut self) -> &mut BytesMut {
-        &mut self.buf
+impl<T, U> Handler<T, U>
+where
+    T: Stream<Item = MsgBatch, Error = Error>,
+    U: Sink<SinkItem = MsgBatch, SinkError = Error>,
+{
+    fn stream_mut(&mut self) -> Option<&mut T> {
+        self.stream.as_mut().map(|x| x.get_mut())
     }
 
-    fn buffer(&self) -> &BytesMut {
-        &self.buf
+    fn stream_ref(&self) -> Option<&T> {
+        self.stream.as_ref().map(|x| x.get_ref())
     }
 
-    fn poll_read(&mut self) -> Poll<usize, IoError> {
-        loop {
-            if !self.buf.has_remaining_mut() {
-                let len = self.buf.len();
-                self.buf.reserve(len);
+    fn sink_mut(&mut self) -> Option<&mut U> {
+        self.sink.as_mut()
+    }
+
+    fn sink_ref(&self) -> Option<&U> {
+        self.sink.as_ref()
+    }
+
+    fn try_to_send(&mut self, item: Weak<RefCell<MsgBatch>>) -> Poll<(), U::SinkError> {
+        // add debug_assert
+        let task = AsTask {
+            task: task::current(),
+            mb: item.clone(),
+        };
+        match self.tx.start_send(task).map_err(|err| {
+            error!("fail to send :{:?}", err);
+            Error::Critical
+        })? {
+            AsyncSink::NotReady(_) => {
+                self.state = HandlerState::Buffered(item.upgrade().expect("item never empty"));
+                Ok(Async::NotReady)
             }
-
-            match self.sock.read_buf(&mut self.buf) {
-                Ok(Async::Ready(size)) => {
-                    if size == 0 {
-                        self.eof = false;
-                    } else {
-                        return Ok(Async::Ready(size));
-                    }
-                }
-                other => {
-                    return other;
-                }
-            };
+            AsyncSink::Ready => Ok(Async::Ready(())),
         }
     }
-
-    fn poll_write(&mut self) -> Poll<usize, IoError> {
-        Ok(Async::NotReady)
-    }
 }
 
-pub struct Handler {
-    cluster: Rc<RefCell<Cluster>>,
-    sock: Socket,
-    tx: Sender<MsgBatch>,
-    batch: MsgBatch,
-}
-
-impl Future for Handler {
+impl<S, U> Future for Handler<S, U>
+where
+    S: Stream<Item = MsgBatch, Error = Error>,
+    U: Sink<SinkItem = MsgBatch, SinkError = Error>,
+{
     type Item = ();
-    type Error = ();
+    type Error = Error;
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        // TODO: check state
+        let state = mem::replace(&mut self.state, HandlerState::Done);
+        match state {
+            HandlerState::Buffered(rc) => {
+                try_ready!(self.try_to_send(Rc::downgrade(&rc)));
+            }
+            HandlerState::Batching(rc) => {
+                if !rc.borrow().is_done() {
+                    //TODO: start to send back by using encode
+                }
+                return Ok(Async::NotReady);
+            }
+            HandlerState::Done => {
+                trace!("trying to read next from stream");
+            }
+        }
 
-    fn poll(&mut self) -> std::result::Result<Async<Self::Item>, Self::Error> {
         loop {
-            match self.batch.decode(self.sock.buffer_mut()) {
-                Ok(size) => {
-                    trace!("decoded msg: {}", size);
-                    self.sock.buf.advance(size);
-                },
-                Err(Error::MoreData)  => {
-                    let mut batch = MsgBatch::default();
-                    {
-                        mem::swap(&mut self.batch, &mut batch);
-                    }
-                    // Call as stream
-                    self.tx.start_send(batch);
+            match self
+                .stream_mut()
+                .take()
+                .expect("stream never empty")
+                .poll()?
+            {
+                Async::Ready(Some(batch)) => {
+                    let batch = Rc::new(RefCell::new(batch));
+                    try_ready!(self.try_to_send(Rc::downgrade(&batch)));
                 }
-                Err(err) => {
-                    error!("fail to parse {:?}", err);
-                },
-            };
-            let _size = try_ready!(self.sock.poll_read().map_err(|err| {
-                error!("error when proxy read: {:?}", err);
-            }));
+                Async::Ready(None) => {
+                    try_ready!(self.sink_mut().take().expect("sink never empty").close());
+                    return Ok(Async::Ready(()));
+                }
+                Async::NotReady => {
+                    try_ready!(
+                        self.sink_mut()
+                            .take()
+                            .expect("sink never empty")
+                            .poll_complete()
+                    );
+                    return Ok(Async::NotReady);
+                }
+            }
         }
-
     }
 }
 
-pub struct ClusterConfig {
-    servers: Vec<String>,
-}
+pub struct MsgBatchCodec {}
 
-pub struct Cluster {
-    cc: ClusterConfig,
-}
+impl Decoder for MsgBatchCodec {
+    type Item = MsgBatch;
+    type Error = Error;
 
-unsafe impl Send for Cluster {}
-
-pub struct Dispatch {
-    cluster: Rc<RefCell<Cluster>>,
-    rx: Receiver<MsgBatch>,
-    txs: Vec<Sender<MsgBatch>>,
-}
-
-impl Future for Dispatch {
-    type Item = ();
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        Ok(Async::NotReady)
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        let mut batch = MsgBatch::default();
+        let size = batch.decode(src)?;
+        if size == 0 {
+            return Ok(None);
+        }
+        src.advance(size);
+        Ok(Some(batch))
     }
 }
 
-pub struct Executor {
-    addr: String,
-    sock: Socket,
+impl Encoder for MsgBatchCodec {
+    type Item = MsgBatch;
+    type Error = Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        if dst.len() == 0 {
+            dst.clone_from_slice(&item.buf);
+        } else {
+            dst.extend_from_slice(&item.buf);
+        }
+        Ok(())
+    }
 }
 
-impl Future for Executor {
-    type Item = ();
-    type Error = ();
+pub struct AsTask {
+    task: Task,
+    mb: Weak<RefCell<MsgBatch>>,
+}
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        Ok(Async::NotReady)
+impl AsTask {
+    pub fn notify(&self) {
+        self.task.notify();
+    }
+
+    pub fn upgrade(&self) -> Option<Rc<RefCell<MsgBatch>>> {
+        self.mb.upgrade()
     }
 }
 
@@ -240,18 +241,25 @@ impl MsgBatch {
     pub fn len(&self) -> usize {
         self.cursor
     }
+    pub fn is_done(&self) -> bool {
+        self.reqs.iter().all(|x| x.is_done())
+    }
 
-    fn push(&mut self, req: MCReq) {
+    pub fn push(&mut self, req: MCReq) {
         self.reqs.push(req)
     }
 
-    fn decode(&mut self, data:&mut [u8]) -> Result<usize> {
+    pub fn msgs_mut(&mut self) -> &mut [MCReq] {
+        &mut self.reqs
+    }
+
+    fn decode(&mut self, data: &mut [u8]) -> AsResult<usize> {
         loop {
             if self.cursor == data.len() {
                 return Ok(self.len());
             }
             let req = MCReq::decode(&mut data[self.cursor..])?;
-            self.cursor+= req.len();
+            self.cursor += req.len();
             self.reqs.push(req);
         }
     }
@@ -347,7 +355,13 @@ pub struct Cmd {
     pub cmd: Range,
     pub key: Range,
     pub data: Vec<u8>,
-    pub done: AtomicBool,
+    pub done: bool,
+}
+
+impl Cmd {
+    fn done(&mut self) {
+        self.done = true;
+    }
 }
 
 pub enum MCReq {
@@ -357,6 +371,10 @@ pub enum MCReq {
 }
 
 impl MCReq {
+    pub fn is_done(&self) -> bool {
+        // TODO: impl it
+        true
+    }
     pub fn len(&self) -> usize {
         match &self {
             MCReq::Msg(cmd) => cmd.data.len(),
@@ -365,8 +383,7 @@ impl MCReq {
         }
     }
 
-
-    pub fn decode(src: &mut [u8]) -> Result<Self> {
+    pub fn decode(src: &mut [u8]) -> AsResult<Self> {
         let pos = position(src, delim).ok_or(Error::BadMsg)?;
 
         let Match {
@@ -384,7 +401,7 @@ impl MCReq {
         }
     }
 
-    fn decode_get_and_touch(src: &mut [u8], cmd: Range, end: usize) -> Result<MCReq> {
+    fn decode_get_and_touch(src: &mut [u8], cmd: Range, end: usize) -> AsResult<MCReq> {
         let expire = Self::get_field(&src[cmd.1 + 1..end], cmd.1 + 1)?;
 
         let mut i = expire.1 + 1;
@@ -410,7 +427,7 @@ impl MCReq {
                     cmd: cmd.clone(),
                     key: key,
                     data: data,
-                    done: AtomicBool::new(false),
+                    done: false,
                 },
                 expire: expire.clone(),
             };
@@ -419,7 +436,7 @@ impl MCReq {
         Ok(MCReq::Gat(subs))
     }
 
-    fn decode_storage(src: &mut [u8], cmd: Range, end: usize, cas: bool) -> Result<MCReq> {
+    fn decode_storage(src: &mut [u8], cmd: Range, end: usize, cas: bool) -> AsResult<MCReq> {
         let len = {
             let line = &src[..end];
             let len = Self::decode_len(&line, cas)?;
@@ -433,11 +450,11 @@ impl MCReq {
             cmd: cmd,
             key: key,
             data: data,
-            done: AtomicBool::new(false),
+            done: false,
         }))
     }
 
-    fn decode_one_line(src: &mut [u8], cmd: Range, end: usize) -> Result<MCReq> {
+    fn decode_one_line(src: &mut [u8], cmd: Range, end: usize) -> AsResult<MCReq> {
         let key = MCReq::get_field(&src[cmd.1 + 1..end], cmd.1 + 1)?;
 
         let ptr = src.as_mut_ptr();
@@ -447,11 +464,11 @@ impl MCReq {
             cmd: cmd,
             key: key,
             data: data,
-            done: AtomicBool::new(false),
+            done: false,
         }))
     }
 
-    fn decode_retrieval(src: &mut [u8], cmd: Range, end: usize) -> Result<MCReq> {
+    fn decode_retrieval(src: &mut [u8], cmd: Range, end: usize) -> AsResult<MCReq> {
         let mut i = cmd.1 + 1;
 
         let cum = {
@@ -479,14 +496,14 @@ impl MCReq {
                 cmd: cmd.clone(),
                 key: key,
                 data: data,
-                done: AtomicBool::new(false),
+                done: false,
             });
             subs.push(sub);
         }
         Ok(MCReq::Sub(subs))
     }
 
-    fn decode_len(src: &[u8], cas: bool) -> Result<usize> {
+    fn decode_len(src: &[u8], cas: bool) -> AsResult<usize> {
         let k = rposition(&src[..], SPACE).ok_or(Error::BadMsg)?;
         let j = rposition(&src[..k], SPACE).ok_or(Error::BadMsg)?;
         if cas {
@@ -497,7 +514,7 @@ impl MCReq {
         }
     }
 
-    fn get_field(data: &[u8], offset: usize) -> Result<Range> {
+    fn get_field(data: &[u8], offset: usize) -> AsResult<Range> {
         let i = position(data, SPACE).ok_or(Error::BadKey)?;
         let j = position(&data[i..], SPACE).ok_or(Error::BadKey)?;
         Ok(Range(i + offset, j + offset))

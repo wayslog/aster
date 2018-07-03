@@ -1,5 +1,5 @@
-use std::io;
 use std::convert::From;
+use std::io;
 use std::result;
 
 #[derive(Debug)]
@@ -10,8 +10,8 @@ pub enum Error {
     BadKey,
     BadCmd,
     IoError(io::Error),
+    Critical,
 }
-
 
 impl From<io::Error> for Error {
     fn from(oe: io::Error) -> Error {
@@ -19,4 +19,4 @@ impl From<io::Error> for Error {
     }
 }
 
-pub type Result<T> = result::Result<T, Error>;
+pub type AsResult<T> = result::Result<T, Error>;
