@@ -28,6 +28,7 @@ use futures::{Async, AsyncSink, Future, IntoFuture, Poll, Sink};
 
 use aho_corasick::{AcAutomaton, Automaton, Match};
 use bytes::BytesMut;
+use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::Stream;
@@ -35,6 +36,7 @@ use tokio_codec::{BytesCodec, Decoder, Encoder};
 // use tokio::prelude::*;
 
 use std::convert::From;
+use std::hash::{Hash, Hasher};
 // use std::io::Error as IoError;
 // use std::sync::atomic::bool;
 // use std::sync::Arc;
@@ -71,6 +73,17 @@ pub fn proxy() {
             // tokio::executor::current_thread::spawn(forward);
             Ok(())
         });
+}
+
+pub struct Dispatcher<T, U, H>
+where
+    T: Stream<Item = Rc<RefCell<MsgBatch>>, Error = Error>,
+    U: Sink<SinkItem = Rc<RefCell<MsgBatch>>, SinkError = Error>,
+    H: Hasher,
+{
+    hasher: H,
+    rx: T,
+    chans: HashMap<String, U>,
 }
 
 pub struct Handler<T, U>
@@ -128,7 +141,6 @@ where
 
     fn try_send(&mut self, item: Weak<RefCell<MsgBatch>>) -> Poll<(), Error> {
         // add debug_assert
-        // TODO: store task into state
         let task = AsTask {
             task: task::current(),
             mb: item.clone(),
@@ -192,6 +204,16 @@ where
                     error!("fail to send :{:?}", err);
                     Error::Critical
                 }));
+                try_ready!(
+                    self.sink_mut()
+                        .take()
+                        .expect("sink never empty")
+                        .close()
+                        .map_err(|err| {
+                            error!("fail to send :{:?}", err);
+                            Error::Critical
+                        })
+                );
                 Ok(Async::Ready(()))
             }
         }
@@ -428,6 +450,7 @@ impl MCReq {
         // TODO: impl it
         true
     }
+
     pub fn len(&self) -> usize {
         match &self {
             MCReq::Msg(cmd) => cmd.data.len(),
