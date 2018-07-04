@@ -88,32 +88,22 @@ where
 pub enum HandlerState<T> {
     Done,
     Buffered(Rc<RefCell<T>>),
-    Batching(Rc<RefCell<T>>),
+    Batch(Rc<RefCell<T>>),
     Write(Rc<RefCell<T>>),
+    Wait(Rc<RefCell<T>>),
 }
 
 impl<T> Clone for HandlerState<T> {
     fn clone(&self) -> HandlerState<T> {
         match self {
             HandlerState::Done => HandlerState::Done,
-            HandlerState::Buffered(rc) =>HandlerState::Buffered(rc.clone()),
-            HandlerState::Batching(rc) => HandlerState::Batching(rc.clone()),
+            HandlerState::Buffered(rc) => HandlerState::Buffered(rc.clone()),
+            HandlerState::Batch(rc) => HandlerState::Batch(rc.clone()),
             HandlerState::Write(rc) => HandlerState::Write(rc.clone()),
+            HandlerState::Wait(rc) => HandlerState::Wait(rc.clone()),
         }
     }
 }
-
-impl<T> HandlerState<T> {
-    fn rc(&mut self) -> Option<Rc<RefCell<T>>> {
-        match self {
-            HandlerState::Done => None,
-            HandlerState::Buffered(rc) => Some(rc.clone()),
-            HandlerState::Batching(rc) => Some(rc.clone()),
-            HandlerState::Write(rc) => Some(rc.clone()),
-        }
-    }
-}
-
 
 impl<T, U> Handler<T, U>
 where
@@ -136,19 +126,6 @@ where
         self.sink.as_ref()
     }
 
-    fn try_write(&mut self, item: Rc<RefCell<MsgBatch>>) -> Poll<(), U::SinkError> {
-        match self.sink_mut().take().expect("sink never empty").start_send(item.clone()).map_err(|err|{
-            error!("fail to send :{:?}", err);
-            Error::Critical
-        })? {
-            AsyncSink::NotReady(_) => {
-                // self.state = HandlerState::Buffered(item);
-                Ok(Async::NotReady)
-            }
-            AsyncSink::Ready => Ok(Async::Ready(())),
-        }
-    }
-
     fn try_send(&mut self, item: Weak<RefCell<MsgBatch>>) -> Poll<(), Error> {
         // add debug_assert
         // TODO: store task into state
@@ -169,14 +146,42 @@ where
     }
 
     fn try_to_wait(&mut self, item: Rc<RefCell<MsgBatch>>) -> Poll<(), Error> {
-        unimplemented!()
+        if item.borrow().is_done() {
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
+    }
+
+    fn try_to_sink(&mut self, item: Rc<RefCell<MsgBatch>>) -> Poll<(), Error> {
+        match self
+            .sink_mut()
+            .take()
+            .expect("sink never empty")
+            .start_send(item)
+            .map_err(|err| {
+                error!("fail to send to sink:{:?}", err);
+                Error::Critical
+            })? {
+            AsyncSink::NotReady(_) => Ok(Async::NotReady),
+            AsyncSink::Ready => Ok(Async::Ready(())),
+        }
+    }
+
+    fn try_to_complete(&mut self) -> Poll<(), Error> {
+        self.sink_mut()
+            .take()
+            .expect("sink never empty")
+            .poll_complete()
+            .map_err(|err| {
+                error!("fail to send to sink:{:?}", err);
+                Error::Critical
+            })
     }
 
     fn try_to_execute(&mut self, item: Async<Option<MsgBatch>>) -> Poll<(), Error> {
         match item {
-            Async::NotReady => {
-                Ok(Async::NotReady)
-            }
+            Async::NotReady => Ok(Async::NotReady),
             Async::Ready(Some(batch)) => {
                 let item = Rc::new(RefCell::new(batch));
                 self.state = HandlerState::Buffered(item);
@@ -188,7 +193,7 @@ where
                     Error::Critical
                 }));
                 Ok(Async::Ready(()))
-            },
+            }
         }
     }
 }
@@ -205,71 +210,28 @@ where
             let state = self.state.clone();
             match state {
                 HandlerState::Done => {
-                    let batch = self.stream_mut().take().expect("stream never empty").poll()?;
+                    let batch = self
+                        .stream_mut()
+                        .take()
+                        .expect("stream never empty")
+                        .poll()?;
                     try_ready!(self.try_to_execute(batch));
                 }
                 HandlerState::Buffered(rc) => {
-                    let rc = rc.clone();
                     try_ready!(self.try_send(Rc::downgrade(&rc)));
-                    self.state = HandlerState::Batching(rc);
+                    self.state = HandlerState::Batch(rc);
                 }
-                HandlerState::Batching(rc) => {
-                    let rc = rc.clone();
-                    try_ready!(self.try_write(rc));
-                }
-                _ => unreachable!(),
-            }
-
-        }
-
-
-        // TODO: check state
-        loop {
-            let state = mem::replace(&mut self.state, HandlerState::Done);
-            match state {
-                HandlerState::Buffered(rc) => {
-                    try_ready!(self.try_send(Rc::downgrade(&rc)));
-                }
-                HandlerState::Batching(rc) => {
-                    if rc.borrow().is_done() {
-                        self.state = HandlerState::Write(rc);
-                    }
-                    return Ok(Async::NotReady);
+                HandlerState::Batch(rc) => {
+                    try_ready!(self.try_to_wait(rc.clone()));
+                    self.state = HandlerState::Write(rc);
                 }
                 HandlerState::Write(rc) => {
-                    try_ready!(self.try_write(rc));
-                    return Ok(Async::NotReady);
+                    try_ready!(self.try_to_sink(rc.clone()));
+                    self.state = HandlerState::Wait(rc);
                 }
-                HandlerState::Done => {
-                    trace!("trying to read next from stream");
-                    break;
-                }
-            }
-        }
-
-        loop {
-            match self
-                .stream_mut()
-                .take()
-                .expect("stream never empty")
-                .poll()?
-            {
-                Async::Ready(Some(batch)) => {
-                    let batch = Rc::new(RefCell::new(batch));
-                    try_ready!(self.try_send(Rc::downgrade(&batch)));
-                }
-                Async::Ready(None) => {
-                    try_ready!(self.sink_mut().take().expect("sink never empty").close());
-                    return Ok(Async::Ready(()));
-                }
-                Async::NotReady => {
-                    try_ready!(
-                        self.sink_mut()
-                            .take()
-                            .expect("sink never empty")
-                            .poll_complete()
-                    );
-                    return Ok(Async::NotReady);
+                HandlerState::Wait(_rc) => {
+                    try_ready!(self.try_to_complete());
+                    self.state = HandlerState::Done;
                 }
             }
         }
