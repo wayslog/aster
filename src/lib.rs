@@ -30,8 +30,8 @@ use futures::unsync::mpsc::{channel, Receiver, SendError, Sender};
 use bytes::BytesMut;
 use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{TcpStream};
-use tokio::prelude::{Stream, Future};
+use tokio::net::TcpStream;
+use tokio::prelude::{Future, Stream};
 use tokio_codec::{Decoder, Encoder};
 // use tokio::prelude::*;
 
@@ -46,16 +46,14 @@ pub fn run() -> Result<(), ()> {
     Ok(())
 }
 
-pub fn proxy() {
-}
-
+pub fn proxy() {}
 
 pub struct Config {
-    Clusters : Vec<ClusterConfig>,
+    Clusters: Vec<ClusterConfig>,
 }
 
 #[derive(Debug)]
-pub enum CacheType{
+pub enum CacheType {
     Redis,
     Memcache,
     MemcacheBinary,
@@ -67,9 +65,8 @@ pub struct ClusterConfig {
     pub cache_type: CacheType,
 }
 
-
 pub struct HashRing<T> {
-    nodes: HashMap<String,T>,
+    nodes: HashMap<String, T>,
     slots: HashMap<isize, String>,
 }
 
@@ -78,39 +75,53 @@ pub struct Cluster<T> {
     ring: HashRing<T>,
 }
 
-
 impl<T> Cluster<T> {
     pub fn proxy() {}
 
     pub fn initRemote() {
         let (tx, rx) = channel::<String>(16);
 
-        let amt = rx.map_err(|err|{
-            error!("fail to receive new node {:?}", err);
-        }).and_then(|node| {
-            info!("add new connection to addr {}", &node);
-            node.parse().map_err(|err| error!("fail to parse addr {:?}", err))
-        }).and_then(|addr|{
-            TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-        }).and_then(|sock|{
-            info!("new socket");
-            let rc = RespCodec{};
-            let (sink, stream) = rc.framed(sock).split();
-            // TODO: add Endpoint types
-            Ok(())
-        });
+        let amt =
+            rx.map_err(|err| {
+                error!("fail to receive new node {:?}", err);
+            }).and_then(|node| {
+                    info!("add new connection to addr {}", &node);
+                    node.parse()
+                        .map_err(|err| error!("fail to parse addr {:?}", err))
+                })
+                .and_then(|addr| {
+                    TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+                })
+                .and_then(|sock| {
+                    info!("new socket");
+                    let rc = RespCodec {};
+                    let (sink, stream) = rc.framed(sock).split();
+                    // TODO: add Endpoint types
+                    Ok(())
+                });
     }
 }
+
+pub struct Node {}
 
 pub struct RespCodec {}
 
 impl Decoder for RespCodec {
-
     type Item = Resp;
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        unimplemented!();
+        let item = Resp::parse(&src).map(|x| Some(x)).or_else(|err| {
+            match err {
+                Error::MoreData => Ok(None),
+                ev => Err(ev),
+            }
+        })?;
+        if let Some(resp) = item {
+            src.advance(resp.binary_size());
+            return Ok(Some(resp));
+        }
+        Ok(None)
     }
 }
 
@@ -123,5 +134,93 @@ impl Encoder for RespCodec {
     }
 }
 
-pub struct Resp {
+pub type RespType = u8;
+pub const RESP_STRING: RespType = '+' as u8;
+pub const RESP_INT: RespType = ':' as u8;
+pub const RESP_ERROR: RespType = '-' as u8;
+pub const RESP_BULK: RespType = '$' as u8;
+pub const RESP_ARRAY: RespType = '*' as u8;
+
+pub const BYTE_LF: u8 = '\n' as u8;
+
+#[derive(Clone, Debug)]
+pub enum Resp {
+    Plain {
+        rtype: RespType,
+        data: Vec<u8>,
+    },
+    Bulk {
+        rtype: RespType,
+        size: Vec<u8>,
+        data: Vec<u8>,
+    },
+    Array {
+        rtype: RespType,
+        count: Vec<u8>,
+        items: Vec<Resp>,
+    },
+}
+
+impl Resp {
+
+    fn parse(src: &[u8]) -> AsResult<Self> {
+        let mut iter = src.splitn(2,|x| *x == BYTE_LF);
+        let line = iter.next().ok_or(Error::MoreData)?;
+
+        let line_size = line.len();
+        let rtype = line[0];
+
+        match rtype {
+            RESP_STRING | RESP_INT | RESP_ERROR => {
+                Ok(Resp::Plain{
+                    rtype: rtype,
+                    data: line[1..line_size - 2].to_vec(),
+                })
+            }
+            RESP_BULK => {
+                let data = iter.next().ok_or(Error::MoreData)?;
+                Ok(Resp::Bulk{
+                    rtype: rtype,
+                    size: line[1..line_size-2].to_vec(),
+                    data: data[1..data.len()-2].to_vec(),
+                })
+            }
+
+            RESP_ARRAY => {
+                let count_bs = &line[1..line_size-2];
+                let count = btoi::btoi::<usize>(count_bs)?;
+                let mut items = Vec::with_capacity(count);
+                let mut parsed = line_size;
+                for _ in 0..count{
+                    let item = Self::parse(&src[parsed..])?;
+                    parsed += item.binary_size();
+                    items.push(item);
+                }
+                Ok(Resp::Array{
+                    rtype: rtype,
+                    count: count_bs.to_vec(),
+                    items: items,
+                })
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn binary_size(&self) -> usize {
+        match self {
+            Resp::Plain{data, ..}  => {
+                1 + data.len() + 2
+            }
+            Resp::Bulk{data, size, ..} => {
+                1 + size.len() + 2 + data.len() + 2
+            }
+            Resp::Array{count, items, ..} => {
+                let mut size = 1 + count.len() + 2;
+                let arr_size: usize = items.iter().map(|x| x.binary_size()).sum();
+                size += arr_size;
+                size
+            }
+            _ => unreachable!(),
+        }
+    }
 }

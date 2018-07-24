@@ -1,6 +1,7 @@
 use std::convert::From;
 use std::io;
 use std::result;
+use btoi;
 
 #[derive(Debug)]
 pub enum Error {
@@ -11,11 +12,19 @@ pub enum Error {
     BadCmd,
     IoError(io::Error),
     Critical,
+    ParseIntError(btoi::ParseIntegerError),
 }
 
 impl From<io::Error> for Error {
     fn from(oe: io::Error) -> Error {
         Error::IoError(oe)
+    }
+}
+
+
+impl From<btoi::ParseIntegerError> for Error {
+    fn from(oe: btoi::ParseIntegerError) -> Error {
+        Error::ParseIntError(oe)
     }
 }
 
