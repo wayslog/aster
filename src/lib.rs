@@ -31,11 +31,12 @@ use bytes::BytesMut;
 use std::collections::HashMap;
 use tokio::executor::current_thread;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::{Decoder, Encoder};
 // use tokio::prelude::*;
 
+use std::net::SocketAddr;
 // use std::sync::Mutex;
 // use std::convert::From;
 // use std::hash::{Hash, Hasher};
@@ -77,11 +78,45 @@ pub struct Cluster<T> {
 }
 
 impl<T> Cluster<T> {
-    pub fn proxy() {}
+    pub fn proxy(&self) -> AsResult<()> {
+        let addr = self
+            .cc
+            .bind
+            .clone()
+            .parse::<SocketAddr>()
+            .expect("parse socket never fail");
 
-    pub fn initRemote() {
+        let (handler_tx, handler_rx) = channel::<Resp>(1024);
+
+        let listen = TcpListener::bind(&addr)?;
+        let amt = listen.incoming().for_each(|sock| {
+            debug!("accept new incoming socket");
+            let codec = RespCodec {};
+
+            // let client_tx = client_rx.clone();
+            let (sink, stream) = codec.framed(sock).split();
+            let input = stream
+                .forward(handler_tx.clone())
+                .map(|_| debug!("connection closed by client"))
+                .map_err(|err| error!("fail to handle proxy due to {:?}", err));
+            current_thread::spawn(input);
+
+            let (client_tx, client_rx) = channel::<Resp>(1024);
+            let output = sink
+                .send_all(client_rx.map_err(|_| Error::None))
+                .map(|_| debug!("connection closed by cluster"))
+                .map_err(|err| error!("fail to handle proxy due to {:?}", err));
+            current_thread::spawn(output);
+
+            Ok(())
+        });
+
+        Ok(())
+    }
+
+    fn createRemote(&self) {
         let (tx, rx) = channel::<String>(16);
-        let (send, recv) = channel::<Endpoint>(1024);
+        let (esend, erecv) = channel::<Endpoint>(1024);
 
         let amt = rx
             .map_err(|err| {
@@ -95,9 +130,9 @@ impl<T> Cluster<T> {
             .and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
             })
-            .zip(recv)
+            .zip(erecv)
             .and_then(|(sock, endpoint)| {
-                info!("new socket");
+                info!("create new socket with endpoint");
                 let rc = RespCodec {};
                 let (sink, stream) = rc.framed(sock).split();
                 let Endpoint { send, recv } = endpoint;
@@ -113,7 +148,9 @@ impl<T> Cluster<T> {
                     .map_err(|err| error!("fail to recv and forward from backend node {:?}", err));
                 current_thread::spawn(up);
                 Ok(())
-            });
+            })
+            .for_each(|_| Ok(()));
+        current_thread::spawn(amt);
     }
 }
 
