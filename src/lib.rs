@@ -27,6 +27,7 @@ use futures::unsync::mpsc::{channel, Receiver, SendError, Sender};
 // use futures::{Async, AsyncSink, Future, IntoFuture, Poll, Sink};
 
 // use aho_corasick::{AcAutomaton, Automaton, Match};
+use bytes::BufMut;
 use bytes::BytesMut;
 use std::collections::HashMap;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -111,12 +112,12 @@ impl Decoder for RespCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let item = Resp::parse(&src).map(|x| Some(x)).or_else(|err| {
-            match err {
+        let item = Resp::parse(&src)
+            .map(|x| Some(x))
+            .or_else(|err| match err {
                 Error::MoreData => Ok(None),
                 ev => Err(ev),
-            }
-        })?;
+            })?;
         if let Some(resp) = item {
             src.advance(resp.binary_size());
             return Ok(Some(resp));
@@ -129,8 +130,10 @@ impl Encoder for RespCodec {
     type Item = Resp;
     type Error = Error;
 
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        unimplemented!();
+    fn encode(&mut self, mut item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let size = item.write(dst)?;
+        trace!("encode write bytes size {}", size);
+        Ok(())
     }
 }
 
@@ -141,6 +144,7 @@ pub const RESP_ERROR: RespType = '-' as u8;
 pub const RESP_BULK: RespType = '$' as u8;
 pub const RESP_ARRAY: RespType = '*' as u8;
 
+pub const BYTE_CR: u8 = '\r' as u8;
 pub const BYTE_LF: u8 = '\n' as u8;
 
 #[derive(Clone, Debug)]
@@ -162,41 +166,38 @@ pub enum Resp {
 }
 
 impl Resp {
-
     fn parse(src: &[u8]) -> AsResult<Self> {
-        let mut iter = src.splitn(2,|x| *x == BYTE_LF);
+        let mut iter = src.splitn(2, |x| *x == BYTE_LF);
         let line = iter.next().ok_or(Error::MoreData)?;
 
         let line_size = line.len();
         let rtype = line[0];
 
         match rtype {
-            RESP_STRING | RESP_INT | RESP_ERROR => {
-                Ok(Resp::Plain{
-                    rtype: rtype,
-                    data: line[1..line_size - 2].to_vec(),
-                })
-            }
+            RESP_STRING | RESP_INT | RESP_ERROR => Ok(Resp::Plain {
+                rtype: rtype,
+                data: line[1..line_size - 2].to_vec(),
+            }),
             RESP_BULK => {
                 let data = iter.next().ok_or(Error::MoreData)?;
-                Ok(Resp::Bulk{
+                Ok(Resp::Bulk {
                     rtype: rtype,
-                    size: line[1..line_size-2].to_vec(),
-                    data: data[1..data.len()-2].to_vec(),
+                    size: line[1..line_size - 2].to_vec(),
+                    data: data[1..data.len() - 2].to_vec(),
                 })
             }
 
             RESP_ARRAY => {
-                let count_bs = &line[1..line_size-2];
+                let count_bs = &line[1..line_size - 2];
                 let count = btoi::btoi::<usize>(count_bs)?;
                 let mut items = Vec::with_capacity(count);
                 let mut parsed = line_size;
-                for _ in 0..count{
+                for _ in 0..count {
                     let item = Self::parse(&src[parsed..])?;
                     parsed += item.binary_size();
                     items.push(item);
                 }
-                Ok(Resp::Array{
+                Ok(Resp::Array {
                     rtype: rtype,
                     count: count_bs.to_vec(),
                     items: items,
@@ -206,21 +207,53 @@ impl Resp {
         }
     }
 
+    fn write(&mut self, dst: &mut BytesMut) -> AsResult<usize> {
+        match self {
+            Resp::Plain { data, rtype } => {
+                dst.put_u8(*rtype);
+                dst.put(data.clone());
+                dst.put_u8(BYTE_CR);
+                dst.put_u8(BYTE_LF);
+                Ok(3 + data.len())
+            }
+            Resp::Bulk { data, size, rtype } => {
+                dst.put_u8(*rtype);
+                dst.put(size.clone());
+                dst.put_u8(BYTE_CR);
+                dst.put_u8(BYTE_LF);
+                dst.put(data.clone());
+                dst.put_u8(BYTE_CR);
+                dst.put_u8(BYTE_LF);
+                Ok(5 + size.len() + data.len())
+            }
+            Resp::Array {
+                rtype,
+                count,
+                items,
+            } => {
+                let mut size = 1 + count.len() + 2;
+                dst.put_u8(*rtype);
+                dst.put(count.clone());
+                dst.put_u8(BYTE_CR);
+                dst.put_u8(BYTE_LF);
+                for item in items {
+                    size += item.write(dst)?;
+                }
+                Ok(size)
+            }
+        }
+    }
+
     fn binary_size(&self) -> usize {
         match self {
-            Resp::Plain{data, ..}  => {
-                1 + data.len() + 2
-            }
-            Resp::Bulk{data, size, ..} => {
-                1 + size.len() + 2 + data.len() + 2
-            }
-            Resp::Array{count, items, ..} => {
+            Resp::Plain { data, .. } => 1 + data.len() + 2,
+            Resp::Bulk { data, size, .. } => 1 + size.len() + 2 + data.len() + 2,
+            Resp::Array { count, items, .. } => {
                 let mut size = 1 + count.len() + 2;
                 let arr_size: usize = items.iter().map(|x| x.binary_size()).sum();
                 size += arr_size;
                 size
             }
-            _ => unreachable!(),
         }
     }
 }
