@@ -21,18 +21,18 @@ pub use com::*;
 // use std::rc::{Rc, Weak};
 
 // use futures::future::join_all;
-// use futures::stream::Fuse;
 // use futures::task::{self, Task};
-use futures::unsync::mpsc::{channel, Receiver, SendError, Sender};
+use futures::sync::mpsc::{channel, Receiver, SendError, Sender};
 // use futures::{Async, AsyncSink, Future, IntoFuture, Poll, Sink};
 
 // use aho_corasick::{AcAutomaton, Automaton, Match};
 use bytes::BufMut;
 use bytes::BytesMut;
 use std::collections::HashMap;
+use tokio::executor::current_thread;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tokio::prelude::{Future, Stream};
+use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::{Decoder, Encoder};
 // use tokio::prelude::*;
 
@@ -81,29 +81,46 @@ impl<T> Cluster<T> {
 
     pub fn initRemote() {
         let (tx, rx) = channel::<String>(16);
+        let (send, recv) = channel::<Endpoint>(1024);
 
-        let amt =
-            rx.map_err(|err| {
+        let amt = rx
+            .map_err(|err| {
                 error!("fail to receive new node {:?}", err);
-            }).and_then(|node| {
-                    info!("add new connection to addr {}", &node);
-                    node.parse()
-                        .map_err(|err| error!("fail to parse addr {:?}", err))
-                })
-                .and_then(|addr| {
-                    TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-                })
-                .and_then(|sock| {
-                    info!("new socket");
-                    let rc = RespCodec {};
-                    let (sink, stream) = rc.framed(sock).split();
-                    // TODO: add Endpoint types
-                    Ok(())
-                });
+            })
+            .and_then(|node| {
+                info!("add new connection to addr {}", &node);
+                node.parse()
+                    .map_err(|err| error!("fail to parse addr {:?}", err))
+            })
+            .and_then(|addr| {
+                TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+            })
+            .zip(recv)
+            .and_then(|(sock, endpoint)| {
+                info!("new socket");
+                let rc = RespCodec {};
+                let (sink, stream) = rc.framed(sock).split();
+                let Endpoint { send, recv } = endpoint;
+                // TODO: add Endpoint types
+                let down = sink
+                    .send_all(recv.map_err(|_emptyerr| Error::None))
+                    .map(|_| trace!("down stream complated"))
+                    .map_err(|err| error!("fail to send to backend node {:?}", err));
+                current_thread::spawn(down);
+                let up = stream
+                    .forward(send)
+                    .map(|_| trace!("up stream completed"))
+                    .map_err(|err| error!("fail to recv and forward from backend node {:?}", err));
+                current_thread::spawn(up);
+                Ok(())
+            });
     }
 }
 
-pub struct Node {}
+pub struct Endpoint {
+    send: Sender<Resp>,
+    recv: Receiver<Resp>,
+}
 
 pub struct RespCodec {}
 

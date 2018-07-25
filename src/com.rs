@@ -1,7 +1,8 @@
+use btoi;
+use futures::sync::mpsc::SendError;
 use std::convert::From;
 use std::io;
 use std::result;
-use btoi;
 
 #[derive(Debug)]
 pub enum Error {
@@ -13,6 +14,13 @@ pub enum Error {
     IoError(io::Error),
     Critical,
     ParseIntError(btoi::ParseIntegerError),
+    SendError(SendError<::Resp>),
+}
+
+impl From<SendError<::Resp>> for Error {
+    fn from(oe: SendError<::Resp>) -> Error {
+        Error::SendError(oe)
+    }
 }
 
 impl From<io::Error> for Error {
@@ -20,7 +28,6 @@ impl From<io::Error> for Error {
         Error::IoError(oe)
     }
 }
-
 
 impl From<btoi::ParseIntegerError> for Error {
     fn from(oe: btoi::ParseIntegerError) -> Error {
