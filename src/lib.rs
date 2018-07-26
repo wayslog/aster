@@ -21,8 +21,9 @@ pub use com::*;
 // use std::rc::{Rc, Weak};
 
 // use futures::future::join_all;
-// use futures::task::{self, Task};
 use futures::sync::mpsc::{channel, Receiver, SendError, Sender};
+use futures::task::{self, Task};
+use futures::Async;
 // use futures::{Async, AsyncSink, Future, IntoFuture, Poll, Sink};
 
 // use aho_corasick::{AcAutomaton, Automaton, Match};
@@ -307,6 +308,83 @@ impl Resp {
                 let arr_size: usize = items.iter().map(|x| x.binary_size()).sum();
                 size += arr_size;
                 size
+            }
+        }
+    }
+}
+
+/// Command is a type for Redis Command.
+pub struct Command {
+    pub is_done: bool,
+    pub is_ask: bool,
+    pub is_inline: bool,
+    pub task: Task,
+
+    pub req: Resp,
+    pub reply: Option<Resp>,
+}
+
+impl Command {
+    fn from_resp(resp: Resp) -> Command {
+        let local_task = task::current();
+        unimplemented!()
+    }
+}
+
+pub struct CommandStream<S: Stream<Item = Resp, Error = Error>> {
+    input: S,
+}
+
+impl<S> Stream for CommandStream<S>
+where
+    S: Stream<Item = Resp, Error = Error>,
+{
+    type Item = Command;
+    type Error = Error;
+
+    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
+        if let Some(resp) = try_ready!(self.input.poll()) {
+            return Ok(Async::Ready(Some(Command::from_resp(resp))));
+        }
+        Ok(Async::Ready(None))
+    }
+}
+
+pub struct Batch<S>
+where
+    S: Stream,
+{
+    input: S,
+    max: usize,
+}
+
+impl<S> Stream for Batch<S>
+where
+    S: Stream,
+{
+    type Item = Vec<S::Item>;
+    type Error = S::Error;
+
+    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
+        let mut buf = Vec::new();
+        loop {
+            match self.input.poll() {
+                Ok(Async::NotReady) => {
+                    if buf.is_empty() {
+                        return Ok(Async::NotReady);
+                    }
+                    return Ok(Async::Ready(Some(buf)));
+                }
+                Ok(Async::Ready(None)) => {
+                    return Ok(Async::Ready(None));
+                }
+                Ok(Async::Ready(Some(item))) => {
+                    buf.push(item);
+                    if buf.len() == self.max {
+                        return Ok(Async::Ready(Some(buf)));
+                    }
+                }
+                Err(err) => return Err(err),
             }
         }
     }
