@@ -8,7 +8,6 @@ extern crate bytes;
 extern crate num_cpus;
 #[macro_use]
 extern crate lazy_static;
-extern crate aho_corasick;
 extern crate btoi;
 extern crate tokio_codec;
 extern crate tokio_io;
@@ -29,7 +28,6 @@ use futures::Async;
 // use aho_corasick::{AcAutomaton, Automaton, Match};
 use bytes::BufMut;
 use bytes::BytesMut;
-use std::collections::HashMap;
 use tokio::executor::current_thread;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
@@ -37,6 +35,7 @@ use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::{Decoder, Encoder};
 // use tokio::prelude::*;
 
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 // use std::sync::Mutex;
 // use std::convert::From;
@@ -318,6 +317,10 @@ pub struct Command {
     pub is_done: bool,
     pub is_ask: bool,
     pub is_inline: bool,
+
+    pub is_complex: bool,
+    pub cmd_type: CmdType,
+
     pub task: Task,
 
     pub req: Resp,
@@ -327,7 +330,21 @@ pub struct Command {
 impl Command {
     fn from_resp(resp: Resp) -> Command {
         let local_task = task::current();
-        unimplemented!()
+        // TODO: how to get command type
+        // let cmd_type = CMD_TYPE.get()
+
+        Command{
+            is_done: false,
+            is_ask: false,
+            is_inline: false,
+
+            is_complex: false,
+            cmd_type: CmdType::NotSupport,
+
+            task: local_task,
+            req: resp,
+            reply: None,
+        }
     }
 }
 
@@ -388,4 +405,167 @@ where
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum CmdType {
+    Read,
+    Write,
+    Ctrl,
+    NotSupport,
+}
+
+lazy_static! {
+    pub static ref CMD_COMPLEX: HashSet<&'static [u8]> = {
+        let cmds = vec!["MSET", "MGET", "DEL", "EXISTS", "EVAL", "EVALSHAR"];
+
+        let mut hset = HashSet::new();
+        for cmd in &cmds[..] {
+            hset.insert(cmd.as_bytes());
+        }
+        hset
+    };
+    pub static ref CMD_TYPE: HashMap<&'static [u8], CmdType> = {
+        let mut hmap = HashMap::new();
+
+        // special commands
+        hmap.insert("DEL".as_bytes(), CmdType::Write);
+        hmap.insert("DUMP".as_bytes(), CmdType::Read);
+        hmap.insert("EXISTS".as_bytes(), CmdType::Read);
+        hmap.insert("EXPIRE".as_bytes(), CmdType::Write);
+        hmap.insert("EXPIREAT".as_bytes(), CmdType::Write);
+        hmap.insert("KEYS".as_bytes(), CmdType::NotSupport);
+        hmap.insert("MIGRATE".as_bytes(), CmdType::NotSupport);
+        hmap.insert("MOVE".as_bytes(), CmdType::NotSupport);
+        hmap.insert("OBJECT".as_bytes(), CmdType::NotSupport);
+        hmap.insert("PERSIST".as_bytes(), CmdType::Write);
+        hmap.insert("PEXPIRE".as_bytes(), CmdType::Write);
+        hmap.insert("PEXPIREAT".as_bytes(), CmdType::Write);
+        hmap.insert("PTTL".as_bytes(), CmdType::Read);
+        hmap.insert("RANDOMKEY".as_bytes(), CmdType::NotSupport);
+        hmap.insert("RENAME".as_bytes(), CmdType::NotSupport);
+        hmap.insert("RENAMENX".as_bytes(), CmdType::NotSupport);
+        hmap.insert("RESTORE".as_bytes(), CmdType::Write);
+        hmap.insert("SCAN".as_bytes(), CmdType::NotSupport);
+        hmap.insert("SORT".as_bytes(), CmdType::Write);
+        hmap.insert("TTL".as_bytes(), CmdType::Read);
+        hmap.insert("TYPE".as_bytes(), CmdType::Read);
+        hmap.insert("WAIT".as_bytes(), CmdType::NotSupport);
+        // string key
+        hmap.insert("APPEND".as_bytes(), CmdType::Write);
+        hmap.insert("BITCOUNT".as_bytes(), CmdType::Read);
+        hmap.insert("BITOP".as_bytes(), CmdType::NotSupport);
+        hmap.insert("BITPOS".as_bytes(), CmdType::Read);
+        hmap.insert("DECR".as_bytes(), CmdType::Write);
+        hmap.insert("DECRBY".as_bytes(), CmdType::Write);
+        hmap.insert("GET".as_bytes(), CmdType::Read);
+        hmap.insert("GETBIT".as_bytes(), CmdType::Read);
+        hmap.insert("GETRANGE".as_bytes(), CmdType::Read);
+        hmap.insert("GETSET".as_bytes(), CmdType::Write);
+        hmap.insert("INCR".as_bytes(), CmdType::Write);
+        hmap.insert("INCRBY".as_bytes(), CmdType::Write);
+        hmap.insert("INCRBYFLOAT".as_bytes(), CmdType::Write);
+        hmap.insert("MGET".as_bytes(), CmdType::Read);
+        hmap.insert("MSET".as_bytes(), CmdType::Write);
+        hmap.insert("MSETNX".as_bytes(), CmdType::NotSupport);
+        hmap.insert("PSETEX".as_bytes(), CmdType::Write);
+        hmap.insert("SET".as_bytes(), CmdType::Write);
+        hmap.insert("SETBIT".as_bytes(), CmdType::Write);
+        hmap.insert("SETEX".as_bytes(), CmdType::Write);
+        hmap.insert("SETNX".as_bytes(), CmdType::Write);
+        hmap.insert("SETRANGE".as_bytes(), CmdType::Write);
+        hmap.insert("STRLEN".as_bytes(), CmdType::Read);
+        // hash type
+        hmap.insert("HDEL".as_bytes(), CmdType::Write);
+        hmap.insert("HEXISTS".as_bytes(), CmdType::Read);
+        hmap.insert("HGET".as_bytes(), CmdType::Read);
+        hmap.insert("HGETALL".as_bytes(), CmdType::Read);
+        hmap.insert("HINCRBY".as_bytes(), CmdType::Write);
+        hmap.insert("HINCRBYFLOAT".as_bytes(), CmdType::Write);
+        hmap.insert("HKEYS".as_bytes(), CmdType::Read);
+        hmap.insert("HLEN".as_bytes(), CmdType::Read);
+        hmap.insert("HMGET".as_bytes(), CmdType::Read);
+        hmap.insert("HMSET".as_bytes(), CmdType::Write);
+        hmap.insert("HSET".as_bytes(), CmdType::Write);
+        hmap.insert("HSETNX".as_bytes(), CmdType::Write);
+        hmap.insert("HSTRLEN".as_bytes(), CmdType::Read);
+        hmap.insert("HVALS".as_bytes(), CmdType::Read);
+        hmap.insert("HSCAN".as_bytes(), CmdType::Read);
+        // list type
+        hmap.insert("BLPOP".as_bytes(), CmdType::NotSupport);
+        hmap.insert("BRPOP".as_bytes(), CmdType::NotSupport);
+        hmap.insert("BRPOPLPUSH".as_bytes(), CmdType::NotSupport);
+        hmap.insert("LINDEX".as_bytes(), CmdType::Read);
+        hmap.insert("LINSERT".as_bytes(), CmdType::Write);
+        hmap.insert("LLEN".as_bytes(), CmdType::Read);
+        hmap.insert("LPOP".as_bytes(), CmdType::Write);
+        hmap.insert("LPUSH".as_bytes(), CmdType::Write);
+        hmap.insert("LPUSHX".as_bytes(), CmdType::Write);
+        hmap.insert("LRANGE".as_bytes(), CmdType::Read);
+        hmap.insert("LREM".as_bytes(), CmdType::Write);
+        hmap.insert("LSET".as_bytes(), CmdType::Write);
+        hmap.insert("LTRIM".as_bytes(), CmdType::Write);
+        hmap.insert("RPOP".as_bytes(), CmdType::Write);
+        hmap.insert("RPOPLPUSH".as_bytes(), CmdType::Write);
+        hmap.insert("RPUSH".as_bytes(), CmdType::Write);
+        hmap.insert("RPUSHX".as_bytes(), CmdType::Write);
+        // set type
+        hmap.insert("SADD".as_bytes(), CmdType::Write);
+        hmap.insert("SCARD".as_bytes(), CmdType::Read);
+        hmap.insert("SDIFF".as_bytes(), CmdType::Read);
+        hmap.insert("SDIFFSTORE".as_bytes(), CmdType::Write);
+        hmap.insert("SINTER".as_bytes(), CmdType::Read);
+        hmap.insert("SINTERSTORE".as_bytes(), CmdType::Write);
+        hmap.insert("SISMEMBER".as_bytes(), CmdType::Read);
+        hmap.insert("SMEMBERS".as_bytes(), CmdType::Read);
+        hmap.insert("SMOVE".as_bytes(), CmdType::Write);
+        hmap.insert("SPOP".as_bytes(), CmdType::Write);
+        hmap.insert("SRANDMEMBER".as_bytes(), CmdType::Read);
+        hmap.insert("SREM".as_bytes(), CmdType::Write);
+        hmap.insert("SUNION".as_bytes(), CmdType::Read);
+        hmap.insert("SUNIONSTORE".as_bytes(), CmdType::Write);
+        hmap.insert("SSCAN".as_bytes(), CmdType::Read);
+        // zset type
+        hmap.insert("ZADD".as_bytes(), CmdType::Write);
+        hmap.insert("ZCARD".as_bytes(), CmdType::Read);
+        hmap.insert("ZCOUNT".as_bytes(), CmdType::Read);
+        hmap.insert("ZINCRBY".as_bytes(), CmdType::Write);
+        hmap.insert("ZINTERSTORE".as_bytes(), CmdType::Write);
+        hmap.insert("ZLEXCOUNT".as_bytes(), CmdType::Read);
+        hmap.insert("ZRANGE".as_bytes(), CmdType::Read);
+        hmap.insert("ZRANGEBYLEX".as_bytes(), CmdType::Read);
+        hmap.insert("ZRANGEBYSCORE".as_bytes(), CmdType::Read);
+        hmap.insert("ZRANK".as_bytes(), CmdType::Read);
+        hmap.insert("ZREM".as_bytes(), CmdType::Write);
+        hmap.insert("ZREMRANGEBYLEX".as_bytes(), CmdType::Write);
+        hmap.insert("ZREMRANGEBYRANK".as_bytes(), CmdType::Write);
+        hmap.insert("ZREMRANGEBYSCORE".as_bytes(), CmdType::Write);
+        hmap.insert("ZREVRANGE".as_bytes(), CmdType::Read);
+        hmap.insert("ZREVRANGEBYLEX".as_bytes(), CmdType::Read);
+        hmap.insert("ZREVRANGEBYSCORE".as_bytes(), CmdType::Read);
+        hmap.insert("ZREVRANK".as_bytes(), CmdType::Read);
+        hmap.insert("ZSCORE".as_bytes(), CmdType::Read);
+        hmap.insert("ZUNIONSTORE".as_bytes(), CmdType::Write);
+        hmap.insert("ZSCAN".as_bytes(), CmdType::Read);
+        // hyper log type
+        hmap.insert("PFADD".as_bytes(), CmdType::Write);
+        hmap.insert("PFCOUNT".as_bytes(), CmdType::Read);
+        hmap.insert("PFMERGE".as_bytes(), CmdType::Write);
+        // eval type
+        hmap.insert("EVAL".as_bytes(), CmdType::Write);
+        hmap.insert("EVALSHA".as_bytes(), CmdType::NotSupport);
+        // ctrl type
+        hmap.insert("AUTH".as_bytes(), CmdType::NotSupport);
+        hmap.insert("ECHO".as_bytes(), CmdType::Ctrl);
+        hmap.insert("PING".as_bytes(), CmdType::Ctrl);
+        hmap.insert("INFO".as_bytes(), CmdType::Ctrl);
+        hmap.insert("PROXY".as_bytes(), CmdType::NotSupport);
+        hmap.insert("SLOWLOG".as_bytes(), CmdType::NotSupport);
+        hmap.insert("QUIT".as_bytes(), CmdType::NotSupport);
+        hmap.insert("SELECT".as_bytes(), CmdType::NotSupport);
+        hmap.insert("TIME".as_bytes(), CmdType::NotSupport);
+        hmap.insert("CONFIG".as_bytes(), CmdType::NotSupport);
+
+        hmap
+    };
 }
