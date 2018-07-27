@@ -202,21 +202,11 @@ pub const BYTE_CR: u8 = '\r' as u8;
 pub const BYTE_LF: u8 = '\n' as u8;
 
 #[derive(Clone, Debug)]
-pub enum Resp {
-    Plain {
-        rtype: RespType,
-        data: Vec<u8>,
-    },
-    Bulk {
-        rtype: RespType,
-        size: Vec<u8>,
-        data: Vec<u8>,
-    },
-    Array {
-        rtype: RespType,
-        count: Vec<u8>,
-        items: Vec<Resp>,
-    },
+pub struct Resp {
+    pub rtype: RespType,
+    pub data: Vec<u8>,
+    pub extra: Option<Vec<u8>>,
+    pub array: Option<Vec<Resp>>,
 }
 
 impl Resp {
@@ -228,33 +218,56 @@ impl Resp {
         let rtype = line[0];
 
         match rtype {
-            RESP_STRING | RESP_INT | RESP_ERROR => Ok(Resp::Plain {
+            RESP_STRING | RESP_INT | RESP_ERROR => Ok(Resp {
                 rtype: rtype,
                 data: line[1..line_size - 2].to_vec(),
+                extra: None,
+                array: None,
             }),
             RESP_BULK => {
+                let count = btoi::btoi::<isize>(&line[1..line_size - 2])?;
+                if count == -1 {
+                    return Ok(Resp {
+                        rtype: rtype,
+                        data: Vec::with_capacity(0),
+                        extra: None,
+                        array: None,
+                    });
+                }
                 let data = iter.next().ok_or(Error::MoreData)?;
-                Ok(Resp::Bulk {
+                Ok(Resp {
                     rtype: rtype,
-                    size: line[1..line_size - 2].to_vec(),
+                    extra: Some(line[1..line_size - 2].to_vec()),
                     data: data[1..data.len() - 2].to_vec(),
+                    array: None,
                 })
             }
 
             RESP_ARRAY => {
                 let count_bs = &line[1..line_size - 2];
-                let count = btoi::btoi::<usize>(count_bs)?;
-                let mut items = Vec::with_capacity(count);
+                let count = btoi::btoi::<isize>(count_bs)?;
+                if count == -1 {
+                    return Ok(Resp {
+                        rtype: rtype,
+                        data: Vec::with_capacity(0),
+                        array: None,
+                        extra: None,
+                    });
+                }
+
+                let mut items = Vec::with_capacity(count as usize);
                 let mut parsed = line_size;
                 for _ in 0..count {
                     let item = Self::parse(&src[parsed..])?;
                     parsed += item.binary_size();
                     items.push(item);
                 }
-                Ok(Resp::Array {
+
+                Ok(Resp {
                     rtype: rtype,
-                    count: count_bs.to_vec(),
-                    items: items,
+                    data: count_bs.to_vec(),
+                    array: Some(items),
+                    extra: None,
                 })
             }
             _ => unreachable!(),
@@ -262,53 +275,87 @@ impl Resp {
     }
 
     fn write(&mut self, dst: &mut BytesMut) -> AsResult<usize> {
-        match self {
-            Resp::Plain { data, rtype } => {
-                dst.put_u8(*rtype);
-                dst.put(data.clone());
+        match self.rtype {
+            RESP_STRING | RESP_ERROR | RESP_INT => {
+                dst.put_u8(self.rtype);
+                dst.put(self.data.clone());
                 dst.put_u8(BYTE_CR);
                 dst.put_u8(BYTE_LF);
-                Ok(3 + data.len())
+                Ok(self.binary_size())
             }
-            Resp::Bulk { data, size, rtype } => {
-                dst.put_u8(*rtype);
-                dst.put(size.clone());
+            RESP_BULK => {
+                dst.put_u8(self.rtype);
+                dst.put(self.extra.as_ref().cloned().expect("bulk never empty"));
                 dst.put_u8(BYTE_CR);
                 dst.put_u8(BYTE_LF);
-                dst.put(data.clone());
+                dst.put(self.data.clone());
                 dst.put_u8(BYTE_CR);
                 dst.put_u8(BYTE_LF);
-                Ok(5 + size.len() + data.len())
+                Ok(5 + self.extra.as_ref().expect("never fail").len() + self.data.len())
             }
-            Resp::Array {
-                rtype,
-                count,
-                items,
-            } => {
-                let mut size = 1 + count.len() + 2;
-                dst.put_u8(*rtype);
-                dst.put(count.clone());
+            RESP_ARRAY => {
+                let mut size = 1 + self.data.len() + 2;
+                dst.put_u8(self.rtype);
+                dst.put(self.data.clone());
                 dst.put_u8(BYTE_CR);
                 dst.put_u8(BYTE_LF);
-                for item in items {
+
+                if self.array.is_none() {
+                    return Ok(size);
+                }
+
+                for item in self.array.as_mut().expect("never empty") {
                     size += item.write(dst)?;
                 }
                 Ok(size)
             }
+            _ => unreachable!(),
+        }
+    }
+
+    fn is_null(&self) -> bool {
+        match self.rtype {
+            RESP_BULK => self.extra.is_none(),
+            RESP_ARRAY => self.array.is_none(),
+            _ => false,
         }
     }
 
     fn binary_size(&self) -> usize {
-        match self {
-            Resp::Plain { data, .. } => 1 + data.len() + 2,
-            Resp::Bulk { data, size, .. } => 1 + size.len() + 2 + data.len() + 2,
-            Resp::Array { count, items, .. } => {
-                let mut size = 1 + count.len() + 2;
-                let arr_size: usize = items.iter().map(|x| x.binary_size()).sum();
-                size += arr_size;
+        match self.rtype {
+            RESP_STRING | RESP_ERROR | RESP_INT => 3 + self.data.len(),
+            RESP_BULK => {
+                if self.is_null() {
+                    return 5;
+                }
+                1 + self.extra.as_ref().expect("never empty").len() + 2 + self.data.len() + 2
+            }
+            RESP_ARRAY => {
+                if self.is_null() {
+                    return 5;
+                }
+                let mut size = 1 + self.data.len() + 2;
+                for item in self.array.as_ref().expect("never empty") {
+                    size += item.binary_size();
+                }
                 size
             }
+            _ => unreachable!(),
         }
+    }
+
+    fn get(&self, i: usize) -> Option<&Self> {
+        self.array
+            .as_ref()
+            .map(|x| x.get(i))
+            .expect("must be array")
+    }
+
+    fn get_mut(&mut self, i: usize) -> Option<&mut Self> {
+        self.array
+            .as_mut()
+            .map(|x| x.get_mut(i))
+            .expect("must be array")
     }
 }
 
@@ -328,23 +375,36 @@ pub struct Command {
 }
 
 impl Command {
-    fn from_resp(resp: Resp) -> Command {
+    fn from_resp(mut resp: Resp) -> Command {
         let local_task = task::current();
-        // TODO: how to get command type
-        // let cmd_type = CMD_TYPE.get()
+        Self::cmd_to_upper(&mut resp);
+        let cmd_type = Self::get_cmd_type(&resp);
 
-        Command{
+        Command {
             is_done: false,
             is_ask: false,
             is_inline: false,
 
             is_complex: false,
-            cmd_type: CmdType::NotSupport,
+            cmd_type: cmd_type,
 
             task: local_task,
             req: resp,
             reply: None,
         }
+    }
+
+    fn cmd_to_upper(resp: &mut Resp) {
+        let cmd = resp.get_mut(0).expect("never be empty");
+        update_to_upper(&mut cmd.data);
+    }
+
+    fn get_cmd_type(resp: &Resp) -> CmdType {
+        let cmd = resp.get(0).expect("never be empty");
+        if let Some(&ctype) = CMD_TYPE.get(&cmd.data[..]) {
+            return ctype;
+        }
+        CmdType::NotSupport
     }
 }
 

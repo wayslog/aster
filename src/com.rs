@@ -36,3 +36,16 @@ impl From<btoi::ParseIntegerError> for Error {
 }
 
 pub type AsResult<T> = result::Result<T, Error>;
+
+const LOWER_BEGIN: u8 = 'a' as u8;
+const LOWER_END: u8 = 'z' as u8;
+const UPPER_TO_LOWER: u8 = 'a' as u8 - 'A' as u8;
+
+pub fn update_to_upper(src: &mut [u8]) {
+    for b in src {
+        if *b < LOWER_BEGIN || *b > LOWER_END {
+            continue;
+        }
+        *b = *b - UPPER_TO_LOWER;
+    }
+}
