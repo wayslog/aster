@@ -36,8 +36,9 @@ use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::{Decoder, Encoder};
 // use tokio::prelude::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, BTreeSet, VecDeque};
 use std::net::SocketAddr;
+use std::rc::Rc;
 // use std::sync::Mutex;
 // use std::convert::From;
 // use std::hash::{Hash, Hasher};
@@ -68,17 +69,17 @@ pub struct ClusterConfig {
     pub cache_type: CacheType,
 }
 
-pub struct HashRing<T> {
-    nodes: HashMap<String, T>,
+pub struct HashRing {
+    nodes: HashMap<String, usize>,
     slots: HashMap<isize, String>,
 }
 
-pub struct Cluster<T> {
+pub struct Cluster {
     cc: ClusterConfig,
-    ring: HashRing<T>,
+    ring: HashRing,
 }
 
-impl<T> Cluster<T> {
+impl Cluster {
     pub fn proxy(&self) -> AsResult<()> {
         let addr = self
             .cc
@@ -140,7 +141,7 @@ impl<T> Cluster<T> {
                 // TODO: add Endpoint types
                 let down = sink
                     .send_all(recv.map_err(|_emptyerr| Error::None))
-                    .map(|_| trace!("down stream complated"))
+                    .map(|_| trace!("down stream completed"))
                     .map_err(|err| error!("fail to send to backend node {:?}", err));
                 current_thread::spawn(down);
                 let up = stream
@@ -408,13 +409,14 @@ impl Command {
         let local_task = task::current();
         Self::cmd_to_upper(&mut resp);
         let cmd_type = Self::get_cmd_type(&resp);
+        let is_complex = Self::is_complex(&resp);
 
         Command {
             is_done: false,
             is_ask: false,
             is_inline: false,
 
-            is_complex: false,
+            is_complex: is_complex,
             cmd_type: cmd_type,
 
             task: local_task,
@@ -428,6 +430,11 @@ impl Command {
         update_to_upper(cmd.data.as_mut().expect("never null"));
     }
 
+    fn is_complex(resp: &Resp) -> bool {
+        let cmd = resp.get(0).expect("never be empty");
+        CMD_COMPLEX.contains(&cmd.data.as_ref().expect("never null")[..])
+    }
+
     fn get_cmd_type(resp: &Resp) -> CmdType {
         let cmd = resp.get(0).expect("never be empty");
         if let Some(&ctype) = CMD_TYPE.get(&cmd.data.as_ref().expect("never null")[..]) {
@@ -439,6 +446,15 @@ impl Command {
 
 pub struct CommandStream<S: Stream<Item = Resp, Error = Error>> {
     input: S,
+}
+
+
+impl<S> CommandStream<S> where S: Stream<Item = Resp, Error = Error> {
+    pub fn new(input: S) -> Self {
+        Self {
+            input: input,
+        }
+    }
 }
 
 impl<S> Stream for CommandStream<S>
@@ -456,6 +472,7 @@ where
     }
 }
 
+
 pub struct Batch<S>
 where
     S: Stream,
@@ -468,11 +485,11 @@ impl<S> Stream for Batch<S>
 where
     S: Stream,
 {
-    type Item = Vec<S::Item>;
+    type Item = VecDeque<S::Item>;
     type Error = S::Error;
 
     fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
-        let mut buf = Vec::new();
+        let mut buf = VecDeque::new();
         loop {
             match self.input.poll() {
                 Ok(Async::NotReady) => {
@@ -485,7 +502,7 @@ where
                     return Ok(Async::Ready(None));
                 }
                 Ok(Async::Ready(Some(item))) => {
-                    buf.push(item);
+                    buf.push_back(item);
                     if buf.len() == self.max {
                         return Ok(Async::Ready(Some(buf)));
                     }
@@ -493,6 +510,44 @@ where
                 Err(err) => return Err(err),
             }
         }
+    }
+}
+
+pub enum State {
+    Void,
+    Batching(VecDeque<Command>),
+}
+
+pub struct Handler<I, O>
+where I: Stream<Item=Command, Error=Error>,
+  O: Sink<SinkItem=Command, SinkError=Error>
+{
+    cluster: Rc<Cluster>,
+
+    input: I,
+    output: O,
+
+    state: State,
+}
+
+impl<I, O> Handler<I, O>
+where I: Stream<Item=Command, Error=Error>,
+      O: Sink<SinkItem=Command, SinkError=Error>
+{
+}
+
+
+impl<I, O> Future for Handler<I, O>
+where I: Stream<Item=Command, Error=Error>,
+      O: Sink<SinkItem=Command, SinkError=Error>
+{
+    type Item = ();
+    type Error = Error;
+
+    fn poll(&mut self) -> Result<Async<()>, Self::Error> {
+
+
+        Ok(Async::NotReady)
     }
 }
 
@@ -505,10 +560,10 @@ pub enum CmdType {
 }
 
 lazy_static! {
-    pub static ref CMD_COMPLEX: HashSet<&'static [u8]> = {
+    pub static ref CMD_COMPLEX: BTreeSet<&'static [u8]> = {
         let cmds = vec!["MSET", "MGET", "DEL", "EXISTS", "EVAL", "EVALSHAR"];
 
-        let mut hset = HashSet::new();
+        let mut hset = BTreeSet::new();
         for cmd in &cmds[..] {
             hset.insert(cmd.as_bytes());
         }
@@ -658,3 +713,5 @@ lazy_static! {
         hmap
     };
 }
+
+
