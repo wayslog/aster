@@ -9,9 +9,9 @@ extern crate num_cpus;
 #[macro_use]
 extern crate lazy_static;
 extern crate btoi;
+extern crate itoa;
 extern crate tokio_codec;
 extern crate tokio_io;
-extern crate itoa;
 
 pub mod com;
 pub use com::*;
@@ -23,7 +23,7 @@ pub use com::*;
 // use futures::future::join_all;
 use futures::sync::mpsc::{channel, Receiver, SendError, Sender};
 use futures::task::{self, Task};
-use futures::Async;
+use futures::{Async, AsyncSink};
 // use futures::{Async, AsyncSink, Future, IntoFuture, Poll, Sink};
 
 // use aho_corasick::{AcAutomaton, Automaton, Match};
@@ -36,7 +36,8 @@ use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::{Decoder, Encoder};
 // use tokio::prelude::*;
 
-use std::collections::{HashMap, BTreeSet, VecDeque};
+use std::cell::RefCell;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::rc::Rc;
 // use std::sync::Mutex;
@@ -154,6 +155,10 @@ impl Cluster {
             .for_each(|_| Ok(()));
         current_thread::spawn(amt);
     }
+
+    pub fn dispatch(&self, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
+        Ok(AsyncSink::Ready)
+    }
 }
 
 pub struct Endpoint {
@@ -203,7 +208,7 @@ pub const RESP_ARRAY: RespType = '*' as u8;
 pub const BYTE_CR: u8 = '\r' as u8;
 pub const BYTE_LF: u8 = '\n' as u8;
 
-pub const BYTES_CRLF : &'static [u8] = b"\r\n";
+pub const BYTES_CRLF: &'static [u8] = b"\r\n";
 pub const BYTES_NULL_RESP: &'static [u8] = b"-1\r\n";
 
 #[derive(Clone, Debug)]
@@ -291,7 +296,7 @@ impl Resp {
                 dst.put_u8(self.rtype);
                 if self.is_null() {
                     dst.put(BYTES_NULL_RESP);
-                    return Ok(1+BYTES_NULL_RESP.len())
+                    return Ok(1 + BYTES_NULL_RESP.len());
                 }
 
                 let data = self.data.as_ref().expect("never nulll");
@@ -337,7 +342,7 @@ impl Resp {
             if n == 0 {
                 return len;
             } else if n < 10 {
-                return len +1;
+                return len + 1;
             } else if n < 100 {
                 return len + 2;
             } else if n < 1000 {
@@ -351,7 +356,9 @@ impl Resp {
 
     fn binary_size(&self) -> usize {
         match self.rtype {
-            RESP_STRING | RESP_ERROR | RESP_INT => 3 + self.data.as_ref().expect("never be empty").len(),
+            RESP_STRING | RESP_ERROR | RESP_INT => {
+                3 + self.data.as_ref().expect("never be empty").len()
+            }
             RESP_BULK => {
                 if self.is_null() {
                     return 5;
@@ -425,6 +432,10 @@ impl Command {
         }
     }
 
+    fn is_done(&self) -> bool {
+        self.is_done
+    }
+
     fn cmd_to_upper(resp: &mut Resp) {
         let cmd = resp.get_mut(0).expect("never be empty");
         update_to_upper(cmd.data.as_mut().expect("never null"));
@@ -448,12 +459,12 @@ pub struct CommandStream<S: Stream<Item = Resp, Error = Error>> {
     input: S,
 }
 
-
-impl<S> CommandStream<S> where S: Stream<Item = Resp, Error = Error> {
+impl<S> CommandStream<S>
+where
+    S: Stream<Item = Resp, Error = Error>,
+{
     pub fn new(input: S) -> Self {
-        Self {
-            input: input,
-        }
+        Self { input: input }
     }
 }
 
@@ -472,6 +483,21 @@ where
     }
 }
 
+pub struct RcCmd<S: Stream> {
+    input: S,
+}
+
+impl<S: Stream> Stream for RcCmd<S> {
+    type Item = Rc<S::Item>;
+    type Error = S::Error;
+
+    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
+        if let Some(item) = try_ready!(self.input.poll()) {
+            return Ok(Async::Ready(Some(Rc::new(item))));
+        }
+        Ok(Async::NotReady)
+    }
+}
 
 pub struct Batch<S>
 where
@@ -513,41 +539,85 @@ where
     }
 }
 
+pub type Cmd = Rc<RefCell<Command>>;
+
 pub enum State {
     Void,
-    Batching(VecDeque<Command>),
+    Batching,
+    Writing,
 }
 
 pub struct Handler<I, O>
-where I: Stream<Item=Command, Error=Error>,
-  O: Sink<SinkItem=Command, SinkError=Error>
+where
+    I: Stream<Item = Cmd, Error = Error>,
+    O: Sink<SinkItem = Cmd, SinkError = Error>,
 {
     cluster: Rc<Cluster>,
 
     input: I,
     output: O,
 
+    cmd: Option<Cmd>,
     state: State,
 }
 
 impl<I, O> Handler<I, O>
-where I: Stream<Item=Command, Error=Error>,
-      O: Sink<SinkItem=Command, SinkError=Error>
+where
+    I: Stream<Item = Cmd, Error = Error>,
+    O: Sink<SinkItem = Cmd, SinkError = Error>,
 {
+    fn try_write_back(&mut self, cmd: Cmd) -> Result<Async<()>, Error> {
+        if let AsyncSink::NotReady(_) = self.output.start_send(cmd)? {
+            return Ok(Async::NotReady);
+        }
+        self.output.poll_complete().map_err(|err| {
+            error!{"send error due to {:?}", err};
+            Error::Critical
+        })
+    }
+
+    fn fork_cmd(&mut self) -> Cmd {
+        self.cmd.as_ref().cloned().expect("never be empty")
+    }
 }
 
-
 impl<I, O> Future for Handler<I, O>
-where I: Stream<Item=Command, Error=Error>,
-      O: Sink<SinkItem=Command, SinkError=Error>
+where
+    I: Stream<Item = Cmd, Error = Error>,
+    O: Sink<SinkItem = Cmd, SinkError = Error>,
 {
     type Item = ();
     type Error = Error;
 
     fn poll(&mut self) -> Result<Async<()>, Self::Error> {
-
-
-        Ok(Async::NotReady)
+        loop {
+            match self.state {
+                State::Void => {
+                    if let Some(rc_cmd) = try_ready!(self.input.poll()) {
+                        self.cmd = Some(rc_cmd);
+                        self.state = State::Batching;
+                        continue;
+                    }
+                    return Ok(Async::NotReady);
+                }
+                State::Batching => {
+                    let rc_cmd = self.fork_cmd();
+                    let rslt = self.cluster.dispatch(rc_cmd.clone())?;
+                    match rslt {
+                        AsyncSink::NotReady(_) => return Ok(Async::NotReady),
+                        AsyncSink::Ready => self.state = State::Writing,
+                    };
+                }
+                State::Writing => {
+                    let rc_cmd = self.fork_cmd();
+                    if !rc_cmd.borrow().is_done() {
+                        return Ok(Async::NotReady);
+                    }
+                    try_ready!(self.try_write_back(rc_cmd.clone()));
+                    self.state = State::Void
+                }
+            };
+        }
     }
 }
 
@@ -713,5 +783,3 @@ lazy_static! {
         hmap
     };
 }
-
-
