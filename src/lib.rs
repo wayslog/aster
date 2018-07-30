@@ -41,6 +41,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::mem;
 // use std::sync::Mutex;
 // use std::convert::From;
 // use std::hash::{Hash, Hasher};
@@ -144,10 +145,41 @@ impl Slots {
 pub struct SlotsMap {
     nodes: HashMap<String, Sender<Cmd>>,
     slots: Vec<String>,
-    crc: usize,
+    crc16: u16,
 }
 
 impl SlotsMap {
+    pub fn try_update_all(&mut self, data: &[u8]) -> bool {
+        match Slots::parse(data) {
+            Ok(slots) => {
+                let mut slots = slots;
+                if self.crc16() == slots.crc16() {
+                    return false;
+                }
+                mem::swap(&mut self.slots, &mut slots.0);
+                true
+            }
+            Err(err) => {
+                warn!("fail to update slots map by given data due {:?}", err);
+                false
+            }
+        }
+    }
+
+    pub fn get_sender_by_addr(&mut self, node: String) -> &mut Sender<Cmd> {
+         self.nodes.entry(node).or_insert_with(||{
+            let (tx, _rx) = channel(1024);
+            tx
+        })
+    }
+
+    pub fn get_addr(&mut self, slot: usize) -> String {
+        self.slots.get(slot).cloned().expect("slot must be full matched")
+    }
+
+    fn crc16(&self) -> u16 {
+        self.crc16
+    }
 
 }
 
