@@ -11,6 +11,7 @@ extern crate lazy_static;
 extern crate btoi;
 extern crate itoa;
 extern crate tokio_codec;
+extern crate crc16;
 extern crate tokio_io;
 
 pub mod com;
@@ -47,6 +48,9 @@ use std::rc::Rc;
 // use std::sync::atomic::bool;
 // use std::sync::Arc;
 
+pub const SLOTS_COUNT: usize = 16384;
+pub static LF_STR: &'static str = "\n";
+
 pub fn run() -> Result<(), ()> {
     Ok(())
 }
@@ -70,14 +74,86 @@ pub struct ClusterConfig {
     pub cache_type: CacheType,
 }
 
-pub struct HashRing {
-    nodes: HashMap<String, usize>,
-    slots: HashMap<isize, String>,
+pub struct Slots(Vec<String>);
+
+impl Slots {
+    fn parse(data :&[u8]) -> AsResult<Slots> {
+        let content = String::from_utf8_lossy(data);
+        let mut slots = Vec::with_capacity(SLOTS_COUNT);
+        slots.resize(SLOTS_COUNT, "".to_owned());
+        let mapper = content.split(LF_STR).filter_map(|line|{
+            if line.len() == 0 {
+                return None;
+            }
+
+            let items:Vec<_> = line.split(" ").collect();
+            if !items[2].contains("master") {
+                return None;
+            }
+            let sub_slots:Vec<_> = items[8..].iter().map(|x| x).map(|item|{
+                Self::parse_item(item)
+            }).flatten().collect();
+            let addr = items[1].split("@").next().expect("must contains addr");
+
+            Some((addr.to_owned(), sub_slots))
+        });
+        let mut count = 0;
+        for (addr, ss) in mapper {
+            for i in ss.into_iter() {
+                slots[i] = addr.clone();
+                count += 1;
+            }
+        }
+        if count != SLOTS_COUNT {
+            return Err(Error::BadSlotsMap);
+        } else {
+            Ok(Slots(slots))
+        }
+    }
+
+    fn parse_item(item: &str) -> Vec<usize> {
+        let mut slots = Vec::new();
+        if item.len() == 0 {
+            return slots;
+        }
+        let mut iter = item.split("-");
+        let begin_str = iter.next().expect("must have integer");
+        let begin = begin_str.parse::<usize>().expect("must parse integer done");
+        if let Some(end_str) = iter.next(){
+            let end = end_str.parse::<usize>().expect("must parse end integer done");
+            for i in begin..=end {
+                slots.push(i);
+            }
+        } else {
+            slots.push(begin);
+        }
+        slots
+    }
+}
+
+impl Slots {
+    fn crc16(&self) -> u16 {
+        let mut state = crc16::State::<crc16::XMODEM>::new();
+        for addr in self.0.iter(){
+            state.update(addr.as_bytes());
+        }
+        state.get()
+    }
+}
+
+pub struct SlotsMap {
+    nodes: HashMap<String, Sender<Cmd>>,
+    slots: Vec<String>,
+    crc: usize,
+}
+
+impl SlotsMap {
+
 }
 
 pub struct Cluster {
     cc: ClusterConfig,
-    ring: HashRing,
+    slots: SlotsMap,
 }
 
 impl Cluster {
@@ -296,7 +372,7 @@ impl Resp {
                 dst.put_u8(self.rtype);
                 if self.is_null() {
                     dst.put(BYTES_NULL_RESP);
-                    return Ok(1 + BYTES_NULL_RESP.len());
+                    return Ok(5);
                 }
 
                 let data = self.data.as_ref().expect("never nulll");
