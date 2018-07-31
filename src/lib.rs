@@ -9,9 +9,9 @@ extern crate num_cpus;
 #[macro_use]
 extern crate lazy_static;
 extern crate btoi;
+extern crate crc16;
 extern crate itoa;
 extern crate tokio_codec;
-extern crate crc16;
 extern crate tokio_io;
 
 pub mod com;
@@ -22,7 +22,7 @@ pub use com::*;
 // use std::rc::{Rc, Weak};
 
 // use futures::future::join_all;
-use futures::sync::mpsc::{channel, Receiver, SendError, Sender};
+use futures::sync::mpsc::{channel, Receiver, Sender};
 use futures::task::{self, Task};
 use futures::{Async, AsyncSink};
 // use futures::{Async, AsyncSink, Future, IntoFuture, Poll, Sink};
@@ -31,7 +31,6 @@ use futures::{Async, AsyncSink};
 use bytes::BufMut;
 use bytes::BytesMut;
 use tokio::executor::current_thread;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::{Decoder, Encoder};
@@ -39,9 +38,9 @@ use tokio_codec::{Decoder, Encoder};
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::mem;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::mem;
 // use std::sync::Mutex;
 // use std::convert::From;
 // use std::hash::{Hash, Hasher};
@@ -78,22 +77,25 @@ pub struct ClusterConfig {
 pub struct Slots(Vec<String>);
 
 impl Slots {
-    fn parse(data :&[u8]) -> AsResult<Slots> {
+    fn parse(data: &[u8]) -> AsResult<Slots> {
         let content = String::from_utf8_lossy(data);
         let mut slots = Vec::with_capacity(SLOTS_COUNT);
         slots.resize(SLOTS_COUNT, "".to_owned());
-        let mapper = content.split(LF_STR).filter_map(|line|{
+        let mapper = content.split(LF_STR).filter_map(|line| {
             if line.len() == 0 {
                 return None;
             }
 
-            let items:Vec<_> = line.split(" ").collect();
+            let items: Vec<_> = line.split(" ").collect();
             if !items[2].contains("master") {
                 return None;
             }
-            let sub_slots:Vec<_> = items[8..].iter().map(|x| x).map(|item|{
-                Self::parse_item(item)
-            }).flatten().collect();
+            let sub_slots: Vec<_> = items[8..]
+                .iter()
+                .map(|x| x)
+                .map(|item| Self::parse_item(item))
+                .flatten()
+                .collect();
             let addr = items[1].split("@").next().expect("must contains addr");
 
             Some((addr.to_owned(), sub_slots))
@@ -120,8 +122,10 @@ impl Slots {
         let mut iter = item.split("-");
         let begin_str = iter.next().expect("must have integer");
         let begin = begin_str.parse::<usize>().expect("must parse integer done");
-        if let Some(end_str) = iter.next(){
-            let end = end_str.parse::<usize>().expect("must parse end integer done");
+        if let Some(end_str) = iter.next() {
+            let end = end_str
+                .parse::<usize>()
+                .expect("must parse end integer done");
             for i in begin..=end {
                 slots.push(i);
             }
@@ -135,7 +139,7 @@ impl Slots {
 impl Slots {
     fn crc16(&self) -> u16 {
         let mut state = crc16::State::<crc16::XMODEM>::new();
-        for addr in self.0.iter(){
+        for addr in self.0.iter() {
             state.update(addr.as_bytes());
         }
         state.get()
@@ -167,20 +171,22 @@ impl SlotsMap {
     }
 
     pub fn get_sender_by_addr(&mut self, node: String) -> &mut Sender<Cmd> {
-         self.nodes.entry(node).or_insert_with(||{
+        self.nodes.entry(node).or_insert_with(|| {
             let (tx, _rx) = channel(1024);
             tx
         })
     }
 
     pub fn get_addr(&mut self, slot: usize) -> String {
-        self.slots.get(slot).cloned().expect("slot must be full matched")
+        self.slots
+            .get(slot)
+            .cloned()
+            .expect("slot must be full matched")
     }
 
     fn crc16(&self) -> u16 {
         self.crc16
     }
-
 }
 
 pub struct Cluster {
@@ -327,6 +333,22 @@ pub struct Resp {
 }
 
 impl Resp {
+    fn new_plain(rtype: RespType, data: Option<Vec<u8>>) -> Resp {
+        Resp {
+            rtype: rtype,
+            data: data,
+            array: None,
+        }
+    }
+
+    fn new_array(array: Option<Vec<Resp>>) -> Resp {
+        Resp {
+            rtype: RESP_ARRAY,
+            data: None,
+            array: array,
+        }
+    }
+
     fn parse(src: &[u8]) -> AsResult<Self> {
         let mut iter = src.splitn(2, |x| *x == BYTE_LF);
         let line = iter.next().ok_or(Error::MoreData)?;
@@ -436,6 +458,12 @@ impl Resp {
         }
     }
 
+    fn cmd_bytes(&self) -> &[u8] {
+        let arr = self.array.as_ref().expect("must cmd");
+        let resp = arr.get(0).expect("array contains more than 1 item");
+        resp.data.as_ref().expect("data must exists")
+    }
+
     fn is_null(&self) -> bool {
         match self.rtype {
             RESP_BULK => self.data.is_none(),
@@ -513,18 +541,21 @@ pub struct Command {
     pub is_complex: bool,
     pub cmd_type: CmdType,
 
+    pub crc: u16,
     pub task: Task,
 
     pub req: Resp,
+    pub sub_reqs: Option<Vec<Cmd>>,
     pub reply: Option<Resp>,
 }
 
 impl Command {
-    fn from_resp(mut resp: Resp) -> Command {
+    fn inner_from_resp(mut resp: Resp) -> Command {
         let local_task = task::current();
         Self::cmd_to_upper(&mut resp);
         let cmd_type = Self::get_cmd_type(&resp);
         let is_complex = Self::is_complex(&resp);
+        let crc = Self::crc16(&resp);
 
         Command {
             is_done: false,
@@ -534,14 +565,102 @@ impl Command {
             is_complex: is_complex,
             cmd_type: cmd_type,
 
+            crc: crc,
             task: local_task,
             req: resp,
+            sub_reqs: None,
             reply: None,
         }
     }
 
-    fn is_done(&self) -> bool {
-        self.is_done
+    pub fn from_resp(resp: Resp) -> Command {
+        let mut command = Self::inner_from_resp(resp);
+        command.mksubs();
+        command
+    }
+
+    fn mksubs(&mut self) {
+        if !self.is_complex {
+            return;
+        }
+
+        if self.req.cmd_bytes() == b"MSET"  {
+            return self.mk_mset();
+        } else if self.req.cmd_bytes() == b"EVAL" {
+            self.mk_eval();
+        }
+        return self.mk_by_keys();
+    }
+
+    fn mk_eval(&mut self) {
+        let key_resp = self.req.get(3).expect("eval must contains key");
+        self.crc = calc_crc16(key_resp.data.as_ref().expect("key must contains value"));
+    }
+
+    fn mk_mset(&mut self) {
+        let arr_len = self.req.array.as_ref().expect("cmd must be array").len();
+        if arr_len < 3  || arr_len % 2 == 0{
+            return self.done_with_error(&RESP_OBJ_ERROR_BAD_CMD);
+        } else if arr_len == 3 {
+            trace!("skip to split MSET");
+            return;
+        }
+
+        let is_complex = self.is_complex;
+        let resps = self.req.array.as_ref().expect("cmd must be array");
+        let subcmds: Vec<Cmd> = (&resps[1..]).chunks(2)
+            .map(|x|{
+                let key = x[0].clone();
+                let val = x[1].clone();
+                Resp::new_array(Some(vec![RESP_OBJ_BULK_SET.clone(), key, val]))
+            })
+            .map(|resp|{
+                let mut cmd = Command::inner_from_resp(resp);
+                cmd.is_complex = is_complex;
+                Rc::new(RefCell::new(cmd))
+            })
+            .collect();
+
+        self.sub_reqs = Some(subcmds);
+    }
+
+    fn mk_by_keys(&mut self) {
+        let arr_len = self.req.array.as_ref().expect("cmd must be array").len();
+        if arr_len < 2 {
+            return self.done_with_error(&RESP_OBJ_ERROR_BAD_CMD);
+        } else if arr_len == 2 {
+            trace!("skip to split cmd with only one key");
+            return;
+        }
+
+        let resps = self.req.array.as_ref().expect("cmd must be array").clone();
+        let mut iter = resps.into_iter();
+
+        let cmd = iter.next().expect("cmd must be contains");
+        let cmd = Self::get_single_cmd(cmd);
+
+        let subcmds: Vec<Cmd> = iter
+            .map(|arg| {
+                let mut arr = Vec::with_capacity(2);
+                arr.push(cmd.clone());
+                arr.push(arg);
+                Resp::new_array(Some(arr))
+            })
+            .map(|resp| {
+                let mut cmd = Command::inner_from_resp(resp);
+                cmd.is_complex = self.is_complex;
+                cmd.task = self.task.clone();
+                Rc::new(RefCell::new(cmd))
+            })
+            .collect();
+        self.sub_reqs = Some(subcmds);
+    }
+
+    fn get_single_cmd(cmd_resp: Resp) -> Resp {
+        if cmd_resp.data.as_ref().expect("cmd must be bulk never nil") == b"MGET" {
+            return RESP_OBJ_BULK_GET.clone();
+        }
+        cmd_resp
     }
 
     fn cmd_to_upper(resp: &mut Resp) {
@@ -560,6 +679,26 @@ impl Command {
             return ctype;
         }
         CmdType::NotSupport
+    }
+
+    fn crc16(resp: &Resp) -> u16 {
+        let cmd = resp.get(0).expect("never be empty");
+        let mut state = crc16::State::<crc16::XMODEM>::new();
+        state.update(&cmd.data.as_ref().expect("never null")[..]);
+        state.get()
+    }
+}
+
+impl Command {
+    fn is_done(&self) -> bool {
+        self.is_done
+    }
+
+    fn done_with_error(&mut self, err: &Resp) {
+        self.reply = Some(err.clone());
+        self.is_done = true;
+        // ignore if task current.
+        self.task.notify();
     }
 }
 
@@ -739,7 +878,7 @@ pub enum CmdType {
 
 lazy_static! {
     pub static ref CMD_COMPLEX: BTreeSet<&'static [u8]> = {
-        let cmds = vec!["MSET", "MGET", "DEL", "EXISTS", "EVAL", "EVALSHAR"];
+        let cmds = vec!["MSET", "MGET", "DEL", "EXISTS", "EVAL"];
 
         let mut hset = BTreeSet::new();
         for cmd in &cmds[..] {
@@ -890,4 +1029,19 @@ lazy_static! {
 
         hmap
     };
+
+
+    pub static ref RESP_OBJ_BULK_GET: Resp =
+    { Resp::new_plain(RESP_BULK, Some("GET".as_bytes().to_vec())) };
+    pub static ref RESP_OBJ_BULK_SET: Resp =
+    { Resp::new_plain(RESP_BULK, Some("SET".as_bytes().to_vec())) };
+    pub static ref RESP_OBJ_ERROR_BAD_CMD: Resp =
+    { Resp::new_plain(RESP_ERROR, Some("command format wrong".as_bytes().to_vec())) };
+}
+
+
+fn calc_crc16(data: &[u8]) -> u16 {
+    let mut state = crc16::State::<crc16::XMODEM>::new();
+    state.update(data);
+    state.get()
 }
