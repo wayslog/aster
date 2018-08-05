@@ -27,30 +27,16 @@ pub use com::*;
 use resp::{Resp, RespCodec};
 use slots::SlotsMap;
 
-use std::cell::RefCell;
-// use std::mem;
-// use std::rc::{Rc, Weak};
-
-// use futures::future::join_all;
 use futures::sync::mpsc::{channel, Receiver, Sender};
 use futures::{Async, AsyncSink};
-// use futures::{Async, AsyncSink, Future, IntoFuture, Poll, Sink};
-
-// use aho_corasick::{AcAutomaton, Automaton, Match};
 use tokio::executor::current_thread;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::Decoder;
-// use tokio::prelude::*;
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-// use std::sync::Mutex;
-// use std::convert::From;
-// use std::hash::{Hash, Hasher};
-// use std::io::Error as IoError;
-// use std::sync::atomic::bool;
-// use std::sync::Arc;
+use std::cell::RefCell;
 
 const MUSK: u16 = 0x3fff;
 
