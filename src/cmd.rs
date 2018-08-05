@@ -65,6 +65,54 @@ impl Command {
         command
     }
 
+    fn get_single_cmd(cmd_resp: Resp) -> Resp {
+        if cmd_resp.data.as_ref().expect("cmd must be bulk never nil") == b"MGET" {
+            return RESP_OBJ_BULK_GET.clone();
+        }
+        cmd_resp
+    }
+
+    fn cmd_to_upper(resp: &mut Resp) {
+        let cmd = resp.get_mut(0).expect("never be empty");
+        update_to_upper(cmd.data.as_mut().expect("never null"));
+    }
+
+    fn is_complex(resp: &Resp) -> bool {
+        let cmd = resp.get(0).expect("never be empty");
+        CMD_COMPLEX.contains(&cmd.data.as_ref().expect("never null")[..])
+    }
+
+    fn get_cmd_type(resp: &Resp) -> CmdType {
+        let cmd = resp.get(0).expect("never be empty");
+        if let Some(&ctype) = CMD_TYPE.get(&cmd.data.as_ref().expect("never null")[..]) {
+            return ctype;
+        }
+        CmdType::NotSupport
+    }
+
+    fn crc16(resp: &Resp) -> u16 {
+        let cmd = resp.get(0).expect("never be empty");
+        let mut state = crc16::State::<crc16::XMODEM>::new();
+        state.update(&cmd.data.as_ref().expect("never null")[..]);
+        state.get()
+    }
+}
+
+impl Command {
+    pub fn crc(&self) -> u16 {
+        return self.crc
+    }
+
+    pub fn is_batch(&self) -> bool {
+        self.sub_reqs.is_some()
+    }
+
+    pub fn subs(&self) -> &[Cmd] {
+        self.sub_reqs
+            .as_ref()
+            .expect("call subs never fail")
+    }
+
     fn mksubs(&mut self) {
         if !self.is_complex {
             return;
@@ -100,11 +148,13 @@ impl Command {
                 let key = x[0].clone();
                 let val = x[1].clone();
                 Resp::new_array(Some(vec![RESP_OBJ_BULK_SET.clone(), key, val]))
-            }).map(|resp| {
+            })
+            .map(|resp| {
                 let mut cmd = Command::inner_from_resp(resp);
                 cmd.is_complex = is_complex;
                 Rc::new(RefCell::new(cmd))
-            }).collect();
+            })
+            .collect();
 
         self.sub_reqs = Some(subcmds);
     }
@@ -124,57 +174,28 @@ impl Command {
         let cmd = iter.next().expect("cmd must be contains");
         let cmd = Self::get_single_cmd(cmd);
 
-        let subcmds: Vec<Cmd> = iter
-            .map(|arg| {
+        let subcmds: Vec<Cmd> =
+            iter.map(|arg| {
                 let mut arr = Vec::with_capacity(2);
                 arr.push(cmd.clone());
                 arr.push(arg);
                 Resp::new_array(Some(arr))
             }).map(|resp| {
-                let mut cmd = Command::inner_from_resp(resp);
-                cmd.is_complex = self.is_complex;
-                cmd.task = self.task.clone();
-                Rc::new(RefCell::new(cmd))
-            }).collect();
+                    let mut cmd = Command::inner_from_resp(resp);
+                    cmd.is_complex = self.is_complex;
+                    cmd.task = self.task.clone();
+                    Rc::new(RefCell::new(cmd))
+                })
+                .collect();
         self.sub_reqs = Some(subcmds);
     }
 
-    fn get_single_cmd(cmd_resp: Resp) -> Resp {
-        if cmd_resp.data.as_ref().expect("cmd must be bulk never nil") == b"MGET" {
-            return RESP_OBJ_BULK_GET.clone();
-        }
-        cmd_resp
-    }
-
-    fn cmd_to_upper(resp: &mut Resp) {
-        let cmd = resp.get_mut(0).expect("never be empty");
-        update_to_upper(cmd.data.as_mut().expect("never null"));
-    }
-
-    fn is_complex(resp: &Resp) -> bool {
-        let cmd = resp.get(0).expect("never be empty");
-        CMD_COMPLEX.contains(&cmd.data.as_ref().expect("never null")[..])
-    }
-
-    fn get_cmd_type(resp: &Resp) -> CmdType {
-        let cmd = resp.get(0).expect("never be empty");
-        if let Some(&ctype) = CMD_TYPE.get(&cmd.data.as_ref().expect("never null")[..]) {
-            return ctype;
-        }
-        CmdType::NotSupport
-    }
-
-    fn crc16(resp: &Resp) -> u16 {
-        let cmd = resp.get(0).expect("never be empty");
-        let mut state = crc16::State::<crc16::XMODEM>::new();
-        state.update(&cmd.data.as_ref().expect("never null")[..]);
-        state.get()
-    }
-}
-
-impl Command {
     pub fn is_done(&self) -> bool {
         self.is_done
+    }
+
+    pub fn set_reply(&mut self, reply: Resp) {
+        self.reply = Some(reply);
     }
 
     fn done_with_error(&mut self, err: &Resp) {

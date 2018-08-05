@@ -1,7 +1,7 @@
 use cmd::Cmd;
 use com::*;
 use crc16;
-use futures::sync::mpsc::{channel, Sender};
+use futures::sync::mpsc::{Sender};
 
 use std::collections::HashMap;
 use std::mem;
@@ -105,11 +105,12 @@ impl SlotsMap {
         }
     }
 
-    pub fn get_sender_by_addr(&mut self, node: String) -> &mut Sender<Cmd> {
-        self.nodes.entry(node).or_insert_with(|| {
-            let (tx, _rx) = channel(1024);
-            tx
-        })
+    pub fn add_node(&mut self, _node: String, _sender: Sender<Cmd>) -> bool{
+        true
+    }
+
+    pub fn get_sender_by_addr(&mut self, node: &String) -> Option<&mut Sender<Cmd>> {
+        self.nodes.get_mut(node)
     }
 
     pub fn get_addr(&mut self, slot: usize) -> String {
@@ -118,6 +119,7 @@ impl SlotsMap {
             .cloned()
             .expect("slot must be full matched")
     }
+
 
     fn crc16(&self) -> u16 {
         self.crc16

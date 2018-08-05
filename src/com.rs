@@ -3,6 +3,7 @@ use futures::sync::mpsc::SendError;
 use std::convert::From;
 use std::io;
 use std::result;
+use std::net;
 
 #[derive(Debug)]
 pub enum Error {
@@ -16,6 +17,14 @@ pub enum Error {
     Critical,
     ParseIntError(btoi::ParseIntegerError),
     SendError(SendError<::Resp>),
+    AddrParseError(net::AddrParseError),
+}
+
+
+impl From<net::AddrParseError> for Error {
+    fn from(oe: net::AddrParseError) -> Error {
+        Error::AddrParseError(oe)
+    }
 }
 
 impl From<SendError<::Resp>> for Error {

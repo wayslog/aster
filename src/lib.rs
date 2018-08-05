@@ -27,7 +27,7 @@ pub use com::*;
 use resp::{Resp, RespCodec};
 use slots::SlotsMap;
 
-// use std::cell::RefCell;
+use std::cell::RefCell;
 // use std::mem;
 // use std::rc::{Rc, Weak};
 
@@ -51,6 +51,8 @@ use std::net::SocketAddr;
 // use std::io::Error as IoError;
 // use std::sync::atomic::bool;
 // use std::sync::Arc;
+
+const MUSK: u16 = 0x3fff;
 
 pub fn run() -> Result<(), ()> {
     Ok(())
@@ -79,7 +81,7 @@ pub struct ClusterConfig {
 #[allow(unused)]
 pub struct Cluster {
     cc: ClusterConfig,
-    slots: SlotsMap,
+    slots: RefCell<SlotsMap>,
 }
 
 impl Cluster {
@@ -128,13 +130,16 @@ impl Cluster {
         let amt = rx
             .map_err(|err| {
                 error!("fail to receive new node {:?}", err);
-            }).and_then(|node| {
+            })
+            .and_then(|node| {
                 info!("add new connection to addr {}", &node);
                 node.parse()
                     .map_err(|err| error!("fail to parse addr {:?}", err))
-            }).and_then(|addr| {
+            })
+            .and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-            }).zip(erecv)
+            })
+            .zip(erecv)
             .and_then(|(sock, endpoint)| {
                 info!("create new socket with endpoint");
                 let rc = RespCodec {};
@@ -152,18 +157,166 @@ impl Cluster {
                     .map_err(|err| error!("fail to recv and forward from backend node {:?}", err));
                 current_thread::spawn(up);
                 Ok(())
-            }).for_each(|_| Ok(()));
+            })
+            .for_each(|_| Ok(()));
         current_thread::spawn(amt);
     }
 
-    pub fn dispatch(&self, _cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
-        Ok(AsyncSink::Ready)
+    pub fn create_node_conn(&self, node: &str) -> AsResult<Sender<Cmd>> {
+        let _addr = node.parse::<SocketAddr>()?;
+
+        Err(Error::None)
+    }
+
+    pub fn dispatch(&self, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
+        let slot = (cmd.borrow().crc() & MUSK) as usize;
+        loop {
+            let mut slots_map = self.slots.borrow_mut();
+            let addr = slots_map.get_addr(slot);
+            {
+                let sender_opt = slots_map.get_sender_by_addr(&addr);
+                if let Some(sender) = sender_opt {
+                    match sender.start_send(cmd) {
+                        Ok(v) => return Ok(v),
+                        Err(err) => {
+                            trace!("send fail with send error: {:?}", err);
+                            return Err(Error::Critical);
+                        }
+                    }
+                }
+            }
+
+            let tx = self.create_node_conn(&addr)?;
+            slots_map.add_node(addr, tx);
+        }
     }
 }
 
 pub struct Endpoint {
     send: Sender<Resp>,
     recv: Receiver<Resp>,
+}
+
+pub enum NodeConnState {
+    Collect,
+    Send,
+    Wait,
+    Return,
+}
+
+const MAX_NODE_CONN_CONCURRENCY: usize = 512;
+
+pub struct NodeConn<S, O, NI, NO>
+where
+    S: Stream<Item = Cmd, Error = Error>,
+    O: Sink<SinkItem = Cmd>,
+    NI: Stream<Item = Resp, Error = Error>,
+    NO: Sink<SinkItem = Resp, SinkError = Error>,
+{
+    _node: String,
+    cursor: usize,
+    buffered: VecDeque<Cmd>,
+
+    input: S,
+    resender: O,
+
+    node_tx: NO,
+    node_rx: NI,
+
+    state: NodeConnState,
+}
+
+impl<S, O, NI, NO> NodeConn<S, O, NI, NO>
+where
+    S: Stream<Item = Cmd, Error = Error>,
+    O: Sink<SinkItem = Cmd>,
+    NI: Stream<Item = Resp, Error = Error>,
+    NO: Sink<SinkItem = Resp, SinkError = Error>,
+{}
+
+impl<S, O, NI, NO> Future for NodeConn<S, O, NI, NO>
+where
+    S: Stream<Item = Cmd, Error = Error>,
+    O: Sink<SinkItem = Cmd>,
+    NI: Stream<Item = Resp, Error = Error>,
+    NO: Sink<SinkItem = Resp, SinkError = Error>,
+{
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        loop {
+            match self.state {
+                NodeConnState::Collect => {
+                    if self.buffered.len() == MAX_NODE_CONN_CONCURRENCY {
+                        self.state = NodeConnState::Send;
+                        continue;
+                    }
+
+                    match self.input.poll().map_err(|err| {
+                        error!("fail to recv new command due err {:?}", err);
+                    })? {
+                        Async::Ready(Some(v)) => {
+                            self.buffered.push_back(v);
+                        }
+                        Async::Ready(None) => {
+                            self.state = NodeConnState::Send;
+                        }
+                        Async::NotReady => {
+                            self.state = NodeConnState::Send;
+                        }
+                    }
+                },
+                NodeConnState::Send => {
+                    if self.cursor == self.buffered.len() {
+                        self.state = NodeConnState::Wait;
+                        self.cursor = 0;
+                        continue;
+                    }
+
+                    let cursor = self.cursor;
+                    let cmd = self.buffered.get(cursor).cloned().expect("cmd must exists");
+
+                    match self
+                        .node_tx
+                        .start_send(cmd.borrow().req.clone())
+                        .map_err(|err| {
+                            error!("fail to start send cmd resp {:?}", err);
+                        })? {
+                        AsyncSink::NotReady(_) => {
+                            self.node_tx.poll_complete().map_err(|err| {
+                                error!("fail to poll complete cmd resp {:?}", err);
+                            })?;
+                        }
+                        AsyncSink::Ready => {
+                            self.cursor += 1;
+                        }
+                    };
+                }
+                NodeConnState::Wait => {
+                    if self.cursor == self.buffered.len() {
+                        self.cursor = 0;
+                        self.state = NodeConnState::Return;
+                        continue;
+                    }
+                    let cursor = self.cursor;
+
+                    if let Some(resp) = try_ready!(self.node_rx.poll().map_err(|err|{
+                        error!("fail to recv reply from node conn {:?}", err);
+                    })) {
+                        self.buffered.get_mut(cursor).expect("resp mut exists").borrow_mut().set_reply(resp);
+                        self.cursor += 1;
+                    } else {
+                        // TODO: set done with error
+                        info!("quick done with error");
+                    }
+                }
+                NodeConnState::Return => {}
+            };
+            break;
+        }
+        Ok(Async::Ready(()))
+    }
 }
 
 pub struct Batch<S>
