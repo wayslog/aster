@@ -194,8 +194,9 @@ impl Command {
         self.is_done
     }
 
-    pub fn set_reply(&mut self, reply: Resp) {
+    pub fn done(&mut self, reply: Resp) {
         self.reply = Some(reply);
+        self.is_done = true;
     }
 
     fn done_with_error(&mut self, err: &Resp) {

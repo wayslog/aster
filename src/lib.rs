@@ -218,7 +218,7 @@ where
     buffered: VecDeque<Cmd>,
 
     input: S,
-    resender: O,
+    _resender: O,
 
     node_tx: NO,
     node_rx: NI,
@@ -266,7 +266,7 @@ where
                             self.state = NodeConnState::Send;
                         }
                     }
-                },
+                }
                 NodeConnState::Send => {
                     if self.cursor == self.buffered.len() {
                         self.state = NodeConnState::Wait;
@@ -301,17 +301,25 @@ where
                     }
                     let cursor = self.cursor;
 
-                    if let Some(resp) = try_ready!(self.node_rx.poll().map_err(|err|{
+                    if let Some(resp) = try_ready!(self.node_rx.poll().map_err(|err| {
                         error!("fail to recv reply from node conn {:?}", err);
                     })) {
-                        self.buffered.get_mut(cursor).expect("resp mut exists").borrow_mut().set_reply(resp);
+                        let mut cmd = self
+                            .buffered
+                            .get_mut(cursor)
+                            .expect("resp mut exists")
+                            .borrow_mut();
+                        cmd.done(resp);
                         self.cursor += 1;
                     } else {
                         // TODO: set done with error
                         info!("quick done with error");
                     }
                 }
-                NodeConnState::Return => {}
+                NodeConnState::Return => {
+                    self.buffered.clear();
+                    self.state = NodeConnState::Collect;
+                }
             };
             break;
         }
