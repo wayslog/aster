@@ -34,9 +34,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::Decoder;
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::cell::RefCell;
 
 const MUSK: u16 = 0x3fff;
 
@@ -116,16 +116,13 @@ impl Cluster {
         let amt = rx
             .map_err(|err| {
                 error!("fail to receive new node {:?}", err);
-            })
-            .and_then(|node| {
+            }).and_then(|node| {
                 info!("add new connection to addr {}", &node);
                 node.parse()
                     .map_err(|err| error!("fail to parse addr {:?}", err))
-            })
-            .and_then(|addr| {
+            }).and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-            })
-            .zip(erecv)
+            }).zip(erecv)
             .and_then(|(sock, endpoint)| {
                 info!("create new socket with endpoint");
                 let rc = RespCodec {};
@@ -143,8 +140,7 @@ impl Cluster {
                     .map_err(|err| error!("fail to recv and forward from backend node {:?}", err));
                 current_thread::spawn(up);
                 Ok(())
-            })
-            .for_each(|_| Ok(()));
+            }).for_each(|_| Ok(()));
         current_thread::spawn(amt);
     }
 
@@ -206,8 +202,8 @@ where
     input: S,
     _resender: O,
 
-    node_tx: NO,
     node_rx: NI,
+    node_tx: NO,
 
     state: NodeConnState,
 }
@@ -218,7 +214,31 @@ where
     O: Sink<SinkItem = Cmd>,
     NI: Stream<Item = Resp, Error = Error>,
     NO: Sink<SinkItem = Resp, SinkError = Error>,
-{}
+{
+    pub fn new(
+        node: String,
+        // socket: TcpStream,
+        node_tx: NO,
+        node_rx: NI,
+
+        input: S,
+        resender: O,
+    ) -> NodeConn<S, O, NI, NO> {
+        // let resp_codec = RespCodec {};
+        // let (node_tx, node_rx) = resp_codec.framed(socket).split();
+
+        NodeConn {
+            _node: node,
+            cursor: 0,
+            buffered: VecDeque::new(),
+            input: input,
+            _resender: resender,
+            node_tx: node_tx,
+            node_rx: node_rx,
+            state: NodeConnState::Collect,
+        }
+    }
+}
 
 impl<S, O, NI, NO> Future for NodeConn<S, O, NI, NO>
 where
@@ -307,9 +327,8 @@ where
                     self.state = NodeConnState::Collect;
                 }
             };
-            break;
         }
-        Ok(Async::Ready(()))
+        //Ok(Async::Ready(()))
     }
 }
 
