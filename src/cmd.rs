@@ -161,11 +161,13 @@ impl Command {
                 let key = x[0].clone();
                 let val = x[1].clone();
                 Resp::new_array(Some(vec![RESP_OBJ_BULK_SET.clone(), key, val]))
-            }).map(|resp| {
+            })
+            .map(|resp| {
                 let mut cmd = Command::inner_from_resp(resp);
                 cmd.is_complex = is_complex;
                 Rc::new(RefCell::new(cmd))
-            }).collect();
+            })
+            .collect();
 
         self.sub_reqs = Some(subcmds);
     }
@@ -185,18 +187,19 @@ impl Command {
         let cmd = iter.next().expect("cmd must be contains");
         let cmd = Self::get_single_cmd(cmd);
 
-        let subcmds: Vec<Cmd> = iter
-            .map(|arg| {
+        let subcmds: Vec<Cmd> =
+            iter.map(|arg| {
                 let mut arr = Vec::with_capacity(2);
                 arr.push(cmd.clone());
                 arr.push(arg);
                 Resp::new_array(Some(arr))
             }).map(|resp| {
-                let mut cmd = Command::inner_from_resp(resp);
-                cmd.is_complex = self.is_complex;
-                cmd.task = self.task.clone();
-                Rc::new(RefCell::new(cmd))
-            }).collect();
+                    let mut cmd = Command::inner_from_resp(resp);
+                    cmd.is_complex = self.is_complex;
+                    cmd.task = self.task.clone();
+                    Rc::new(RefCell::new(cmd))
+                })
+                .collect();
         self.sub_reqs = Some(subcmds);
     }
 
@@ -481,4 +484,24 @@ impl Default for CmdCodec {
     fn default() -> Self {
         CmdCodec { rc: RespCodec {} }
     }
+}
+
+pub fn new_cluster_nodes_cmd() -> Cmd {
+    let req = Resp::new_array(Some(vec![Resp::new_plain(RESP_BULK, Some(b"".to_vec()))]));
+    let cmd = Command {
+        is_done: false,
+        is_ask: false,
+        is_inline: false,
+
+        is_complex: false,
+        cmd_type: CmdType::Ctrl,
+
+        crc: 0u16,
+        task: task::current(),
+
+        req: req,
+        sub_reqs: None,
+        reply: None,
+    };
+    Rc::new(RefCell::new(cmd))
 }

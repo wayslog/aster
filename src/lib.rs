@@ -22,8 +22,9 @@ pub mod com;
 pub mod handler;
 pub mod resp;
 pub mod slots;
-use cmd::{Cmd, CmdCodec};
+
 pub use com::*;
+use cmd::{Cmd, CmdCodec};
 use handler::Handler;
 use resp::{Resp, RespCodec};
 use slots::SlotsMap;
@@ -31,6 +32,7 @@ use slots::SlotsMap;
 use futures::lazy;
 use futures::sync::mpsc::{channel, Receiver, Sender};
 use futures::{Async, AsyncSink};
+// use futures::task::current;
 use tokio::executor::current_thread;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::{Future, Sink, Stream};
@@ -64,6 +66,7 @@ c1ceb9b25a4aa7102acdc546182bf2d855b357f1 127.0.0.1:7015@17015 slave 480ca425ee0e
         cc: ClusterConfig {
             bind: "0.0.0.0:9001".to_string(),
             cache_type: CacheType::RedisCluster,
+            servers: vec!["127.0.0.1:7010".to_string(), "127.0.0.1:7011".to_string()],
         },
         slots: RefCell::new(smap),
     };
@@ -89,7 +92,8 @@ c1ceb9b25a4aa7102acdc546182bf2d855b357f1 127.0.0.1:7015@17015 slave 480ca425ee0e
             });
             current_thread::spawn(handler);
             Ok(())
-        }).map_err(|err| {
+        })
+        .map_err(|err| {
             error!("fail to proxy due {:?}", err);
         });
     current_thread::block_on_all(amt).unwrap();
@@ -111,49 +115,22 @@ pub enum CacheType {
 pub struct ClusterConfig {
     pub bind: String,
     pub cache_type: CacheType,
+    pub servers: Vec<String>,
 }
 
-#[allow(unused)]
 pub struct Cluster {
     cc: ClusterConfig,
     slots: RefCell<SlotsMap>,
 }
 
 impl Cluster {
-    #[allow(unused_variables)]
-    pub fn proxy(&self) -> AsResult<()> {
-        let addr = self
-            .cc
-            .bind
-            .clone()
-            .parse::<SocketAddr>()
-            .expect("parse socket never fail");
-
-        let (handler_tx, handler_rx) = channel::<Resp>(1024);
-
-        let listen = TcpListener::bind(&addr)?;
-        let amt = listen.incoming().for_each(|sock| {
-            debug!("accept new incoming socket");
-            let codec = RespCodec {};
-
-            // let client_tx = client_rx.clone();
-            let (sink, stream) = codec.framed(sock).split();
-            let input = stream
-                .forward(handler_tx.clone())
-                .map(|_| debug!("connection closed by client"))
-                .map_err(|err| error!("fail to handle proxy due to {:?}", err));
-            current_thread::spawn(input);
-
-            let (client_tx, client_rx) = channel::<Resp>(1024);
-            let output = sink
-                .send_all(client_rx.map_err(|_| Error::None))
-                .map(|_| debug!("connection closed by cluster"))
-                .map_err(|err| error!("fail to handle proxy due to {:?}", err));
-            current_thread::spawn(output);
-
-            Ok(())
-        });
-
+    pub fn init_slots_map(&mut self) -> Result<(), Error> {
+        // let cmd = new_cluster_nodes_cmd();
+        let mut slots_map = self.slots.borrow_mut();
+        for addr in &self.cc.servers {
+            let tx = self.create_node_conn(&addr)?;
+            slots_map.add_node(addr.clone(), tx);
+        }
         Ok(())
     }
 
@@ -168,9 +145,11 @@ impl Cluster {
                     .as_str()
                     .parse()
                     .map_err(|err| error!("fail to parse addr {:?}", err))
-            }).and_then(|addr| {
+            })
+            .and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-            }).and_then(|sock| {
+            })
+            .and_then(|sock| {
                 let codec = RespCodec {};
                 let (sink, stream) = codec.framed(sock).split();
                 let arx = rx.map_err(|err| {
@@ -203,7 +182,8 @@ impl Cluster {
                                 .map_err(|err| {
                                     error!("fail to complete send cmd to node conn due {:?}", err);
                                     Error::Critical
-                                }).map(|_| AsyncSink::Ready)
+                                })
+                                .map(|_| AsyncSink::Ready)
                         }
                         Err(err) => {
                             trace!("send fail with send error: {:?}", err);
@@ -378,6 +358,7 @@ where
         //Ok(Async::Ready(()))
     }
 }
+
 
 pub struct Batch<S>
 where
