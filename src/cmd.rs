@@ -1,13 +1,20 @@
+// use bytes::BufMut;
+use bytes::BytesMut;
 use com::*;
 use crc16;
+use resp::RespCodec;
 use resp::{Resp, RESP_BULK, RESP_ERROR};
+use tokio_codec::{Decoder, Encoder};
 
 use futures::task::{self, Task};
 use tokio::prelude::*;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::mem;
 use std::rc::Rc;
+
+const MUSK: u16 = 0x3fff;
 
 #[derive(Clone, Copy, Debug)]
 pub enum CmdType {
@@ -18,7 +25,9 @@ pub enum CmdType {
 }
 
 pub type Cmd = Rc<RefCell<Command>>;
+
 /// Command is a type for Redis Command.
+#[derive(Debug)]
 pub struct Command {
     pub is_done: bool,
     pub is_ask: bool,
@@ -40,7 +49,7 @@ impl Command {
         let local_task = task::current();
         Self::cmd_to_upper(&mut resp);
         let cmd_type = Self::get_cmd_type(&resp);
-        let is_complex = Self::is_complex(&resp);
+        let is_complex = Self::is_resp_complex(&resp);
         let crc = Self::crc16(&resp);
 
         Command {
@@ -77,7 +86,7 @@ impl Command {
         update_to_upper(cmd.data.as_mut().expect("never null"));
     }
 
-    fn is_complex(resp: &Resp) -> bool {
+    fn is_resp_complex(resp: &Resp) -> bool {
         let cmd = resp.get(0).expect("never be empty");
         CMD_COMPLEX.contains(&cmd.data.as_ref().expect("never null")[..])
     }
@@ -91,16 +100,18 @@ impl Command {
     }
 
     fn crc16(resp: &Resp) -> u16 {
-        let cmd = resp.get(0).expect("never be empty");
+        let cmd = resp.get(1).expect("never be empty");
         let mut state = crc16::State::<crc16::XMODEM>::new();
-        state.update(&cmd.data.as_ref().expect("never null")[..]);
-        state.get()
+        let data = &cmd.data.as_ref().expect("never null")[..];
+        trace!("crc value {}", String::from_utf8_lossy(data));
+        state.update(data);
+        state.get() & MUSK
     }
 }
 
 impl Command {
     pub fn crc(&self) -> u16 {
-        return self.crc
+        return self.crc;
     }
 
     pub fn is_batch(&self) -> bool {
@@ -108,9 +119,7 @@ impl Command {
     }
 
     pub fn subs(&self) -> &[Cmd] {
-        self.sub_reqs
-            .as_ref()
-            .expect("call subs never fail")
+        self.sub_reqs.as_ref().expect("call subs never fail")
     }
 
     fn mksubs(&mut self) {
@@ -148,13 +157,11 @@ impl Command {
                 let key = x[0].clone();
                 let val = x[1].clone();
                 Resp::new_array(Some(vec![RESP_OBJ_BULK_SET.clone(), key, val]))
-            })
-            .map(|resp| {
+            }).map(|resp| {
                 let mut cmd = Command::inner_from_resp(resp);
                 cmd.is_complex = is_complex;
                 Rc::new(RefCell::new(cmd))
-            })
-            .collect();
+            }).collect();
 
         self.sub_reqs = Some(subcmds);
     }
@@ -174,19 +181,18 @@ impl Command {
         let cmd = iter.next().expect("cmd must be contains");
         let cmd = Self::get_single_cmd(cmd);
 
-        let subcmds: Vec<Cmd> =
-            iter.map(|arg| {
+        let subcmds: Vec<Cmd> = iter
+            .map(|arg| {
                 let mut arr = Vec::with_capacity(2);
                 arr.push(cmd.clone());
                 arr.push(arg);
                 Resp::new_array(Some(arr))
             }).map(|resp| {
-                    let mut cmd = Command::inner_from_resp(resp);
-                    cmd.is_complex = self.is_complex;
-                    cmd.task = self.task.clone();
-                    Rc::new(RefCell::new(cmd))
-                })
-                .collect();
+                let mut cmd = Command::inner_from_resp(resp);
+                cmd.is_complex = self.is_complex;
+                cmd.task = self.task.clone();
+                Rc::new(RefCell::new(cmd))
+            }).collect();
         self.sub_reqs = Some(subcmds);
     }
 
@@ -194,15 +200,21 @@ impl Command {
         self.is_done
     }
 
+    pub fn is_complex(&self) -> bool {
+        self.is_complex
+    }
+
     pub fn done(&mut self, reply: Resp) {
         self.reply = Some(reply);
         self.is_done = true;
+        //TODO: ignore if task current.
+        self.task.notify();
     }
 
     fn done_with_error(&mut self, err: &Resp) {
         self.reply = Some(err.clone());
         self.is_done = true;
-        // ignore if task current.
+        //TODO: ignore if task current.
         self.task.notify();
     }
 }
@@ -423,4 +435,41 @@ fn calc_crc16(data: &[u8]) -> u16 {
     let mut state = crc16::State::<crc16::XMODEM>::new();
     state.update(data);
     state.get()
+}
+
+pub struct CmdCodec {
+    rc: RespCodec,
+}
+
+impl Decoder for CmdCodec {
+    type Item = Cmd;
+    type Error = Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if let Some(resp) = self.rc.decode(src)? {
+            let command = Command::from_resp(resp);
+            let cmd = Rc::new(RefCell::new(command));
+            return Ok(Some(cmd));
+        }
+        Ok(None)
+    }
+}
+
+impl Encoder for CmdCodec {
+    type Item = Cmd;
+    type Error = Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        // TODO: merge response for complex commands.
+        let mut item_borrow = item.borrow_mut();
+        let mut rslt = None;
+        mem::swap(&mut rslt, &mut item_borrow.reply);
+        self.rc.encode(rslt.expect("never empty"), dst)
+    }
+}
+
+impl Default for CmdCodec {
+    fn default() -> Self {
+        CmdCodec { rc: RespCodec {} }
+    }
 }

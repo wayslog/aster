@@ -2,7 +2,6 @@ use btoi;
 use bytes::BufMut;
 use bytes::BytesMut;
 use com::*;
-use itoa;
 use tokio_codec::{Decoder, Encoder};
 
 pub const SLOTS_COUNT: usize = 16384;
@@ -20,6 +19,54 @@ pub const BYTE_LF: u8 = '\n' as u8;
 
 pub const BYTES_CRLF: &'static [u8] = b"\r\n";
 pub const BYTES_NULL_RESP: &'static [u8] = b"-1\r\n";
+
+#[test]
+fn test_resp_parse_plain() {
+    let sdata = "+baka for you\r\n";
+    let resp = Resp::parse(sdata.as_bytes()).unwrap();
+    assert_eq!(RESP_STRING, resp.rtype);
+    assert_eq!(Some(b"baka for you".to_vec()), resp.data);
+
+    let edata = "-boy next door\r\n";
+    let resp = Resp::parse(edata.as_bytes()).unwrap();
+    assert_eq!(RESP_ERROR, resp.rtype);
+    assert_eq!(Some(b"boy next door".to_vec()), resp.data);
+
+    let idata = ":1024\r\n";
+    let resp = Resp::parse(idata.as_bytes()).unwrap();
+    assert_eq!(RESP_INT, resp.rtype);
+    assert_eq!(Some(b"1024".to_vec()), resp.data);
+}
+
+#[test]
+fn test_resp_parse_bulk_ok() {
+    let data = "$5\r\nojbK\n\r\n";
+    let resp = Resp::parse(data.as_bytes()).unwrap();
+    assert_eq!(RESP_BULK, resp.rtype);
+    assert_eq!(Some(b"ojbK\n".to_vec()), resp.data);
+}
+
+#[test]
+fn test_resp_parse_array_ok() {
+    let data = "*2\r\n$1\r\na\r\n$5\r\nojbK\n\r\n";
+    let resp = Resp::parse(data.as_bytes()).unwrap();
+    assert_eq!(RESP_ARRAY, resp.rtype);
+    assert_eq!(Some(b"2".to_vec()), resp.data);
+    assert_eq!(2, resp.array.as_ref().unwrap().len());
+}
+
+#[test]
+fn test_resp_parse_write_array_the_same_ok() {
+    let data = "*2\r\n$1\r\na\r\n$5\r\nojbK\n\r\n";
+    let mut resp = Resp::parse(data.as_bytes()).unwrap();
+    assert_eq!(RESP_ARRAY, resp.rtype);
+    assert_eq!(Some(b"2".to_vec()), resp.data);
+    assert_eq!(2, resp.array.as_ref().unwrap().len());
+    let mut buf = BytesMut::with_capacity(100);
+    resp.write(&mut buf).unwrap();
+    let rbuf = buf.freeze();
+    assert_eq!(data.as_bytes(), &rbuf);
+}
 
 #[derive(Clone, Debug)]
 pub struct Resp {
@@ -46,10 +93,14 @@ impl Resp {
     }
 
     pub fn parse(src: &[u8]) -> AsResult<Self> {
+        if src.len() == 0 {
+            return Err(Error::MoreData);
+        }
+
         let mut iter = src.splitn(2, |x| *x == BYTE_LF);
         let line = iter.next().ok_or(Error::MoreData)?;
 
-        let line_size = line.len();
+        let line_size = line.len() + 1;
         let rtype = line[0];
 
         match rtype {
@@ -75,7 +126,7 @@ impl Resp {
 
                 Ok(Resp {
                     rtype: rtype,
-                    data: Some(data[..size].to_vec()),
+                    data: Some(data[..size - 2].to_vec()),
                     array: None,
                 })
             }
@@ -127,7 +178,8 @@ impl Resp {
 
                 let data = self.data.as_ref().expect("never nulll");
                 let data_len = data.len();
-                let len_len = itoa::write(&mut dst[1..], data_len)?;
+                let len_len = Self::write_len(dst, data_len)?;
+                // let len_len = itoa::write(&mut dst[1..], data_len)?;
                 dst.put(BYTES_CRLF);
                 dst.put(data);
                 dst.put(BYTES_CRLF);
@@ -152,6 +204,14 @@ impl Resp {
             }
             _ => unreachable!(),
         }
+    }
+
+    fn write_len(dst: &mut BytesMut, len: usize) -> AsResult<usize> {
+        let len_len = get_len_len(len);
+        // TODO make it more effecetive
+        let buf = format!("{}", len);
+        dst.put(buf.as_bytes());
+        Ok(len_len)
     }
 
     pub fn cmd_bytes(&self) -> &[u8] {
@@ -242,7 +302,9 @@ impl Decoder for RespCodec {
                 ev => Err(ev),
             })?;
         if let Some(resp) = item {
-            src.advance(resp.binary_size());
+            let bsize = resp.binary_size();
+            trace!("decode read bytes size {}", bsize);
+            src.advance(bsize);
             return Ok(Some(resp));
         }
         Ok(None)
@@ -258,4 +320,24 @@ impl Encoder for RespCodec {
         trace!("encode write bytes size {}", size);
         Ok(())
     }
+}
+
+fn get_len_len(mut len: usize) -> usize {
+    let mut len_len = 0;
+    loop {
+        if len < 10 {
+            len_len += 1;
+            break;
+        } else if len < 100 {
+            len_len += 2;
+            break;
+        } else if len < 1000 {
+            len_len += 3;
+            break;
+        } else {
+            len_len += 3;
+            len /= 1000;
+        }
+    }
+    return len_len;
 }

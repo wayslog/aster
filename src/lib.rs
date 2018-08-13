@@ -22,11 +22,13 @@ pub mod com;
 pub mod handler;
 pub mod resp;
 pub mod slots;
-use cmd::Cmd;
+use cmd::{Cmd, CmdCodec};
 pub use com::*;
+use handler::Handler;
 use resp::{Resp, RespCodec};
 use slots::SlotsMap;
 
+use futures::lazy;
 use futures::sync::mpsc::{channel, Receiver, Sender};
 use futures::{Async, AsyncSink};
 use tokio::executor::current_thread;
@@ -37,14 +39,61 @@ use tokio_codec::Decoder;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::rc::Rc;
 
 const MUSK: u16 = 0x3fff;
 
 pub fn run() -> Result<(), ()> {
+    env_logger::init();
+    info!("start asswecan");
+    proxy();
     Ok(())
 }
 
-pub fn proxy() {}
+pub fn proxy() {
+    let slots_data = r#"f43cbe589d47d409bdf14624d950014a32e03a78 127.0.0.1:7013@17013 slave 9a44630c1dbbf7c116e90f21d1746198d3a1305a 0 1534150532241 35 connected
+2f84714c64297a241d7701b72ec2d9b53b173d86 127.0.0.1:7014@17014 slave 768595f1a4b657315916893cae9e9ab355cd55f7 0 1534150530000 5 connected
+9a44630c1dbbf7c116e90f21d1746198d3a1305a 127.0.0.1:7010@17010 myself,master - 0 1534150529000 35 connected 0-5460
+480ca425ee0e990108115e7da97450bf72246552 127.0.0.1:7012@17012 master - 0 1534150530227 36 connected 10923-16383
+c1ceb9b25a4aa7102acdc546182bf2d855b357f1 127.0.0.1:7015@17015 slave 480ca425ee0e990108115e7da97450bf72246552 0 1534150531235 36 connected
+768595f1a4b657315916893cae9e9ab355cd55f7 127.0.0.1:7011@17011 master - 0 1534150529219 2 connected 5461-10922"#;
+    let mut smap = SlotsMap::default();
+    smap.try_update_all(slots_data.as_bytes());
+
+    let cluster = Cluster {
+        cc: ClusterConfig {
+            bind: "0.0.0.0:9001".to_string(),
+            cache_type: CacheType::RedisCluster,
+        },
+        slots: RefCell::new(smap),
+    };
+
+    let addr = cluster
+        .cc
+        .bind
+        .clone()
+        .parse::<SocketAddr>()
+        .expect("parse socket never fail");
+
+    let listen = TcpListener::bind(&addr).expect("bind never fail");
+    info!("success listen at {}", &cluster.cc.bind);
+    let rc_cluster = Rc::new(cluster);
+    let amt = listen
+        .incoming()
+        .for_each(|sock| {
+            let codec = CmdCodec::default();
+            let (cmd_tx, cmd_rx) = codec.framed(sock).split();
+            let cluster = rc_cluster.clone();
+            let handler = Handler::new(cluster, cmd_rx, cmd_tx).map_err(|err| {
+                error!("fail to create new handler due {:?}", err);
+            });
+            current_thread::spawn(handler);
+            Ok(())
+        }).map_err(|err| {
+            error!("fail to proxy due {:?}", err);
+        });
+    current_thread::block_on_all(amt).unwrap();
+}
 
 #[allow(unused)]
 pub struct Config {
@@ -108,46 +157,31 @@ impl Cluster {
         Ok(())
     }
 
-    #[allow(unused)]
-    fn create_remote(&self) {
-        let (tx, rx) = channel::<String>(16);
-        let (esend, erecv) = channel::<Endpoint>(1024);
-
-        let amt = rx
-            .map_err(|err| {
-                error!("fail to receive new node {:?}", err);
-            }).and_then(|node| {
-                info!("add new connection to addr {}", &node);
-                node.parse()
+    pub fn create_node_conn(&self, node: &str) -> AsResult<Sender<Cmd>> {
+        let addr_string = node.to_string();
+        let nc_string = node.to_string();
+        let (tx, rx): (Sender<Cmd>, Receiver<Cmd>) = channel(10240);
+        let ret_tx = tx.clone();
+        let amt = lazy(|| -> Result<(), ()> { Ok(()) })
+            .and_then(move |_| {
+                addr_string
+                    .as_str()
+                    .parse()
                     .map_err(|err| error!("fail to parse addr {:?}", err))
             }).and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-            }).zip(erecv)
-            .and_then(|(sock, endpoint)| {
-                info!("create new socket with endpoint");
-                let rc = RespCodec {};
-                let (sink, stream) = rc.framed(sock).split();
-                let Endpoint { send, recv } = endpoint;
-                // TODO: add Endpoint types
-                let down = sink
-                    .send_all(recv.map_err(|_emptyerr| Error::None))
-                    .map(|_| trace!("down stream completed"))
-                    .map_err(|err| error!("fail to send to backend node {:?}", err));
-                current_thread::spawn(down);
-                let up = stream
-                    .forward(send)
-                    .map(|_| trace!("up stream completed"))
-                    .map_err(|err| error!("fail to recv and forward from backend node {:?}", err));
-                current_thread::spawn(up);
-                Ok(())
-            }).for_each(|_| Ok(()));
+            }).and_then(|sock| {
+                let codec = RespCodec {};
+                let (sink, stream) = codec.framed(sock).split();
+                let arx = rx.map_err(|err| {
+                    info!("fail to send due to {:?}", err);
+                    Error::Critical
+                });
+                let nc = NodeConn::new(nc_string, sink, stream, arx, tx);
+                nc.map_err(|err| error!("fail with error {:?}", err))
+            });
         current_thread::spawn(amt);
-    }
-
-    pub fn create_node_conn(&self, node: &str) -> AsResult<Sender<Cmd>> {
-        let _addr = node.parse::<SocketAddr>()?;
-
-        Err(Error::None)
+        Ok(ret_tx)
     }
 
     pub fn dispatch(&self, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
@@ -157,9 +191,20 @@ impl Cluster {
             let addr = slots_map.get_addr(slot);
             {
                 let sender_opt = slots_map.get_sender_by_addr(&addr);
+                trace!("dispatch one command for addr {:?}", sender_opt);
                 if let Some(sender) = sender_opt {
                     match sender.start_send(cmd) {
-                        Ok(v) => return Ok(v),
+                        Ok(AsyncSink::NotReady(v)) => {
+                            return Ok(AsyncSink::NotReady(v));
+                        }
+                        Ok(AsyncSink::Ready) => {
+                            return sender
+                                .poll_complete()
+                                .map_err(|err| {
+                                    error!("fail to complete send cmd to node conn due {:?}", err);
+                                    Error::Critical
+                                }).map(|_| AsyncSink::Ready)
+                        }
                         Err(err) => {
                             trace!("send fail with send error: {:?}", err);
                             return Err(Error::Critical);
@@ -172,11 +217,6 @@ impl Cluster {
             slots_map.add_node(addr, tx);
         }
     }
-}
-
-pub struct Endpoint {
-    send: Sender<Resp>,
-    recv: Receiver<Resp>,
 }
 
 pub enum NodeConnState {
@@ -217,10 +257,8 @@ where
 {
     pub fn new(
         node: String,
-        // socket: TcpStream,
         node_tx: NO,
         node_rx: NI,
-
         input: S,
         resender: O,
     ) -> NodeConn<S, O, NI, NO> {
@@ -265,16 +303,23 @@ where
                         Async::Ready(Some(v)) => {
                             self.buffered.push_back(v);
                         }
-                        Async::Ready(None) => {
+                        Async::NotReady => {
+                            if self.buffered.len() == 0 {
+                                return Ok(Async::NotReady);
+                            }
                             self.state = NodeConnState::Send;
                         }
-                        Async::NotReady => {
-                            self.state = NodeConnState::Send;
+
+                        Async::Ready(None) => {
+                            self.cursor += 1;
                         }
                     }
                 }
                 NodeConnState::Send => {
                     if self.cursor == self.buffered.len() {
+                        self.node_tx.poll_complete().map_err(|err| {
+                            error!("fail to poll complete cmd resp {:?}", err);
+                        })?;
                         self.state = NodeConnState::Wait;
                         self.cursor = 0;
                         continue;
@@ -282,7 +327,11 @@ where
 
                     let cursor = self.cursor;
                     let cmd = self.buffered.get(cursor).cloned().expect("cmd must exists");
-
+                    trace!(
+                        "trying to send into backend with cursor={} and buffered={}",
+                        cursor,
+                        self.buffered.len()
+                    );
                     match self
                         .node_tx
                         .start_send(cmd.borrow().req.clone())
@@ -290,9 +339,7 @@ where
                             error!("fail to start send cmd resp {:?}", err);
                         })? {
                         AsyncSink::NotReady(_) => {
-                            self.node_tx.poll_complete().map_err(|err| {
-                                error!("fail to poll complete cmd resp {:?}", err);
-                            })?;
+                            trace!("fail to send due to chan is full");
                         }
                         AsyncSink::Ready => {
                             self.cursor += 1;
@@ -305,8 +352,8 @@ where
                         self.state = NodeConnState::Return;
                         continue;
                     }
-                    let cursor = self.cursor;
 
+                    let cursor = self.cursor;
                     if let Some(resp) = try_ready!(self.node_rx.poll().map_err(|err| {
                         error!("fail to recv reply from node conn {:?}", err);
                     })) {

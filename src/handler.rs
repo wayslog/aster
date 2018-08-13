@@ -31,6 +31,16 @@ where
     I: Stream<Item = Cmd, Error = Error>,
     O: Sink<SinkItem = Cmd, SinkError = Error>,
 {
+    pub fn new(cluster: Rc<Cluster>, input: I, output: O) -> Self {
+        Handler {
+            cluster: cluster,
+            input: input,
+            output: output,
+            cmd: None,
+            state: State::Void,
+        }
+    }
+
     fn try_write_back(&mut self, cmd: Cmd) -> Result<Async<()>, Error> {
         if let AsyncSink::NotReady(_) = self.output.start_send(cmd)? {
             return Ok(Async::NotReady);
@@ -58,6 +68,7 @@ where
         loop {
             match self.state {
                 State::Void => {
+                    trace!("handler is collecting");
                     if let Some(rc_cmd) = try_ready!(self.input.poll()) {
                         self.cmd = Some(rc_cmd);
                         self.state = State::Batching;
@@ -66,6 +77,7 @@ where
                     return Ok(Async::NotReady);
                 }
                 State::Batching => {
+                    trace!("handler is batching");
                     let rc_cmd = self.fork_cmd();
                     let rslt = self.cluster.dispatch(rc_cmd.clone())?;
                     match rslt {
@@ -74,6 +86,7 @@ where
                     };
                 }
                 State::Writing => {
+                    trace!("handler is writing");
                     let rc_cmd = self.fork_cmd();
                     if !rc_cmd.borrow().is_done() {
                         return Ok(Async::NotReady);
