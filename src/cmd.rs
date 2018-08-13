@@ -48,7 +48,7 @@ impl Command {
     fn inner_from_resp(mut resp: Resp) -> Command {
         let local_task = task::current();
         Self::cmd_to_upper(&mut resp);
-        let cmd_type = Self::get_cmd_type(&resp);
+        let cmd_type = Self::get_resp_cmd_type(&resp);
         let is_complex = Self::is_resp_complex(&resp);
         let crc = Self::crc16(&resp);
 
@@ -91,7 +91,7 @@ impl Command {
         CMD_COMPLEX.contains(&cmd.data.as_ref().expect("never null")[..])
     }
 
-    fn get_cmd_type(resp: &Resp) -> CmdType {
+    fn get_resp_cmd_type(resp: &Resp) -> CmdType {
         let cmd = resp.get(0).expect("never be empty");
         if let Some(&ctype) = CMD_TYPE.get(&cmd.data.as_ref().expect("never null")[..]) {
             return ctype;
@@ -120,6 +120,10 @@ impl Command {
 
     pub fn subs(&self) -> &[Cmd] {
         self.sub_reqs.as_ref().expect("call subs never fail")
+    }
+
+    pub fn get_cmd_type(&self) -> CmdType {
+        self.cmd_type
     }
 
     fn mksubs(&mut self) {
@@ -211,7 +215,7 @@ impl Command {
         self.task.notify();
     }
 
-    fn done_with_error(&mut self, err: &Resp) {
+    pub fn done_with_error(&mut self, err: &Resp) {
         self.reply = Some(err.clone());
         self.is_done = true;
         //TODO: ignore if task current.
@@ -407,6 +411,11 @@ lazy_static!{
 
         hmap
     };
+
+    pub static ref RESP_OBJ_ERROR_NOT_SUPPORT: Resp =
+    {
+
+        Resp::new_plain(RESP_ERROR, Some("unsupported command".as_bytes().to_vec())) };
 
     pub static ref RESP_OBJ_BULK_GET: Resp =
     {

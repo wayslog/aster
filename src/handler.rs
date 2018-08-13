@@ -1,4 +1,4 @@
-use cmd::Cmd;
+use cmd::{Cmd, CmdType, RESP_OBJ_ERROR_NOT_SUPPORT};
 use com::*;
 use std::rc::Rc;
 use Cluster;
@@ -79,11 +79,22 @@ where
                 State::Batching => {
                     trace!("handler is batching");
                     let rc_cmd = self.fork_cmd();
-                    let rslt = self.cluster.dispatch(rc_cmd.clone())?;
-                    match rslt {
-                        AsyncSink::NotReady(_) => return Ok(Async::NotReady),
-                        AsyncSink::Ready => self.state = State::Writing,
-                    };
+                    let cmd_type = rc_cmd.borrow().get_cmd_type();
+                    match cmd_type {
+                        CmdType::NotSupport | CmdType::Ctrl => {
+                            rc_cmd
+                                .borrow_mut()
+                                .done_with_error(&RESP_OBJ_ERROR_NOT_SUPPORT);
+                            self.state = State::Writing;
+                        }
+                        _ => {
+                            let rslt = self.cluster.dispatch(rc_cmd.clone())?;
+                            match rslt {
+                                AsyncSink::NotReady(_) => return Ok(Async::NotReady),
+                                AsyncSink::Ready => self.state = State::Writing,
+                            };
+                        }
+                    }
                 }
                 State::Writing => {
                     trace!("handler is writing");
