@@ -13,6 +13,7 @@ extern crate lazy_static;
 extern crate btoi;
 extern crate crc16;
 extern crate itoa;
+extern crate net2;
 extern crate tokio_codec;
 extern crate tokio_io;
 
@@ -38,17 +39,28 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::Decoder;
 
+use net2::unix::UnixTcpBuilderExt;
+use net2::TcpBuilder;
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::thread;
 
 const MUSK: u16 = 0x3fff;
 
 pub fn run() -> Result<(), ()> {
     env_logger::init();
     info!("start asswecan");
-    proxy();
+    let ths: Vec<_> = (0..4)
+        .into_iter()
+        .map(|_| thread::spawn(move || proxy()))
+        .collect();
+
+    for th in ths {
+        th.join().unwrap();
+    }
     Ok(())
 }
 
@@ -78,7 +90,7 @@ c1ceb9b25a4aa7102acdc546182bf2d855b357f1 127.0.0.1:7015@17015 slave 480ca425ee0e
         .parse::<SocketAddr>()
         .expect("parse socket never fail");
 
-    let listen = TcpListener::bind(&addr).expect("bind never fail");
+    let listen = create_reuse_port_listener(&addr).expect("bind never fail");
     info!("success listen at {}", &cluster.cc.bind);
     let rc_cluster = Rc::new(cluster);
     let amt = listen
@@ -96,6 +108,19 @@ c1ceb9b25a4aa7102acdc546182bf2d855b357f1 127.0.0.1:7015@17015 slave 480ca425ee0e
             error!("fail to proxy due {:?}", err);
         });
     current_thread::block_on_all(amt).unwrap();
+}
+
+fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io::Error> {
+    let builder = TcpBuilder::new_v4()?;
+    let std_listener = builder
+        .reuse_address(true)
+        .expect("os not support SO_REUSEADDR")
+        .reuse_port(true)
+        .expect("os not support SO_REUSEPORT")
+        .bind(addr)?
+        .listen(std::i32::MAX)?;
+    let hd = tokio::reactor::Handle::current();
+    TcpListener::from_std(std_listener, &hd)
 }
 
 #[allow(unused)]
