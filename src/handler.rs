@@ -4,6 +4,7 @@ use std::rc::Rc;
 use Cluster;
 
 // use aho_corasick::{AcAutomaton, Automaton, Match};
+use std::collections::VecDeque;
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
 
 pub enum State {
@@ -23,6 +24,7 @@ where
     output: O,
 
     cmd: Option<Cmd>,
+    subs: VecDeque<Cmd>,
     state: State,
 }
 
@@ -37,6 +39,7 @@ where
             input: input,
             output: output,
             cmd: None,
+            subs: VecDeque::new(),
             state: State::Void,
         }
     }
@@ -70,6 +73,14 @@ where
                 State::Void => {
                     trace!("handler is collecting");
                     if let Some(rc_cmd) = try_ready!(self.input.poll()) {
+                        if rc_cmd.borrow().is_complex() {
+                            self.subs = rc_cmd
+                                .borrow()
+                                .sub_reqs
+                                .as_ref()
+                                .map(|x| x.iter().map(Clone::clone).collect())
+                                .expect("complex commands must have subs");
+                        }
                         self.cmd = Some(rc_cmd);
                         self.state = State::Batching;
                         continue;
@@ -88,11 +99,30 @@ where
                             self.state = State::Writing;
                         }
                         _ => {
-                            let rslt = self.cluster.dispatch(rc_cmd.clone())?;
-                            match rslt {
-                                AsyncSink::NotReady(_) => return Ok(Async::NotReady),
-                                AsyncSink::Ready => self.state = State::Writing,
-                            };
+                            if rc_cmd.borrow().is_complex() {
+                                // 从 subs 里面读并pop 直到pop结束
+                                loop {
+                                    if self.subs.len() == 0 {
+                                        self.state = State::Writing;
+                                        break;
+                                    }
+
+                                    match self.cluster.dispatch(
+                                        self.subs
+                                            .pop_front()
+                                            .expect("subs must contains more than one cmd"),
+                                    )? {
+                                        AsyncSink::NotReady(_) => return Ok(Async::NotReady),
+                                        AsyncSink::Ready => continue,
+                                    }
+                                }
+                            } else {
+                                let rslt = self.cluster.dispatch(rc_cmd)?;
+                                match rslt {
+                                    AsyncSink::NotReady(_) => return Ok(Async::NotReady),
+                                    AsyncSink::Ready => self.state = State::Writing,
+                                };
+                            }
                         }
                     }
                 }
@@ -102,6 +132,7 @@ where
                     if !rc_cmd.borrow().is_done() {
                         return Ok(Async::NotReady);
                     }
+                    trace!("cmd all done");
                     try_ready!(self.try_write_back(rc_cmd.clone()));
                     self.state = State::Void
                 }

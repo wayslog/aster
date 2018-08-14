@@ -85,9 +85,16 @@ impl Resp {
     }
 
     pub fn new_array(array: Option<Vec<Resp>>) -> Resp {
+        let data: Option<Vec<u8>> = if array.is_some() {
+            let array_len = array.as_ref().unwrap().len();
+            Some(format!("{}", array_len).as_bytes().to_vec())
+        } else {
+            None
+        };
+
         Resp {
             rtype: RESP_ARRAY,
-            data: None,
+            data: data,
             array: array,
         }
     }
@@ -206,7 +213,7 @@ impl Resp {
         }
     }
 
-    fn write_len(dst: &mut BytesMut, len: usize) -> AsResult<usize> {
+    pub fn write_len(dst: &mut BytesMut, len: usize) -> AsResult<usize> {
         let len_len = get_len_len(len);
         // TODO make it more effecetive
         let buf = format!("{}", len);

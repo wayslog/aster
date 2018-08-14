@@ -1,9 +1,10 @@
 // use bytes::BufMut;
-use bytes::BytesMut;
+use btoi;
+use bytes::{BufMut, BytesMut};
 use com::*;
 use crc16;
 use resp::RespCodec;
-use resp::{Resp, RESP_BULK, RESP_ERROR};
+use resp::{Resp, BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT};
 use tokio_codec::{Decoder, Encoder};
 
 use futures::task::{self, Task};
@@ -100,12 +101,14 @@ impl Command {
     }
 
     fn crc16(resp: &Resp) -> u16 {
-        let cmd = resp.get(1).expect("never be empty");
-        let mut state = crc16::State::<crc16::XMODEM>::new();
-        let data = &cmd.data.as_ref().expect("never null")[..];
-        trace!("crc value {}", String::from_utf8_lossy(data));
-        state.update(data);
-        state.get() & MUSK
+        if let Some(cmd) = resp.get(1) {
+            let mut state = crc16::State::<crc16::XMODEM>::new();
+            let data = &cmd.data.as_ref().expect("never null")[..];
+            trace!("crc value {}", String::from_utf8_lossy(data));
+            state.update(data);
+            return state.get() & MUSK;
+        }
+        ::std::u16::MAX
     }
 }
 
@@ -134,7 +137,7 @@ impl Command {
         if self.req.cmd_bytes() == b"MSET" {
             return self.mk_mset();
         } else if self.req.cmd_bytes() == b"EVAL" {
-            self.mk_eval();
+            return self.mk_eval();
         }
         return self.mk_by_keys();
     }
@@ -161,13 +164,11 @@ impl Command {
                 let key = x[0].clone();
                 let val = x[1].clone();
                 Resp::new_array(Some(vec![RESP_OBJ_BULK_SET.clone(), key, val]))
-            })
-            .map(|resp| {
+            }).map(|resp| {
                 let mut cmd = Command::inner_from_resp(resp);
                 cmd.is_complex = is_complex;
                 Rc::new(RefCell::new(cmd))
-            })
-            .collect();
+            }).collect();
 
         self.sub_reqs = Some(subcmds);
     }
@@ -187,23 +188,32 @@ impl Command {
         let cmd = iter.next().expect("cmd must be contains");
         let cmd = Self::get_single_cmd(cmd);
 
-        let subcmds: Vec<Cmd> =
-            iter.map(|arg| {
+        let subcmds: Vec<Cmd> = iter
+            .map(|arg| {
                 let mut arr = Vec::with_capacity(2);
                 arr.push(cmd.clone());
                 arr.push(arg);
                 Resp::new_array(Some(arr))
             }).map(|resp| {
-                    let mut cmd = Command::inner_from_resp(resp);
-                    cmd.is_complex = self.is_complex;
-                    cmd.task = self.task.clone();
-                    Rc::new(RefCell::new(cmd))
-                })
-                .collect();
+                let mut cmd = Command::inner_from_resp(resp);
+                cmd.is_complex = self.is_complex;
+                // cmd.task = self.task.clone();
+                Rc::new(RefCell::new(cmd))
+            }).collect();
         self.sub_reqs = Some(subcmds);
     }
 
     pub fn is_done(&self) -> bool {
+        if self.is_complex() {
+            if let Some(subs) = self.sub_reqs.as_ref() {
+                for sub in subs {
+                    if !sub.borrow().is_done() {
+                        return false;
+                    }
+                }
+                return true;
+            }
+        }
         self.is_done
     }
 
@@ -453,6 +463,43 @@ pub struct CmdCodec {
     rc: RespCodec,
 }
 
+impl CmdCodec {
+    fn merge_encode_count(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
+        let mut sum = 0;
+        for subcmd in subs {
+            let mut reply = None;
+            mem::swap(&mut reply, &mut subcmd.borrow_mut().reply);
+            let subresp = reply.expect("subreply must be some resp but None");
+            if subresp.rtype == RESP_ERROR {
+                // should swallow the error and convert as 0 count of key.
+                continue;
+            }
+            debug_assert_eq!(subresp.rtype, RESP_INT);
+            let count_bs = subresp.data.as_ref().expect("resp_int data must be some");
+            let count = btoi::btoi::<i64>(count_bs)?;
+            sum += count;
+        }
+        let buf = format!("{}", sum);
+        Ok(dst.put(buf.as_bytes()))
+    }
+
+    fn merge_encode_ok(&mut self, _subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
+        Ok(dst.put(&b"+OK\r\n"[..]))
+    }
+
+    fn merge_encode_join(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
+        let count = subs.len();
+        dst.put_u8(RESP_ARRAY);
+        let buf = format!("{}", count);
+        dst.put(buf.as_bytes());
+        dst.put(BYTES_CRLF);
+        for sub in subs {
+            self.encode(sub, dst)?;
+        }
+        Ok(())
+    }
+}
+
 impl Decoder for CmdCodec {
     type Item = Cmd;
     type Error = Error;
@@ -474,9 +521,29 @@ impl Encoder for CmdCodec {
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         // TODO: merge response for complex commands.
         let mut item_borrow = item.borrow_mut();
+        if item_borrow.is_complex() {
+            if let Some(subreqs) = item_borrow.sub_reqs.as_ref().cloned() {
+                let cmd_bytes = item_borrow.req.cmd_bytes().to_vec();
+                if &cmd_bytes[..] == b"MSET" {
+                    return self.merge_encode_ok(subreqs, dst);
+                } else if &cmd_bytes[..] == b"EVAL" {
+                    return self.merge_encode_join(subreqs, dst);
+                } else if &cmd_bytes[..] == b"EXISTS" {
+                    return self.merge_encode_count(subreqs, dst);
+                } else if &cmd_bytes[..] == b"DEL" {
+                    return self.merge_encode_count(subreqs, dst);
+                } else if &cmd_bytes[..] == b"MGET" {
+                    return self.merge_encode_join(subreqs, dst);
+                } else {
+                    unreachable!();
+                }
+            }
+        }
+
         let mut rslt = None;
         mem::swap(&mut rslt, &mut item_borrow.reply);
-        self.rc.encode(rslt.expect("never empty"), dst)
+        let reply = rslt.expect("reply never empty");
+        self.rc.encode(reply, dst)
     }
 }
 
