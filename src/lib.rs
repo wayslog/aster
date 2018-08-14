@@ -17,6 +17,7 @@ extern crate net2;
 extern crate tokio_codec;
 extern crate tokio_io;
 
+pub mod fetcher;
 pub mod cluster;
 pub mod cmd;
 pub mod com;
@@ -29,6 +30,7 @@ pub use com::*;
 use handler::Handler;
 use resp::{Resp, RespCodec, RESP_BULK};
 use slots::SlotsMap;
+use fetcher::Fetcher;
 
 use futures::lazy;
 use futures::sync::mpsc::{channel, Receiver, Sender};
@@ -59,6 +61,7 @@ pub fn run() -> Result<(), ()> {
             cache_type: CacheType::RedisCluster,
             servers: vec!["127.0.0.1:7010".to_string(), "127.0.0.1:7011".to_string()],
             thread: 4,
+            fetch: 30*60,
         }],
     };
 
@@ -117,7 +120,19 @@ pub fn proxy(cluster: Cluster) {
                 error!("fail to init cluster with given server due {:?}", err);
             });
             initilizer
-        }).and_then(|(cluster, listen)| {
+        })
+        .and_then(|(cluster, listen)|{
+            let fetcher = Fetcher::new(cluster.clone())
+                .for_each(|_|{
+                    debug!("success fetch new slots_map ok");
+                    Ok(())
+                }).map_err(|err|{
+                    error!("fail to fetch new slots_mapd due {:?}", err);
+                });
+            current_thread::spawn(fetcher);
+            Ok((cluster, listen))
+        })
+        .and_then(|(cluster, listen)| {
             let rc_cluster = cluster.clone();
             let amt = listen
                 .incoming()
@@ -172,11 +187,12 @@ pub struct ClusterConfig {
     pub cache_type: CacheType,
     pub servers: Vec<String>,
     pub thread: usize,
+    pub fetch: u64,
 }
 
 pub struct Cluster {
-    cc: ClusterConfig,
-    slots: RefCell<SlotsMap>,
+    pub cc: ClusterConfig,
+    pub slots: RefCell<SlotsMap>,
 }
 
 impl Cluster {
@@ -359,6 +375,7 @@ where
                         }
                     }
                 }
+
                 NodeConnState::Send => {
                     if self.cursor == self.buffered.len() {
                         self.node_tx.poll_complete().map_err(|err| {
