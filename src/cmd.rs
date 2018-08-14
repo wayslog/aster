@@ -557,7 +557,10 @@ impl Default for CmdCodec {
 }
 
 pub fn new_cluster_nodes_cmd() -> Cmd {
-    let req = Resp::new_array(Some(vec![Resp::new_plain(RESP_BULK, Some(b"".to_vec()))]));
+    let req = Resp::new_array(Some(vec![
+        Resp::new_plain(RESP_BULK, Some(b"CLUSTER".to_vec())),
+        Resp::new_plain(RESP_BULK, Some(b"NODES".to_vec())),
+    ]));
     let cmd = Command {
         is_done: false,
         is_ask: false,

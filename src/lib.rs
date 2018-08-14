@@ -24,10 +24,10 @@ pub mod handler;
 pub mod resp;
 pub mod slots;
 
-use cmd::{Cmd, CmdCodec};
+use cmd::{new_cluster_nodes_cmd, Cmd, CmdCodec};
 pub use com::*;
 use handler::Handler;
-use resp::{Resp, RespCodec};
+use resp::{Resp, RespCodec, RESP_BULK};
 use slots::SlotsMap;
 
 use futures::lazy;
@@ -53,9 +53,20 @@ const MUSK: u16 = 0x3fff;
 pub fn run() -> Result<(), ()> {
     env_logger::init();
     info!("start asswecan");
-    let ths: Vec<_> = (0..4)
-        .into_iter()
-        .map(|_| thread::spawn(move || proxy()))
+    let config = Config {
+        clusters: vec![ClusterConfig {
+            bind: "0.0.0.0:9001".to_string(),
+            cache_type: CacheType::RedisCluster,
+            servers: vec!["127.0.0.1:7010".to_string(), "127.0.0.1:7011".to_string()],
+            thread: 4,
+        }],
+    };
+
+    let ths: Vec<_> = config
+        .clusters
+        .iter()
+        .map(|cc| create_cluster(cc))
+        .flatten()
         .collect();
 
     for th in ths {
@@ -64,25 +75,24 @@ pub fn run() -> Result<(), ()> {
     Ok(())
 }
 
-pub fn proxy() {
-    let slots_data = r#"f43cbe589d47d409bdf14624d950014a32e03a78 127.0.0.1:7013@17013 slave 9a44630c1dbbf7c116e90f21d1746198d3a1305a 0 1534150532241 35 connected
-2f84714c64297a241d7701b72ec2d9b53b173d86 127.0.0.1:7014@17014 slave 768595f1a4b657315916893cae9e9ab355cd55f7 0 1534150530000 5 connected
-9a44630c1dbbf7c116e90f21d1746198d3a1305a 127.0.0.1:7010@17010 myself,master - 0 1534150529000 35 connected 0-5460
-480ca425ee0e990108115e7da97450bf72246552 127.0.0.1:7012@17012 master - 0 1534150530227 36 connected 10923-16383
-c1ceb9b25a4aa7102acdc546182bf2d855b357f1 127.0.0.1:7015@17015 slave 480ca425ee0e990108115e7da97450bf72246552 0 1534150531235 36 connected
-768595f1a4b657315916893cae9e9ab355cd55f7 127.0.0.1:7011@17011 master - 0 1534150529219 2 connected 5461-10922"#;
-    let mut smap = SlotsMap::default();
-    smap.try_update_all(slots_data.as_bytes());
+pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
+    let count = cc.thread;
+    (0..count)
+        .into_iter()
+        .map(|_| {
+            let cc = cc.clone();
+            thread::spawn(move || {
+                let smap = SlotsMap::default();
+                let cluster = Cluster {
+                    cc: cc,
+                    slots: RefCell::new(smap),
+                };
+                proxy(cluster)
+            })
+        }).collect()
+}
 
-    let cluster = Cluster {
-        cc: ClusterConfig {
-            bind: "0.0.0.0:9001".to_string(),
-            cache_type: CacheType::RedisCluster,
-            servers: vec!["127.0.0.1:7010".to_string(), "127.0.0.1:7011".to_string()],
-        },
-        slots: RefCell::new(smap),
-    };
-
+pub fn proxy(cluster: Cluster) {
     let addr = cluster
         .cc
         .bind
@@ -90,24 +100,44 @@ c1ceb9b25a4aa7102acdc546182bf2d855b357f1 127.0.0.1:7015@17015 slave 480ca425ee0e
         .parse::<SocketAddr>()
         .expect("parse socket never fail");
 
-    let listen = create_reuse_port_listener(&addr).expect("bind never fail");
-    info!("success listen at {}", &cluster.cc.bind);
-    let rc_cluster = Rc::new(cluster);
-    let amt = listen
-        .incoming()
-        .for_each(|sock| {
-            let codec = CmdCodec::default();
-            let (cmd_tx, cmd_rx) = codec.framed(sock).split();
-            let cluster = rc_cluster.clone();
-            let handler = Handler::new(cluster, cmd_rx, cmd_tx).map_err(|err| {
-                error!("fail to create new handler due {:?}", err);
+    let fut = lazy(move || -> Result<(SocketAddr, Cluster), ()> { Ok((addr, cluster)) })
+        .and_then(|(addr, mut cluster)| {
+            let listen = create_reuse_port_listener(&addr).expect("bind never fail");
+            info!("success listen at {}", &cluster.cc.bind);
+            cluster.init_node_conn().unwrap();
+            let servers = cluster.cc.servers.clone();
+            let initilizer = ClusterInitilizer {
+                cluster: Rc::new(cluster),
+                listen: Some(listen),
+                servers: servers,
+                cursor: 0,
+                info_cmd: new_cluster_nodes_cmd(),
+                state: InitState::Pend,
+            }.map_err(|err| {
+                error!("fail to init cluster with given server due {:?}", err);
             });
-            current_thread::spawn(handler);
+            initilizer
+        }).and_then(|(cluster, listen)| {
+            let rc_cluster = cluster.clone();
+            let amt = listen
+                .incoming()
+                .for_each(move |sock| {
+                    let codec = CmdCodec::default();
+                    let (cmd_tx, cmd_rx) = codec.framed(sock).split();
+                    let cluster = rc_cluster.clone();
+                    let handler = Handler::new(cluster, cmd_rx, cmd_tx).map_err(|err| {
+                        error!("fail to create new handler due {:?}", err);
+                    });
+                    current_thread::spawn(handler);
+                    Ok(())
+                }).map_err(|err| {
+                    error!("fail to proxy due {:?}", err);
+                });
+            current_thread::spawn(amt);
             Ok(())
-        }).map_err(|err| {
-            error!("fail to proxy due {:?}", err);
         });
-    current_thread::block_on_all(amt).unwrap();
+
+    current_thread::block_on_all(fut).unwrap();
 }
 
 fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io::Error> {
@@ -128,7 +158,7 @@ pub struct Config {
     clusters: Vec<ClusterConfig>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum CacheType {
     Redis,
     Memcache,
@@ -136,10 +166,12 @@ pub enum CacheType {
     RedisCluster,
 }
 
+#[derive(Clone)]
 pub struct ClusterConfig {
     pub bind: String,
     pub cache_type: CacheType,
     pub servers: Vec<String>,
+    pub thread: usize,
 }
 
 pub struct Cluster {
@@ -148,13 +180,14 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    pub fn init_slots_map(&mut self) -> Result<(), Error> {
+    pub fn init_node_conn(&mut self) -> Result<(), Error> {
         // let cmd = new_cluster_nodes_cmd();
         let mut slots_map = self.slots.borrow_mut();
         for addr in &self.cc.servers {
             let tx = self.create_node_conn(&addr)?;
-            slots_map.add_node(addr.clone(), tx);
+            slots_map.add_node(addr.clone(), tx.clone());
         }
+
         Ok(())
     }
 
@@ -185,34 +218,45 @@ impl Cluster {
         Ok(ret_tx)
     }
 
+    fn try_dispatch(sender: &mut Sender<Cmd>, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
+        match sender.start_send(cmd) {
+            Ok(AsyncSink::NotReady(v)) => {
+                return Ok(AsyncSink::NotReady(v));
+            }
+            Ok(AsyncSink::Ready) => {
+                return sender
+                    .poll_complete()
+                    .map_err(|err| {
+                        error!("fail to complete send cmd to node conn due {:?}", err);
+                        Error::Critical
+                    }).map(|_| AsyncSink::Ready)
+            }
+            Err(err) => {
+                error!("send fail with send error: {:?}", err);
+                return Err(Error::Critical);
+            }
+        }
+    }
+
+    pub fn execute(&self, node: &String, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
+        loop {
+            let mut slots_map = self.slots.borrow_mut();
+            if let Some(sender) = slots_map.get_sender_by_addr(node) {
+                return Cluster::try_dispatch(sender, cmd);
+            }
+            let tx = self.create_node_conn(node)?;
+            slots_map.add_node(node.clone(), tx);
+        }
+    }
+
     pub fn dispatch(&self, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
         let slot = (cmd.borrow().crc() & MUSK) as usize;
         loop {
             let mut slots_map = self.slots.borrow_mut();
             let addr = slots_map.get_addr(slot);
-            {
-                let sender_opt = slots_map.get_sender_by_addr(&addr);
-                if let Some(sender) = sender_opt {
-                    match sender.start_send(cmd) {
-                        Ok(AsyncSink::NotReady(v)) => {
-                            return Ok(AsyncSink::NotReady(v));
-                        }
-                        Ok(AsyncSink::Ready) => {
-                            return sender
-                                .poll_complete()
-                                .map_err(|err| {
-                                    error!("fail to complete send cmd to node conn due {:?}", err);
-                                    Error::Critical
-                                }).map(|_| AsyncSink::Ready)
-                        }
-                        Err(err) => {
-                            error!("send fail with send error: {:?}", err);
-                            return Err(Error::Critical);
-                        }
-                    }
-                }
+            if let Some(sender) = slots_map.get_sender_by_addr(&addr) {
+                return Cluster::try_dispatch(sender, cmd);
             }
-
             let tx = self.create_node_conn(&addr)?;
             slots_map.add_node(addr, tx);
         }
@@ -414,6 +458,70 @@ where
                     }
                 }
                 Err(err) => return Err(err),
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InitState {
+    Pend,
+    Wait,
+}
+
+#[allow(unused)]
+pub struct ClusterInitilizer {
+    cluster: Rc<Cluster>,
+    listen: Option<TcpListener>,
+    servers: Vec<String>,
+    cursor: usize,
+    info_cmd: Cmd,
+    state: InitState,
+}
+
+impl Future for ClusterInitilizer {
+    type Item = (Rc<Cluster>, TcpListener);
+    type Error = Error;
+
+    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        loop {
+            match self.state {
+                InitState::Pend => {
+                    let cursor = self.cursor;
+                    if cursor == self.servers.len() {
+                        return Err(Error::Critical);
+                    }
+                    let addr = self.servers.get(cursor).cloned().unwrap();
+                    match self.cluster.execute(&addr, self.info_cmd.clone())? {
+                        AsyncSink::NotReady(_) => return Ok(Async::NotReady),
+                        AsyncSink::Ready => {
+                            self.state = InitState::Wait;
+                        }
+                    }
+                    self.cursor += 1;
+                }
+
+                InitState::Wait => {
+                    let cmd = self.info_cmd.clone();
+                    if !cmd.borrow().is_done() {
+                        return Ok(Async::NotReady);
+                    }
+                    // debug!("cmd has been done {:?}", cmd);
+
+                    let cmd_borrow = cmd.borrow_mut();
+                    let resp = cmd_borrow.reply.as_ref().unwrap();
+
+                    if resp.rtype != RESP_BULK {
+                        self.state = InitState::Pend;
+                        continue;
+                    }
+
+                    let mut slots_map = self.cluster.slots.borrow_mut();
+                    slots_map.try_update_all(resp.data.as_ref().expect("never be empty"));
+                    let mut listener = None;
+                    std::mem::swap(&mut listener, &mut self.listen);
+                    return Ok(Async::Ready((self.cluster.clone(), listener.unwrap())));
+                }
             }
         }
     }
