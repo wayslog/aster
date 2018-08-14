@@ -16,6 +16,10 @@ extern crate itoa;
 extern crate net2;
 extern crate tokio_codec;
 extern crate tokio_io;
+#[macro_use]
+extern crate serde_derive;
+extern crate toml;
+
 
 pub mod fetcher;
 pub mod cluster;
@@ -52,19 +56,10 @@ use std::thread;
 
 const MUSK: u16 = 0x3fff;
 
-pub fn run() -> Result<(), ()> {
+pub fn run() -> Result<(), std::io::Error> {
     env_logger::init();
-    info!("start asswecan");
-    let config = Config {
-        clusters: vec![ClusterConfig {
-            bind: "0.0.0.0:9001".to_string(),
-            cache_type: CacheType::RedisCluster,
-            servers: vec!["127.0.0.1:7010".to_string(), "127.0.0.1:7011".to_string()],
-            thread: 4,
-            fetch: 30*60,
-        }],
-    };
-
+    let config = load_config();
+    info!("asswecan has been lunched with config={:?}", config);
     let ths: Vec<_> = config
         .clusters
         .iter()
@@ -76,6 +71,20 @@ pub fn run() -> Result<(), ()> {
         th.join().unwrap();
     }
     Ok(())
+}
+
+fn load_config() -> Config {
+    use std::env;
+    let path = env::var("AS_CFG").unwrap_or("as.toml".to_string());
+    use std::io::{BufReader, Read};
+    use std::fs;
+
+    let fd = fs::File::open(&path).expect("fail to open config file(default: as.toml)");
+    let mut rd = BufReader::new(fd);
+    let mut data = String::new();
+    rd.read_to_string(&mut data).expect("fail to read config file");
+
+    toml::from_str(&data).expect("fail to parse toml")
 }
 
 pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
@@ -168,12 +177,12 @@ fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io:
     TcpListener::from_std(std_listener, &hd)
 }
 
-#[allow(unused)]
+#[derive(Deserialize, Debug)]
 pub struct Config {
     clusters: Vec<ClusterConfig>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Deserialize,Debug, Clone, Copy)]
 pub enum CacheType {
     Redis,
     Memcache,
@@ -181,8 +190,9 @@ pub enum CacheType {
     RedisCluster,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct ClusterConfig {
+    pub name: String,
     pub bind: String,
     pub cache_type: CacheType,
     pub servers: Vec<String>,

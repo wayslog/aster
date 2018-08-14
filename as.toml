@@ -1,0 +1,7 @@
+[[clusters]]
+name="test-cluster"
+bind="0.0.0.0:9001"
+cache_type="Redis"
+servers = ["127.0.0.1:7010", "127.0.0.1:7011"]
+thread = 4
+fetch = 1800
