@@ -106,16 +106,23 @@ impl Resp {
 
         let mut iter = src.splitn(2, |x| *x == BYTE_LF);
         let line = iter.next().ok_or(Error::MoreData)?;
+        if line[line.len() - 1] != BYTE_CR || line.len() == src.len() {
+            return Err(Error::MoreData);
+        }
 
         let line_size = line.len() + 1;
         let rtype = line[0];
 
         match rtype {
-            RESP_STRING | RESP_INT | RESP_ERROR => Ok(Resp {
-                rtype: rtype,
-                data: Some(line[1..line_size - 2].to_vec()),
-                array: None,
-            }),
+            RESP_STRING | RESP_INT | RESP_ERROR => {
+                let resp = Resp {
+                    rtype: rtype,
+                    data: Some(line[1..line_size - 2].to_vec()),
+                    array: None,
+                };
+                debug_assert_eq!(resp.binary_size(), line_size);
+                Ok(resp)
+            }
             RESP_BULK => {
                 let count = btoi::btoi::<isize>(&line[1..line_size - 2])?;
                 if count == -1 {
@@ -131,11 +138,13 @@ impl Resp {
                     return Err(Error::MoreData);
                 }
 
-                Ok(Resp {
+                let resp = Resp {
                     rtype: rtype,
                     data: Some(data[..size - 2].to_vec()),
                     array: None,
-                })
+                };
+                debug_assert_eq!(resp.binary_size(), size + line_size);
+                Ok(resp)
             }
 
             RESP_ARRAY => {
@@ -152,16 +161,23 @@ impl Resp {
                 let mut items = Vec::with_capacity(count as usize);
                 let mut parsed = line_size;
                 for _ in 0..count {
+                    if src.len() <= parsed {
+                        return Err(Error::MoreData);
+                    }
+
                     let item = Self::parse(&src[parsed..])?;
                     parsed += item.binary_size();
                     items.push(item);
                 }
 
-                Ok(Resp {
+                let resp = Resp {
                     rtype: rtype,
                     data: Some(count_bs.to_vec()),
                     array: Some(items),
-                })
+                };
+
+                debug_assert_eq!(resp.binary_size(), parsed);
+                Ok(resp)
             }
             _ => unreachable!(),
         }
@@ -170,16 +186,23 @@ impl Resp {
     fn write(&mut self, dst: &mut BytesMut) -> AsResult<usize> {
         match self.rtype {
             RESP_STRING | RESP_ERROR | RESP_INT => {
-                dst.put_u8(self.rtype);
                 let data = self.data.as_ref().expect("never empty");
-                dst.put(data);
-                dst.put(BYTES_CRLF);
+                let my_len = 1 + 2 + data.len();
+                if dst.remaining_mut() < my_len {
+                    dst.reserve(my_len);
+                }
+                dst.put_u8(self.rtype);
+                dst.extend_from_slice(data);
+                dst.extend_from_slice(BYTES_CRLF);
                 Ok(1 + 2 + data.len())
             }
             RESP_BULK => {
+                if !dst.has_remaining_mut() {
+                    dst.reserve(1);
+                }
                 dst.put_u8(self.rtype);
                 if self.is_null() {
-                    dst.put(BYTES_NULL_RESP);
+                    dst.extend_from_slice(BYTES_NULL_RESP);
                     return Ok(5);
                 }
 
@@ -187,12 +210,16 @@ impl Resp {
                 let data_len = data.len();
                 let len_len = Self::write_len(dst, data_len)?;
                 // let len_len = itoa::write(&mut dst[1..], data_len)?;
-                dst.put(BYTES_CRLF);
-                dst.put(data);
-                dst.put(BYTES_CRLF);
+                dst.extend_from_slice(BYTES_CRLF);
+                dst.extend_from_slice(data);
+                dst.extend_from_slice(BYTES_CRLF);
                 Ok(1 + len_len + 2 + data_len + 2)
             }
             RESP_ARRAY => {
+                if dst.remaining_mut() < 5 {
+                    dst.reserve(5);
+                }
+
                 dst.put_u8(self.rtype);
                 if self.is_null() {
                     dst.put(BYTES_NULL_RESP);
@@ -200,10 +227,9 @@ impl Resp {
                 }
 
                 let data = self.data.as_ref().expect("never null");
-                dst.put(data);
-                dst.put(BYTES_CRLF);
+                dst.extend_from_slice(data);
+                dst.extend_from_slice(BYTES_CRLF);
                 let mut size = 1 + data.len() + 2;
-
                 for item in self.array.as_mut().expect("never empty") {
                     size += item.write(dst)?;
                 }
@@ -214,11 +240,11 @@ impl Resp {
     }
 
     pub fn write_len(dst: &mut BytesMut, len: usize) -> AsResult<usize> {
-        let len_len = get_len_len(len);
-        // TODO make it more effecetive
+        // TODO make it more faster
         let buf = format!("{}", len);
-        dst.put(buf.as_bytes());
-        Ok(len_len)
+        let buf_len = buf.len();
+        dst.extend_from_slice(buf.as_bytes());
+        Ok(buf_len)
     }
 
     pub fn cmd_bytes(&self) -> &[u8] {
@@ -248,7 +274,7 @@ impl Resp {
                 return len + 3;
             } else {
                 n /= 1000;
-                len += 4;
+                len += 3;
             }
         }
     }
@@ -262,8 +288,8 @@ impl Resp {
                 if self.is_null() {
                     return 5;
                 }
-                let dlen = self.data.as_ref().expect("never null").len();
 
+                let dlen = self.data.as_ref().expect("never null").len();
                 1 + Self::ascii_len(dlen) + 2 + dlen + 2
             }
             RESP_ARRAY => {
@@ -310,7 +336,14 @@ impl Decoder for RespCodec {
             })?;
         if let Some(resp) = item {
             let bsize = resp.binary_size();
-            trace!("decode read bytes size {}", bsize);
+            if bsize > src.len() {
+                trace!(
+                    "decode read bytes size={} and remaining_mut={} for bytes={:?}",
+                    bsize,
+                    src.len(),
+                    &src[..],
+                );
+            }
             src.advance(bsize);
             return Ok(Some(resp));
         }
@@ -329,22 +362,11 @@ impl Encoder for RespCodec {
     }
 }
 
-fn get_len_len(mut len: usize) -> usize {
-    let mut len_len = 0;
-    loop {
-        if len < 10 {
-            len_len += 1;
-            break;
-        } else if len < 100 {
-            len_len += 2;
-            break;
-        } else if len < 1000 {
-            len_len += 3;
-            break;
-        } else {
-            len_len += 3;
-            len /= 1000;
-        }
-    }
-    return len_len;
+#[test]
+fn test_resp_ascii_len() {
+    assert_eq!(Resp::ascii_len(11111), 5);
+    assert_eq!(Resp::ascii_len(1000), 4);
+    assert_eq!(Resp::ascii_len(100), 3);
+    assert_eq!(Resp::ascii_len(10), 2);
+    assert_eq!(Resp::ascii_len(2), 1);
 }

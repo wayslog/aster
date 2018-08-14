@@ -23,8 +23,8 @@ pub mod handler;
 pub mod resp;
 pub mod slots;
 
-pub use com::*;
 use cmd::{Cmd, CmdCodec};
+pub use com::*;
 use handler::Handler;
 use resp::{Resp, RespCodec};
 use slots::SlotsMap;
@@ -92,8 +92,7 @@ c1ceb9b25a4aa7102acdc546182bf2d855b357f1 127.0.0.1:7015@17015 slave 480ca425ee0e
             });
             current_thread::spawn(handler);
             Ok(())
-        })
-        .map_err(|err| {
+        }).map_err(|err| {
             error!("fail to proxy due {:?}", err);
         });
     current_thread::block_on_all(amt).unwrap();
@@ -145,11 +144,9 @@ impl Cluster {
                     .as_str()
                     .parse()
                     .map_err(|err| error!("fail to parse addr {:?}", err))
-            })
-            .and_then(|addr| {
+            }).and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-            })
-            .and_then(|sock| {
+            }).and_then(|sock| {
                 let codec = RespCodec {};
                 let (sink, stream) = codec.framed(sock).split();
                 let arx = rx.map_err(|err| {
@@ -170,7 +167,6 @@ impl Cluster {
             let addr = slots_map.get_addr(slot);
             {
                 let sender_opt = slots_map.get_sender_by_addr(&addr);
-                trace!("dispatch one command for addr {:?}", sender_opt);
                 if let Some(sender) = sender_opt {
                     match sender.start_send(cmd) {
                         Ok(AsyncSink::NotReady(v)) => {
@@ -182,11 +178,10 @@ impl Cluster {
                                 .map_err(|err| {
                                     error!("fail to complete send cmd to node conn due {:?}", err);
                                     Error::Critical
-                                })
-                                .map(|_| AsyncSink::Ready)
+                                }).map(|_| AsyncSink::Ready)
                         }
                         Err(err) => {
-                            trace!("send fail with send error: {:?}", err);
+                            error!("send fail with send error: {:?}", err);
                             return Err(Error::Critical);
                         }
                     }
@@ -358,7 +353,6 @@ where
         //Ok(Async::Ready(()))
     }
 }
-
 
 pub struct Batch<S>
 where

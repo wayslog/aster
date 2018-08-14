@@ -104,7 +104,6 @@ impl Command {
         if let Some(cmd) = resp.get(1) {
             let mut state = crc16::State::<crc16::XMODEM>::new();
             let data = &cmd.data.as_ref().expect("never null")[..];
-            trace!("crc value {}", String::from_utf8_lossy(data));
             state.update(data);
             return state.get() & MUSK;
         }
@@ -151,9 +150,6 @@ impl Command {
         let arr_len = self.req.array.as_ref().expect("cmd must be array").len();
         if arr_len < 3 || arr_len % 2 == 0 {
             return self.done_with_error(&RESP_OBJ_ERROR_BAD_CMD);
-        } else if arr_len == 3 {
-            trace!("skip to split MSET");
-            return;
         }
 
         let is_complex = self.is_complex;
@@ -177,9 +173,6 @@ impl Command {
         let arr_len = self.req.array.as_ref().expect("cmd must be array").len();
         if arr_len < 2 {
             return self.done_with_error(&RESP_OBJ_ERROR_BAD_CMD);
-        } else if arr_len == 2 {
-            trace!("skip to split cmd with only one key");
-            return;
         }
 
         let resps = self.req.array.as_ref().expect("cmd must be array").clone();
@@ -467,9 +460,8 @@ impl CmdCodec {
     fn merge_encode_count(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
         let mut sum = 0;
         for subcmd in subs {
-            let mut reply = None;
-            mem::swap(&mut reply, &mut subcmd.borrow_mut().reply);
-            let subresp = reply.expect("subreply must be some resp but None");
+            let mut reply = &mut subcmd.borrow_mut().reply;
+            let subresp = reply.as_mut().expect("subreply must be some resp but None");
             if subresp.rtype == RESP_ERROR {
                 // should swallow the error and convert as 0 count of key.
                 continue;
@@ -479,20 +471,31 @@ impl CmdCodec {
             let count = btoi::btoi::<i64>(count_bs)?;
             sum += count;
         }
+
+        if !dst.has_remaining_mut() {
+            dst.reserve(1);
+        }
+        dst.put_u8(RESP_INT);
         let buf = format!("{}", sum);
-        Ok(dst.put(buf.as_bytes()))
+        dst.extend_from_slice(buf.as_bytes());
+        dst.extend_from_slice(BYTES_CRLF);
+        Ok(())
     }
 
     fn merge_encode_ok(&mut self, _subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
-        Ok(dst.put(&b"+OK\r\n"[..]))
+        Ok(dst.extend_from_slice(&b"+OK\r\n"[..]))
     }
 
     fn merge_encode_join(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
-        let count = subs.len();
+        if !dst.has_remaining_mut() {
+            dst.reserve(1);
+        }
         dst.put_u8(RESP_ARRAY);
+
+        let count = subs.len();
         let buf = format!("{}", count);
-        dst.put(buf.as_bytes());
-        dst.put(BYTES_CRLF);
+        dst.extend_from_slice(buf.as_bytes());
+        dst.extend_from_slice(BYTES_CRLF);
         for sub in subs {
             self.encode(sub, dst)?;
         }
