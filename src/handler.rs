@@ -3,7 +3,7 @@ use com::*;
 use std::rc::Rc;
 use Cluster;
 
-const MAX_CURRENCY: usize = 128;
+const MAX_CURRENCY: usize = 1024 * 8;
 // use aho_corasick::{AcAutomaton, Automaton, Match};
 use std::collections::VecDeque;
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
@@ -138,6 +138,7 @@ where
                 .cloned()
                 .expect("front write-back cmd is never none");
             if !rc_cmd.borrow().is_done() {
+                self.can_continue = false;
                 return Ok(());
             }
 
@@ -145,6 +146,7 @@ where
                 self.can_continue = false;
                 return Ok(());
             }
+            let _ = self.wcmds.pop_front().unwrap();
         }
     }
 
