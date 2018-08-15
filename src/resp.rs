@@ -4,8 +4,8 @@ use bytes::BytesMut;
 use com::*;
 use tokio_codec::{Decoder, Encoder};
 
-pub const SLOTS_COUNT: usize = 16384;
-pub static LF_STR: &'static str = "\n";
+// pub const SLOTS_COUNT: usize = 16384;
+// pub static LF_STR: &'static str = "\n";
 
 pub type RespType = u8;
 pub const RESP_STRING: RespType = '+' as u8;

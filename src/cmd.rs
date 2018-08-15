@@ -8,14 +8,13 @@ use resp::{Resp, BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT};
 use tokio_codec::{Decoder, Encoder};
 
 use futures::task::{self, Task};
-use tokio::prelude::*;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::mem;
 use std::rc::Rc;
 
-const MUSK: u16 = 0x3fff;
+pub const MUSK: u16 = 0x3fff;
 
 #[derive(Clone, Copy, Debug)]
 pub enum CmdType {
@@ -226,50 +225,6 @@ impl Command {
         self.is_done = true;
         //TODO: ignore if task current.
         self.task.notify();
-    }
-}
-
-pub struct CommandStream<S: Stream<Item = Resp, Error = Error>> {
-    input: S,
-}
-
-impl<S> CommandStream<S>
-where
-    S: Stream<Item = Resp, Error = Error>,
-{
-    pub fn new(input: S) -> Self {
-        Self { input: input }
-    }
-}
-
-impl<S> Stream for CommandStream<S>
-where
-    S: Stream<Item = Resp, Error = Error>,
-{
-    type Item = Command;
-    type Error = Error;
-
-    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
-        if let Some(resp) = try_ready!(self.input.poll()) {
-            return Ok(Async::Ready(Some(Command::from_resp(resp))));
-        }
-        Ok(Async::Ready(None))
-    }
-}
-
-pub struct RcCmd<S: Stream> {
-    input: S,
-}
-
-impl<S: Stream> Stream for RcCmd<S> {
-    type Item = Rc<S::Item>;
-    type Error = S::Error;
-
-    fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
-        if let Some(item) = try_ready!(self.input.poll()) {
-            return Ok(Async::Ready(Some(Rc::new(item))));
-        }
-        Ok(Async::NotReady)
     }
 }
 

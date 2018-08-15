@@ -1,11 +1,10 @@
-use tokio::prelude::{Stream, AsyncSink, Async};
+use tokio::prelude::{Async, AsyncSink, Stream};
 use tokio::timer::Interval;
 
-use com::*;
 use self::super::Cluster;
-use cmd::{Cmd, new_cluster_nodes_cmd};
+use cmd::{new_cluster_nodes_cmd, Cmd};
+use com::*;
 use resp::RESP_BULK;
-
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -30,10 +29,6 @@ impl Fetcher {
         Self::new_fetcher(cluster, true)
     }
 
-    pub fn oneshot(cluster: Rc<Cluster>) -> Fetcher {
-        Self::new_fetcher(cluster, false)
-    }
-
     fn new_fetcher(cluster: Rc<Cluster>, is_oneshot: bool) -> Fetcher {
         let servers = cluster.cc.servers.clone();
         let duration = Duration::from_secs(cluster.cc.fetch);
@@ -44,7 +39,7 @@ impl Fetcher {
             state: FetchState::Ready,
             info_cmd: new_cluster_nodes_cmd(),
             is_oneshot: is_oneshot,
-            internal: Interval::new(Instant::now(), duration),
+            internal: Interval::new(Instant::now() + duration, duration),
         }
     }
 }
@@ -54,14 +49,15 @@ impl Stream for Fetcher {
     type Error = Error;
 
     fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
-        if let None = try_ready!(self.internal.poll().map_err(|err|{
+        info!("trying to fetch");
+        if let None = try_ready!(self.internal.poll().map_err(|err| {
             error!("fetch by internal fail due {:?}", err);
             Error::Critical
         })) {
             return Ok(Async::Ready(None));
         }
 
-        loop{
+        loop {
             match self.state {
                 FetchState::Ready => {
                     let cursor = self.cursor;
