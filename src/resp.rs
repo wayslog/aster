@@ -1,9 +1,10 @@
 use btoi;
 use bytes::BufMut;
 use bytes::BytesMut;
-use com::*;
+use log::Level;
 use tokio_codec::{Decoder, Encoder};
 
+use com::*;
 // pub const SLOTS_COUNT: usize = 16384;
 // pub static LF_STR: &'static str = "\n";
 
@@ -357,7 +358,9 @@ impl Encoder for RespCodec {
 
     fn encode(&mut self, mut item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let size = item.write(dst)?;
-        trace!("encode write bytes size {}", size);
+        if log_enabled!(Level::Trace) {
+            trace!("encode write bytes size {}", size);
+        }
         Ok(())
     }
 }

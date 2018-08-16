@@ -1,7 +1,7 @@
 use self::super::ClusterConfig;
 use cmd::{Cmd, MUSK};
 use com::*;
-use node::NodeConn;
+use node::{NodeDown, NodeRecv};
 use resp::RespCodec;
 use slots::SlotsMap;
 
@@ -14,6 +14,8 @@ use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::Decoder;
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
 
 pub struct Cluster {
     pub cc: ClusterConfig,
@@ -34,8 +36,7 @@ impl Cluster {
 
     pub fn create_node_conn(&self, node: &str) -> AsResult<Sender<Cmd>> {
         let addr_string = node.to_string();
-        let nc_string = node.to_string();
-        let (tx, rx): (Sender<Cmd>, Receiver<Cmd>) = channel(10240);
+        let (tx, rx): (Sender<Cmd>, Receiver<Cmd>) = channel(1024);
         let ret_tx = tx.clone();
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
             .and_then(move |_| {
@@ -52,8 +53,12 @@ impl Cluster {
                     info!("fail to send due to {:?}", err);
                     Error::Critical
                 });
-                let nc = NodeConn::new(nc_string, sink, stream, arx, tx);
-                nc.map_err(|err| error!("fail with error {:?}", err))
+                let buf = Rc::new(RefCell::new(VecDeque::new()));
+                let nd = NodeDown::new(arx, sink, buf.clone());
+                current_thread::spawn(nd);
+                let nr = NodeRecv::new(stream, buf.clone());
+                current_thread::spawn(nr);
+                Ok(())
             });
         current_thread::spawn(amt);
         Ok(ret_tx)

@@ -26,7 +26,7 @@ mod com;
 pub mod fetcher;
 mod handler;
 mod init;
-mod node;
+pub mod node;
 mod resp;
 mod slots;
 

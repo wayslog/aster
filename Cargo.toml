@@ -32,4 +32,4 @@ net2="*"
 
 [profile.release]
 debug = true
-lto = true
+lto = false
