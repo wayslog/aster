@@ -6,7 +6,7 @@ use resp::RespCodec;
 use slots::SlotsMap;
 
 use futures::lazy;
-use futures::sync::mpsc::{channel, Receiver, Sender};
+use futures::unsync::mpsc::{channel, Receiver, Sender};
 use futures::AsyncSink;
 use tokio::executor::current_thread;
 use tokio::net::TcpStream;

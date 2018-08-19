@@ -61,7 +61,7 @@ fn test_resp_parse_array_ok() {
 #[test]
 fn test_resp_parse_write_array_the_same_ok() {
     let data = "*2\r\n$1\r\na\r\n$5\r\nojbK\n\r\n";
-    let mut resp = Resp::parse(data.as_bytes()).unwrap();
+    let resp = Resp::parse(data.as_bytes()).unwrap();
     assert_eq!(RESP_ARRAY, resp.rtype);
     assert_eq!(Some(b"2".to_vec()), resp.data);
     assert_eq!(2, resp.array.as_ref().unwrap().len());

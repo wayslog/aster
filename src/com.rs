@@ -1,5 +1,5 @@
 use btoi;
-use futures::sync::mpsc::SendError;
+use futures::unsync::mpsc::SendError;
 use std::convert::From;
 use std::io;
 use std::result;

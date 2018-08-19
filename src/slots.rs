@@ -1,7 +1,7 @@
 use cmd::Cmd;
 use com::*;
 use crc16;
-use futures::sync::mpsc::Sender;
+use futures::unsync::mpsc::Sender;
 
 use std::collections::HashMap;
 use std::mem;
