@@ -4,6 +4,8 @@ use bytes::BytesMut;
 use log::Level;
 use tokio_codec::{Decoder, Encoder};
 
+use std::rc::Rc;
+
 use com::*;
 // pub const SLOTS_COUNT: usize = 16384;
 // pub static LF_STR: &'static str = "\n";
@@ -184,7 +186,7 @@ impl Resp {
         }
     }
 
-    fn write(&mut self, dst: &mut BytesMut) -> AsResult<usize> {
+    fn write(&self, dst: &mut BytesMut) -> AsResult<usize> {
         match self.rtype {
             RESP_STRING | RESP_ERROR | RESP_INT => {
                 let data = self.data.as_ref().expect("never empty");
@@ -231,7 +233,7 @@ impl Resp {
                 dst.extend_from_slice(data);
                 dst.extend_from_slice(BYTES_CRLF);
                 let mut size = 1 + data.len() + 2;
-                for item in self.array.as_mut().expect("never empty") {
+                for item in self.array.as_ref().expect("never empty") {
                     size += item.write(dst)?;
                 }
                 Ok(size)
@@ -353,10 +355,10 @@ impl Decoder for RespCodec {
 }
 
 impl Encoder for RespCodec {
-    type Item = Resp;
+    type Item = Rc<Resp>;
     type Error = Error;
 
-    fn encode(&mut self, mut item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let size = item.write(dst)?;
         if log_enabled!(Level::Trace) {
             trace!("encode write bytes size {}", size);

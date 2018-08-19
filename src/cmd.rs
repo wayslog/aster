@@ -39,7 +39,7 @@ pub struct Command {
     pub crc: u16,
     pub task: Task,
 
-    pub req: Resp,
+    pub req: Rc<Resp>,
     pub sub_reqs: Option<Vec<Cmd>>,
     pub reply: Option<Resp>,
 }
@@ -62,7 +62,7 @@ impl Command {
 
             crc: crc,
             task: local_task,
-            req: resp,
+            req: Rc::new(resp),
             sub_reqs: None,
             reply: None,
         }
@@ -501,7 +501,7 @@ impl Encoder for CmdCodec {
         let mut rslt = None;
         mem::swap(&mut rslt, &mut item_borrow.reply);
         let reply = rslt.expect("reply never empty");
-        self.rc.encode(reply, dst)
+        self.rc.encode(Rc::new(reply), dst)
     }
 }
 
@@ -527,7 +527,7 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
         crc: 0u16,
         task: task::current(),
 
-        req: req,
+        req: Rc::new(req),
         sub_reqs: None,
         reply: None,
     };

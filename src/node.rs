@@ -12,7 +12,7 @@ use std::rc::Rc;
 pub struct NodeDown<I, O>
 where
     I: Stream<Item = Cmd, Error = Error>,
-    O: Sink<SinkItem = Resp, SinkError = Error>,
+    O: Sink<SinkItem = Rc<Resp>, SinkError = Error>,
 {
     closed: bool,
     input: I,
@@ -25,7 +25,7 @@ where
 impl<I, O> NodeDown<I, O>
 where
     I: Stream<Item = Cmd, Error = Error>,
-    O: Sink<SinkItem = Resp, SinkError = Error>,
+    O: Sink<SinkItem = Rc<Resp>, SinkError = Error>,
 {
     pub fn new(input: I, output: O, buf: Rc<RefCell<VecDeque<Cmd>>>) -> NodeDown<I, O> {
         NodeDown {
@@ -79,7 +79,7 @@ where
 impl<I, O> Future for NodeDown<I, O>
 where
     I: Stream<Item = Cmd, Error = Error>,
-    O: Sink<SinkItem = Resp, SinkError = Error>,
+    O: Sink<SinkItem = Rc<Resp>, SinkError = Error>,
 {
     type Item = ();
     type Error = ();
