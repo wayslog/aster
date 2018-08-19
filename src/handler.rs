@@ -1,4 +1,4 @@
-use cmd::{Cmd, CmdType, RESP_OBJ_ERROR_NOT_SUPPORT};
+use cmd::{Cmd, CmdType, Command, RESP_OBJ_ERROR_NOT_SUPPORT};
 use com::*;
 use std::rc::Rc;
 use Cluster;
@@ -190,3 +190,93 @@ where
     }
 }
 
+pub struct Handle<I, O>
+where
+    I: Stream<Item = Resp, Error = Error>,
+    O: Sink<SinkItem = Cmd, SinkError = Error>,
+{
+    cluster: Rc<Cluster>,
+
+    input: I,
+    output: O,
+    cmds: VecDeque<Cmd>,
+    // cmd: Option<Cmd>,
+    waitq: VecDeque<Cmd>,
+    closed: bool,
+}
+
+
+impl<I, O> Handle<I, O>
+where
+    I: Stream<Item = Resp, Error = Error>,
+    O: Sink<SinkItem = Cmd, SinkError = Error>,
+{
+
+    fn try_read(&mut self) -> Result<Async<Option<()>>, Error> {
+        loop {
+            match try_ready!(self.input.poll()) {
+                Some(val) => {
+                    let cmd = Command::from_resp(val);
+                    let is_complex = cmd.is_complex();
+                    let rc_cmd = Rc::new(cmd);
+                    if is_complex {
+                        for sub in rc_cmd.sub_reqs.as_ref().expect("never be empty") {
+                            self.waitq.push_back(sub);
+                        }
+                    } else {
+                        self.waitq.push_back(rc_cmd);
+                    }
+                }
+                None => {
+                    return Ok(Async::Ready(None));
+                },
+            }
+        }
+    }
+}
+
+impl<I, O> Future for Handle<I, O>
+where
+    I: Stream<Item = Cmd, Error = Error>,
+    O: Sink<SinkItem = Cmd, SinkError = Error>,
+{
+
+    type Item = ();
+    type Error = Error;
+
+    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        let mut can_read = true;
+        let mut can_send = true;
+        let mut can_write = true;
+
+
+        loop {
+            if !can_read || !can_send || !can_write {
+                return Ok(Async::NotReady);
+            }
+            // step 1: poll read from input stream.
+            if can_read {
+                // read until the input stream is NotReady.
+                match self.try_read()? {
+                    Async::NotReady => {
+                        can_read = false;
+                        continue;
+                    }
+                    Async::Ready(None) => {return Ok(Async::Ready(()));}
+                    Async::Ready(Some(())) => {},
+                }
+
+            }
+
+            // step 2: send to cluster.
+            if can_send {
+                // send until the output stream is unsendable.
+            }
+            // step 3: wait all the cluster is done.
+            if can_write {
+                // step 4: poll send back to client.
+            }
+        }
+        // Ok(Async::NotReady)
+    }
+}

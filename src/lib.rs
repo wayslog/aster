@@ -33,6 +33,8 @@ mod slots;
 pub use cluster::Cluster;
 use cmd::CmdCodec;
 pub use com::*;
+pub use handler::Handle;
+
 // use fetcher::Fetcher;
 use handler::Handler;
 use init::ClusterInitilizer;
@@ -54,6 +56,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::thread;
+
 
 pub fn run() -> Result<(), std::io::Error> {
     env_logger::init();

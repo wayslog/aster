@@ -1,5 +1,5 @@
 use self::super::ClusterConfig;
-use cmd::{Cmd, MUSK};
+use cmd::{Cmd};
 use com::*;
 use node::{NodeDown, NodeRecv};
 use resp::RespCodec;
@@ -96,7 +96,7 @@ impl Cluster {
     }
 
     pub fn dispatch(&self, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
-        let slot = (cmd.borrow().crc() & MUSK) as usize;
+        let slot = cmd.borrow().crc() as usize;
         loop {
             let mut slots_map = self.slots.borrow_mut();
             let addr = slots_map.get_addr(slot);
