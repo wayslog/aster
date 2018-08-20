@@ -459,16 +459,11 @@ impl CmdCodec {
 }
 
 impl Decoder for CmdCodec {
-    type Item = Cmd;
+    type Item = Resp;
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if let Some(resp) = self.rc.decode(src)? {
-            let command = Command::from_resp(resp);
-            let cmd = Rc::new(RefCell::new(command));
-            return Ok(Some(cmd));
-        }
-        Ok(None)
+        self.rc.decode(src)
     }
 }
 

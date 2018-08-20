@@ -33,15 +33,15 @@ mod slots;
 pub use cluster::Cluster;
 use cmd::CmdCodec;
 pub use com::*;
-pub use handler::Handle;
+use handler::Handle;
 
 // use fetcher::Fetcher;
-use handler::Handler;
 use init::ClusterInitilizer;
 use resp::Resp;
 use slots::SlotsMap;
 
 use futures::lazy;
+use futures::unsync::mpsc::channel;
 use futures::Async;
 // use futures::task::current;
 use tokio::executor::current_thread;
@@ -56,7 +56,6 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::thread;
-
 
 pub fn run() -> Result<(), std::io::Error> {
     env_logger::init();
@@ -141,12 +140,27 @@ pub fn start_cluster(cluster: Cluster) {
                 .incoming()
                 .for_each(move |sock| {
                     let codec = CmdCodec::default();
-                    let (cmd_tx, cmd_rx) = codec.framed(sock).split();
+                    let (cmd_tx, resp_rx) = codec.framed(sock).split();
                     let cluster = rc_cluster.clone();
-                    let handler = Handler::new(cluster, cmd_rx, cmd_tx).map_err(|err| {
-                        error!("fail to create new handler due {:?}", err);
+                    // TODO: remove magic number.
+                    let (handle_resp_tx, handle_resp_rx) = channel(2048);
+                    let input = resp_rx
+                        .forward(handle_resp_tx)
+                        .map_err(|err| {
+                            error!("fail to send into handle due to {:?}", err);
+                        }).then(|_| Ok(()));
+                    current_thread::spawn(input);
+                    let handle = Handle::new(
+                        cluster,
+                        handle_resp_rx.map_err(|_| {
+                            error!("fail to pass handle");
+                            Error::Critical
+                        }),
+                        cmd_tx,
+                    ).map_err(|err| {
+                        error!("get handle error due {:?}", err);
                     });
-                    current_thread::spawn(handler);
+                    current_thread::spawn(handle);
                     Ok(())
                 }).map_err(|err| {
                     error!("fail to start_cluster due {:?}", err);

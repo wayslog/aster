@@ -132,11 +132,11 @@ where
     type Error = ();
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        loop {
-            if self.closed {
-                return Ok(Async::Ready(()));
-            }
+        if self.closed {
+            return Ok(Async::Ready(()));
+        }
 
+        loop {
             if let Some(val) = try_ready!(self.recv.poll().map_err(|err| {
                 error!("fail to recv from back end, may closed due to {:?}", err);
                 self.closed = true;
@@ -145,6 +145,8 @@ where
                 cmd.borrow_mut().done(val);
             } else {
                 error!("TODO: should quick error for");
+                self.closed = true;
+                return Ok(Async::Ready(()));
             }
         }
     }

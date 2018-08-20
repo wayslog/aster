@@ -1,5 +1,5 @@
 use self::super::ClusterConfig;
-use cmd::{Cmd};
+use cmd::Cmd;
 use com::*;
 use node::{NodeDown, NodeRecv};
 use resp::RespCodec;
