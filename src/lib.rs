@@ -48,8 +48,6 @@ use tokio::executor::current_thread;
 use tokio::net::TcpListener;
 use tokio::prelude::{Future, Stream};
 use tokio_codec::Decoder;
-
-use net2::unix::UnixTcpBuilderExt;
 use net2::TcpBuilder;
 
 use std::cell::RefCell;
@@ -172,7 +170,22 @@ pub fn start_cluster(cluster: Cluster) {
     current_thread::block_on_all(fut).unwrap();
 }
 
+#[cfg(windows)]
 fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io::Error> {
+    let builder = TcpBuilder::new_v4()?;
+    let std_listener = builder
+        .reuse_address(true)
+        .expect("os not support SO_REUSEADDR")
+        .bind(addr)?
+        .listen(std::i32::MAX)?;
+    let hd = tokio::reactor::Handle::current();
+    TcpListener::from_std(std_listener, &hd)
+}
+
+#[cfg(not(windows))]
+fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io::Error> {
+    use net2::unix::UnixTcpBuilderExt;
+
     let builder = TcpBuilder::new_v4()?;
     let std_listener = builder
         .reuse_address(true)
