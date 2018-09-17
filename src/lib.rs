@@ -1,4 +1,5 @@
 #![deny(warnings)]
+#![feature(integer_atomics)]
 
 extern crate tokio;
 #[macro_use(try_ready)]
@@ -26,7 +27,7 @@ mod com;
 pub mod fetcher;
 mod handler;
 mod init;
-pub mod node;
+mod node;
 mod resp;
 mod slots;
 
@@ -44,11 +45,11 @@ use futures::lazy;
 use futures::unsync::mpsc::channel;
 use futures::Async;
 // use futures::task::current;
+use net2::TcpBuilder;
 use tokio::executor::current_thread;
 use tokio::net::TcpListener;
 use tokio::prelude::{Future, Stream};
 use tokio_codec::Decoder;
-use net2::TcpBuilder;
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -257,6 +258,50 @@ where
                 }
                 Err(err) => return Err(err),
             }
+        }
+    }
+}
+
+use futures::task::Task;
+use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Debug)]
+pub struct Notify {
+    task: Task,
+    count: Rc<AtomicUsize>,
+}
+
+impl Notify {
+    pub fn new(task: Task) -> Self {
+        Notify {
+            task: task,
+            count: Rc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn done_without_notify(&self) {
+        self.count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub fn done(&self) {
+        let pv = self.count.fetch_sub(1, Ordering::Relaxed);
+        if pv == 1 {
+            self.task.notify();
+        }
+    }
+
+    pub fn add(&self, val: usize) {
+        self.count.fetch_add(val, Ordering::Relaxed);
+    }
+}
+
+impl Clone for Notify {
+    fn clone(&self) -> Notify {
+        self.count.fetch_add(1, Ordering::Relaxed);
+        Notify {
+            task: self.task.clone(),
+            count: self.count.clone(),
         }
     }
 }

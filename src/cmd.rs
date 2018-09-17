@@ -7,12 +7,13 @@ use resp::RespCodec;
 use resp::{Resp, BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT};
 use tokio_codec::{Decoder, Encoder};
 
-use futures::task::{self, Task};
+use futures::task;
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::mem;
 use std::rc::Rc;
+use Notify;
 
 pub const MUSK: u16 = 0x3fff;
 
@@ -37,7 +38,7 @@ pub struct Command {
     pub cmd_type: CmdType,
 
     pub crc: u16,
-    pub task: Task,
+    pub notify: Notify,
 
     pub req: Rc<Resp>,
     pub sub_reqs: Option<Vec<Cmd>>,
@@ -45,8 +46,7 @@ pub struct Command {
 }
 
 impl Command {
-    fn inner_from_resp(mut resp: Resp) -> Command {
-        let local_task = task::current();
+    fn inner_from_resp(mut resp: Resp, notify: Notify) -> Command {
         Self::cmd_to_upper(&mut resp);
         let cmd_type = Self::get_resp_cmd_type(&resp);
         let is_complex = Self::is_resp_complex(&resp);
@@ -61,7 +61,7 @@ impl Command {
             cmd_type: cmd_type,
 
             crc: crc,
-            task: local_task,
+            notify: notify,
             req: Rc::new(resp),
             sub_reqs: None,
             reply: None,
@@ -69,7 +69,9 @@ impl Command {
     }
 
     pub fn from_resp(resp: Resp) -> Command {
-        let mut command = Self::inner_from_resp(resp);
+        let local_task = task::current();
+        let notify = Notify::new(local_task);
+        let mut command = Self::inner_from_resp(resp, notify);
         command.mksubs();
         command
     }
@@ -128,6 +130,7 @@ impl Command {
     }
 
     fn mksubs(&mut self) {
+        self.notify.add(1);
         if !self.is_complex {
             return;
         }
@@ -150,6 +153,7 @@ impl Command {
         if arr_len < 3 || arr_len % 2 == 0 {
             return self.done_with_error(&RESP_OBJ_ERROR_BAD_CMD);
         }
+        self.notify.done_without_notify();
 
         let is_complex = self.is_complex;
         let resps = self.req.array.as_ref().expect("cmd must be array");
@@ -160,7 +164,7 @@ impl Command {
                 let val = x[1].clone();
                 Resp::new_array(Some(vec![RESP_OBJ_BULK_SET.clone(), key, val]))
             }).map(|resp| {
-                let mut cmd = Command::inner_from_resp(resp);
+                let mut cmd = Command::inner_from_resp(resp, self.notify.clone());
                 cmd.is_complex = is_complex;
                 Rc::new(RefCell::new(cmd))
             }).collect();
@@ -173,6 +177,7 @@ impl Command {
         if arr_len < 2 {
             return self.done_with_error(&RESP_OBJ_ERROR_BAD_CMD);
         }
+        self.notify.done_without_notify();
 
         let resps = self.req.array.as_ref().expect("cmd must be array").clone();
         let mut iter = resps.into_iter();
@@ -187,7 +192,7 @@ impl Command {
                 arr.push(arg);
                 Resp::new_array(Some(arr))
             }).map(|resp| {
-                let mut cmd = Command::inner_from_resp(resp);
+                let mut cmd = Command::inner_from_resp(resp, self.notify.clone());
                 cmd.is_complex = self.is_complex;
                 // cmd.task = self.task.clone();
                 Rc::new(RefCell::new(cmd))
@@ -216,15 +221,13 @@ impl Command {
     pub fn done(&mut self, reply: Resp) {
         self.reply = Some(reply);
         self.is_done = true;
-        //TODO: ignore if task current.
-        self.task.notify();
+        self.notify.done();
     }
 
     pub fn done_with_error(&mut self, err: &Resp) {
         self.reply = Some(err.clone());
         self.is_done = true;
-        //TODO: ignore if task current.
-        self.task.notify();
+        self.notify.done();
     }
 }
 
@@ -511,6 +514,8 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
         Resp::new_plain(RESP_BULK, Some(b"CLUSTER".to_vec())),
         Resp::new_plain(RESP_BULK, Some(b"NODES".to_vec())),
     ]));
+    let notify = Notify::new(task::current());
+    notify.add(1);
     let cmd = Command {
         is_done: false,
         is_ask: false,
@@ -520,7 +525,7 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
         cmd_type: CmdType::Ctrl,
 
         crc: 0u16,
-        task: task::current(),
+        notify: notify,
 
         req: Rc::new(req),
         sub_reqs: None,
