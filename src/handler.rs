@@ -63,6 +63,17 @@ where
                             self.waitq.push_back(sub);
                         }
                     } else {
+                        let cmd_type = rc_cmd.borrow().get_cmd_type();
+                        match cmd_type {
+                            CmdType::NotSupport => {
+                                // CmdType::NotSupport | CmdType::Ctrl => {
+                                rc_cmd
+                                    .borrow_mut()
+                                    .done_with_error(&RESP_OBJ_ERROR_NOT_SUPPORT);
+                                continue;
+                            }
+                            _ => {}
+                        }
                         self.waitq.push_back(rc_cmd);
                     }
                 }
@@ -79,31 +90,8 @@ where
                 return Ok(Async::NotReady);
             }
 
-            let rc_cmd = self
-                .waitq
-                .front()
-                .cloned()
-                .expect("front of waitq is never be None");
-
-            let cmd_type = rc_cmd.borrow().get_cmd_type();
-            match cmd_type {
-                CmdType::NotSupport | CmdType::Ctrl => {
-                    rc_cmd
-                        .borrow_mut()
-                        .done_with_error(&RESP_OBJ_ERROR_NOT_SUPPORT);
-                    let _ = self.waitq.pop_front().unwrap();
-                    continue;
-                }
-                _ => {}
-            }
-
-            match self.cluster.dispatch(rc_cmd)? {
-                AsyncSink::NotReady(_) => {
-                    return Ok(Async::NotReady);
-                }
-                AsyncSink::Ready => {
-                    let _ = self.waitq.pop_front().unwrap();
-                }
+            if let AsyncSink::NotReady(_count) = self.cluster.dispatch_all(&mut self.waitq)? {
+                return Ok(Async::NotReady);
             }
         }
     }

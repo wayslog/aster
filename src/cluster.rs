@@ -14,7 +14,7 @@ use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::Decoder;
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashSet};
 use std::rc::Rc;
 
 pub struct Cluster {
@@ -92,6 +92,64 @@ impl Cluster {
             }
             let tx = self.create_node_conn(node)?;
             slots_map.add_node(node.clone(), tx);
+        }
+    }
+
+    pub fn dispatch_all(&self, cmds:&mut VecDeque<Cmd>) -> Result<AsyncSink<usize>, Error> {
+        let mut node_set = HashSet::new();
+        let mut is_ready = true;
+        let mut count = 0;
+        loop {
+            if !is_ready {
+                break;
+            }
+
+            let cmd = match cmds.front().cloned() {
+                Some(val) => val,
+                None => break,
+            };
+
+            let slot = cmd.borrow().crc() as usize;
+            let mut slots_map = self.slots.borrow_mut();
+            loop {
+                let addr = slots_map.get_addr(slot);
+                if let Some(sender) = slots_map.get_sender_by_addr(&addr) {
+                    // try to send, when success, insert into node_set
+                    match sender.start_send(cmd) {
+                        Ok(AsyncSink::NotReady(_v)) => {
+                            is_ready = false;
+                            break;
+                        }
+                        Ok(AsyncSink::Ready) => {
+                            node_set.insert(addr.clone());
+                            count += 1;
+                            let _cmd = cmds.pop_front().unwrap();
+                            break;
+                        }
+                        Err(err) => {
+                            error!("send fail with send error: {:?}", err);
+                            return Err(Error::Critical);
+                        }
+                    }
+                }
+                let tx = self.create_node_conn(&addr)?;
+                slots_map.add_node(addr, tx);
+            }
+        }
+
+        for node in node_set.into_iter() {
+            let mut slots_map = self.slots.borrow_mut();
+            let sender = slots_map.get_sender_by_addr(&node).expect("never be null after send");
+            sender.poll_complete().map_err(|err|{
+                error!("fail to complete send cmd to node conn due {:?}", err);
+                Error::Critical
+            })?;
+        }
+
+        if is_ready {
+            Ok(AsyncSink::Ready)
+        } else {
+            Ok(AsyncSink::NotReady(count))
         }
     }
 

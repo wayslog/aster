@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::mem;
 use std::rc::Rc;
-use Notify;
+use notify::Notify;
 
 pub const MUSK: u16 = 0x3fff;
 
