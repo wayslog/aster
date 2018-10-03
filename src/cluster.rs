@@ -8,7 +8,7 @@ use slots::SlotsMap;
 use futures::lazy;
 use futures::unsync::mpsc::{channel, Receiver, Sender};
 use futures::AsyncSink;
-use tokio::executor::current_thread;
+use tokio::runtime::current_thread;
 use tokio::net::TcpStream;
 use tokio::prelude::{Future, Sink, Stream};
 use tokio_codec::Decoder;

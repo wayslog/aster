@@ -3,5 +3,5 @@ name="test-cluster"
 bind="0.0.0.0:9001"
 cache_type="Redis"
 servers = ["127.0.0.1:7000", "127.0.0.1:7001"]
-thread = 4
+thread = 10
 fetch = 10

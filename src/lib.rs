@@ -17,6 +17,8 @@ extern crate itoa;
 extern crate net2;
 extern crate tokio_codec;
 extern crate tokio_io;
+extern crate tokio_timer;
+extern crate tokio_executor;
 #[macro_use]
 extern crate serde_derive;
 extern crate toml;
@@ -47,7 +49,7 @@ use futures::unsync::mpsc::channel;
 use futures::Async;
 // use futures::task::current;
 use net2::TcpBuilder;
-use tokio::executor::current_thread;
+use tokio::runtime::current_thread;
 use tokio::net::TcpListener;
 use tokio::prelude::{Future, Stream};
 use tokio_codec::Decoder;
@@ -95,14 +97,16 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
         .into_iter()
         .map(|_| {
             let cc = cc.clone();
-            thread::spawn(move || {
+            let name = cc.name.clone();
+            let thb = thread::Builder::new().name(format!("cluster-{}", name));
+            thb.spawn(move || {
                 let smap = SlotsMap::default();
                 let cluster = Cluster {
                     cc: cc,
                     slots: RefCell::new(smap),
                 };
                 start_cluster(cluster)
-            })
+            }).unwrap()
         }).collect()
 }
 

@@ -12,9 +12,11 @@ name="asswecan"
 path="bin/main.rs"
 
 [dependencies]
-tokio = "0.1.7"
+tokio = "0.1"
 tokio-io= "*"
 tokio-codec="*"
+tokio-executor="*"
+tokio-timer="*"
 log="*"
 env_logger="*"
 bytes="*"
