@@ -39,7 +39,7 @@ use cmd::CmdCodec;
 pub use com::*;
 use handler::Handle;
 
-// use fetcher::Fetcher;
+use fetcher::Fetcher;
 use init::ClusterInitilizer;
 use resp::Resp;
 use slots::SlotsMap;
@@ -129,14 +129,14 @@ pub fn start_cluster(cluster: Cluster) {
             initilizer
         }).and_then(|(cluster, listen)| {
             // TODO: how to spawn timer func with current_thread
-            // let fetcher = Fetcher::new(cluster.clone())
-            //     .for_each(|_| {
-            //         debug!("success fetch new slots_map");
-            //         Ok(())
-            //     }).map_err(|err| {
-            //         error!("fail to fetch new slots_mapd due {:?}", err);
-            //     });
-            // current_thread::spawn(fetcher);
+            let fetcher = Fetcher::new(cluster.clone())
+                .for_each(|_| {
+                    debug!("success fetch new slots_map");
+                    Ok(())
+                }).map_err(|err| {
+                    error!("fail to fetch new slots_mapd due {:?}", err);
+                });
+            current_thread::spawn(fetcher);
             Ok((cluster, listen))
         }).and_then(|(cluster, listen)| {
             let rc_cluster = cluster.clone();

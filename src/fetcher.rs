@@ -20,16 +20,11 @@ pub struct Fetcher {
     servers: Vec<String>,
     state: FetchState,
     info_cmd: Cmd,
-    is_oneshot: bool,
     internal: Interval,
 }
 
 impl Fetcher {
     pub fn new(cluster: Rc<Cluster>) -> Fetcher {
-        Self::new_fetcher(cluster, true)
-    }
-
-    fn new_fetcher(cluster: Rc<Cluster>, is_oneshot: bool) -> Fetcher {
         let servers = cluster.cc.servers.clone();
         let duration = Duration::from_secs(cluster.cc.fetch);
         Fetcher {
@@ -38,7 +33,6 @@ impl Fetcher {
             servers: servers,
             state: FetchState::Ready,
             info_cmd: new_cluster_nodes_cmd(),
-            is_oneshot: is_oneshot,
             internal: Interval::new(Instant::now() + duration, duration),
         }
     }
@@ -49,7 +43,6 @@ impl Stream for Fetcher {
     type Error = Error;
 
     fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
-        info!("trying to fetch");
         if let None = try_ready!(self.internal.poll().map_err(|err| {
             error!("fetch by internal fail due {:?}", err);
             Error::Critical
@@ -57,21 +50,24 @@ impl Stream for Fetcher {
             return Ok(Async::Ready(None));
         }
 
+        // info!("trying to fetch");
         loop {
+            // debug!("fetch status cursor={} cmd={:?}", self.cursor, self.info_cmd);
             match self.state {
                 FetchState::Ready => {
+                    if self.cursor == 0 {
+                        self.info_cmd = new_cluster_nodes_cmd();
+                    }
+
                     let cursor = self.cursor;
                     if cursor == self.servers.len() {
-                        warn!("fail to update slots map but pass the turn");
-                        if self.is_oneshot {
-                            return Ok(Async::Ready(None));
-                        } else {
-                            self.cursor = 0;
-                            self.info_cmd = new_cluster_nodes_cmd();
-                            return Ok(Async::Ready(Some(())));
-                        }
+                        debug!("fail to update slots map but pass the turn");
+                        self.cursor = 0;
+                        self.info_cmd = new_cluster_nodes_cmd();
+                        return Ok(Async::Ready(Some(())));
                     }
                     let addr = self.servers.get(cursor).cloned().unwrap();
+                    debug!("trying to execute cmd to {}", addr);
                     match self.cluster.execute(&addr, self.info_cmd.clone())? {
                         AsyncSink::NotReady(_) => return Ok(Async::NotReady),
                         AsyncSink::Ready => {
@@ -90,15 +86,21 @@ impl Stream for Fetcher {
                     let resp = cmd_borrow.reply.as_ref().unwrap();
 
                     if resp.rtype != RESP_BULK {
+                        warn!("fetch fail due to bad resp {:?}", resp);
                         self.state = FetchState::Ready;
                         continue;
                     }
 
                     let mut slots_map = self.cluster.slots.borrow_mut();
-                    slots_map.try_update_all(resp.data.as_ref().expect("never be empty"));
-                    self.cursor = 0;
-                    self.info_cmd = new_cluster_nodes_cmd();
-                    return Ok(Async::Ready(Some(())));
+                    let updated = slots_map.try_update_all(resp.data.as_ref().expect("never be empty"));
+                    if updated {
+                        info!("success update slotsmap due slots map is changed");
+                        self.cursor = 0;
+                        return Ok(Async::Ready(Some(())));
+                    } else {
+                        debug!("skip to update due cluster slots map is never changed");
+                        self.state = FetchState::Ready;
+                    }
                 }
             }
         }
