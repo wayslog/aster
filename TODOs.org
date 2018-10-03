@@ -1,0 +1,4 @@
+
+* TODOS
+** TODO implement inline protocol
+** TODO implement cluster slots cmd (for jedis only)
