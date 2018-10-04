@@ -109,7 +109,7 @@ impl Cluster {
                 None => break,
             };
 
-            let slot = cmd.borrow().crc() as usize;
+            let slot = cmd.crc() as usize;
             let mut slots_map = self.slots.borrow_mut();
             loop {
                 let addr = slots_map.get_addr(slot);
@@ -154,7 +154,7 @@ impl Cluster {
     }
 
     pub fn dispatch(&self, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
-        let slot = cmd.borrow().crc() as usize;
+        let slot = cmd.crc() as usize;
         loop {
             let mut slots_map = self.slots.borrow_mut();
             let addr = slots_map.get_addr(slot);

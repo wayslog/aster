@@ -45,7 +45,7 @@ where
                 mem::swap(&mut cmd, &mut self.store);
                 let cmd = cmd.unwrap();
                 let rx_cmd = cmd.clone();
-                let req = rx_cmd.borrow().req.clone();
+                let req = rx_cmd.rc_req();
                 match self.output.start_send(req)? {
                     AsyncSink::NotReady(_) => {
                         self.store = Some(cmd);
@@ -142,7 +142,7 @@ where
                 self.closed = true;
             })) {
                 let cmd = self.buf.borrow_mut().pop_front().unwrap();
-                cmd.borrow_mut().done(val);
+                cmd.done(val);
             } else {
                 error!("TODO: should quick error for");
                 self.closed = true;

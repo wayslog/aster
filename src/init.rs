@@ -62,13 +62,12 @@ impl Future for ClusterInitilizer {
 
                 InitState::Wait => {
                     let cmd = self.info_cmd.clone();
-                    if !cmd.borrow().is_done() {
+                    if !cmd.is_done() {
                         return Ok(Async::NotReady);
                     }
                     // debug!("cmd has been done {:?}", cmd);
 
-                    let cmd_borrow = cmd.borrow_mut();
-                    let resp = cmd_borrow.reply.as_ref().unwrap();
+                    let resp = cmd.swap_reply().expect("reply never be empty for an done cmd");
 
                     if resp.rtype != RESP_BULK {
                         self.state = InitState::Pend;

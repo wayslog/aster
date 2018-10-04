@@ -25,7 +25,61 @@ pub enum CmdType {
     NotSupport,
 }
 
-pub type Cmd = Rc<RefCell<Command>>;
+#[derive(Debug, Clone)]
+pub struct Cmd {
+    cmd: Rc<RefCell<Command>>,
+}
+
+
+impl Cmd {
+    pub fn new(command: Command) -> Cmd {
+        Cmd {
+            cmd: Rc::new(RefCell::new(command)),
+        }
+    }
+
+    pub fn is_complex(&self) -> bool {
+        self.cmd.borrow().is_complex()
+    }
+
+    pub fn cmd_type(&self) -> CmdType {
+        self.cmd.borrow().get_cmd_type()
+    }
+
+    pub fn crc(&self) -> u16 {
+        self.cmd.borrow().crc()
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.cmd.borrow().is_done()
+    }
+
+    pub fn done_with_error(&self, err: &Resp) {
+        self.cmd.borrow_mut().done_with_error(err)
+    }
+
+    pub fn done(&self, resp: Resp) {
+        self.cmd.borrow_mut().done(resp)
+    }
+
+    pub fn rc_req(&self) -> Rc<Resp> {
+        self.cmd.borrow().req.clone()
+    }
+
+    pub fn sub_reqs(&self) -> Option<Vec<Cmd>> {
+        self.cmd.borrow().sub_reqs.as_ref().cloned()
+    }
+
+    pub fn swap_reply(&self) -> Option<Resp> {
+        let mut cmd_mut = self.cmd.borrow_mut();
+        let mut empty = None;
+        mem::swap(&mut empty, &mut cmd_mut.reply);
+        empty
+    }
+
+}
+
+// pub type Cmd = Rc<RefCell<Command>>;
 
 /// Command is a type for Redis Command.
 #[derive(Debug)]
@@ -166,7 +220,7 @@ impl Command {
             }).map(|resp| {
                 let mut cmd = Command::inner_from_resp(resp, self.notify.clone());
                 cmd.is_complex = is_complex;
-                Rc::new(RefCell::new(cmd))
+                Cmd::new(cmd)
             }).collect();
 
         self.sub_reqs = Some(subcmds);
@@ -195,7 +249,7 @@ impl Command {
                 let mut cmd = Command::inner_from_resp(resp, self.notify.clone());
                 cmd.is_complex = self.is_complex;
                 // cmd.task = self.task.clone();
-                Rc::new(RefCell::new(cmd))
+                Cmd::new(cmd)
             }).collect();
         self.sub_reqs = Some(subcmds);
     }
@@ -204,7 +258,7 @@ impl Command {
         if self.is_complex() {
             if let Some(subs) = self.sub_reqs.as_ref() {
                 for sub in subs {
-                    if !sub.borrow().is_done() {
+                    if !sub.is_done() {
                         return false;
                     }
                 }
@@ -418,7 +472,7 @@ impl CmdCodec {
     fn merge_encode_count(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
         let mut sum = 0;
         for subcmd in subs {
-            let mut reply = &mut subcmd.borrow_mut().reply;
+            let mut reply = &mut subcmd.cmd.borrow_mut().reply;
             let subresp = reply.as_mut().expect("subreply must be some resp but None");
             if subresp.rtype == RESP_ERROR {
                 // should swallow the error and convert as 0 count of key.
@@ -476,10 +530,9 @@ impl Encoder for CmdCodec {
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         // TODO: merge response for complex commands.
-        let mut item_borrow = item.borrow_mut();
-        if item_borrow.is_complex() {
-            if let Some(subreqs) = item_borrow.sub_reqs.as_ref().cloned() {
-                let cmd_bytes = item_borrow.req.cmd_bytes().to_vec();
+        if item.is_complex() {
+            if let Some(subreqs) = item.sub_reqs() {
+                let cmd_bytes = item.rc_req().cmd_bytes().to_vec();
                 if &cmd_bytes[..] == b"MSET" {
                     return self.merge_encode_ok(subreqs, dst);
                 } else if &cmd_bytes[..] == b"EVAL" {
@@ -497,8 +550,8 @@ impl Encoder for CmdCodec {
         }
 
         let mut rslt = None;
-        mem::swap(&mut rslt, &mut item_borrow.reply);
-        let reply = rslt.expect("reply never empty");
+        mem::swap(&mut rslt, &mut item.cmd.borrow_mut().reply.as_ref().cloned());
+        let reply = rslt.expect("encode simple reply never empty");
         self.rc.encode(Rc::new(reply), dst)
     }
 }
@@ -531,5 +584,5 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
         sub_reqs: None,
         reply: None,
     };
-    Rc::new(RefCell::new(cmd))
+    Cmd::new(cmd)
 }

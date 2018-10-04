@@ -78,12 +78,11 @@ impl Stream for Fetcher {
                 }
                 FetchState::Wait => {
                     let cmd = self.info_cmd.clone();
-                    if !cmd.borrow().is_done() {
+                    if !cmd.is_done() {
                         return Ok(Async::NotReady);
                     }
 
-                    let cmd_borrow = cmd.borrow_mut();
-                    let resp = cmd_borrow.reply.as_ref().unwrap();
+                    let resp = cmd.swap_reply().expect("fetch result never be empty for an done cmd");
 
                     if resp.rtype != RESP_BULK {
                         warn!("fetch fail due to bad resp {:?}", resp);

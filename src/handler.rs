@@ -6,7 +6,7 @@ use Cluster;
 
 const MAX_CONCURRENCY: usize = 1024 * 8;
 // use aho_corasick::{AcAutomaton, Automaton, Match};
-use std::cell::RefCell;
+// use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
@@ -50,26 +50,21 @@ where
                 Some(val) => {
                     let cmd = Command::from_resp(val);
                     let is_complex = cmd.is_complex();
-                    let rc_cmd = Rc::new(RefCell::new(cmd));
+                    let rc_cmd = Cmd::new(cmd);
                     self.cmds.push_back(rc_cmd.clone());
                     if is_complex {
                         for sub in rc_cmd
-                            .borrow()
-                            .sub_reqs
-                            .as_ref()
-                            .cloned()
-                            .expect("never be empty")
+                            .sub_reqs()
+                            .expect("sub_reqs in try_read never be empty")
                         {
                             self.waitq.push_back(sub);
                         }
                     } else {
-                        let cmd_type = rc_cmd.borrow().get_cmd_type();
+                        let cmd_type = rc_cmd.cmd_type();
                         match cmd_type {
                             CmdType::NotSupport => {
                                 // CmdType::NotSupport | CmdType::Ctrl => {
-                                rc_cmd
-                                    .borrow_mut()
-                                    .done_with_error(&RESP_OBJ_ERROR_NOT_SUPPORT);
+                                rc_cmd.done_with_error(&RESP_OBJ_ERROR_NOT_SUPPORT);
                                 continue;
                             }
                             _ => {}
@@ -104,7 +99,7 @@ where
             }
 
             let rc_cmd = self.cmds.front().cloned().expect("cmds is never be None");
-            if !rc_cmd.borrow().is_done() {
+            if !rc_cmd.is_done() {
                 break;
             }
 
