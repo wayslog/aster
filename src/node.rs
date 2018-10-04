@@ -65,10 +65,8 @@ where
                 Async::Ready(Some(v)) => {
                     if v.is_ask() {
                         self.store.push_back(new_asking_cmd());
-                        self.store.push_back(v);
-                    } else {
-                        self.store.push_back(v);
                     }
+                    self.store.push_back(v);
                 }
 
                 Async::Ready(None) => {

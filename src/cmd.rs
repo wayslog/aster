@@ -9,11 +9,11 @@ use tokio_codec::{Decoder, Encoder};
 
 use futures::task;
 
+use notify::Notify;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::mem;
 use std::rc::Rc;
-use notify::Notify;
 
 pub const MUSK: u16 = 0x3fff;
 
@@ -25,7 +25,6 @@ pub enum CmdType {
     NotSupport,
     Fake,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Cmd {
@@ -92,7 +91,6 @@ impl Cmd {
         mem::swap(&mut empty, &mut cmd_mut.reply);
         empty
     }
-
 }
 
 // pub type Cmd = Rc<RefCell<Command>>;
@@ -233,11 +231,13 @@ impl Command {
                 let key = x[0].clone();
                 let val = x[1].clone();
                 Resp::new_array(Some(vec![RESP_OBJ_BULK_SET.clone(), key, val]))
-            }).map(|resp| {
+            })
+            .map(|resp| {
                 let mut cmd = Command::inner_from_resp(resp, self.notify.clone());
                 cmd.is_complex = is_complex;
                 Cmd::new(cmd)
-            }).collect();
+            })
+            .collect();
 
         self.sub_reqs = Some(subcmds);
     }
@@ -261,12 +261,14 @@ impl Command {
                 arr.push(cmd.clone());
                 arr.push(arg);
                 Resp::new_array(Some(arr))
-            }).map(|resp| {
+            })
+            .map(|resp| {
                 let mut cmd = Command::inner_from_resp(resp, self.notify.clone());
                 cmd.is_complex = self.is_complex;
                 // cmd.task = self.task.clone();
                 Cmd::new(cmd)
-            }).collect();
+            })
+            .collect();
         self.sub_reqs = Some(subcmds);
     }
 
@@ -545,20 +547,19 @@ impl Encoder for CmdCodec {
     type Error = Error;
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        // TODO: merge response for complex commands.
         if item.is_complex() {
             if let Some(subreqs) = item.sub_reqs() {
                 let cmd_bytes = item.rc_req().cmd_bytes().to_vec();
                 if &cmd_bytes[..] == b"MSET" {
                     return self.merge_encode_ok(subreqs, dst);
-                } else if &cmd_bytes[..] == b"EVAL" {
-                    return self.merge_encode_join(subreqs, dst);
                 } else if &cmd_bytes[..] == b"EXISTS" {
                     return self.merge_encode_count(subreqs, dst);
                 } else if &cmd_bytes[..] == b"DEL" {
                     return self.merge_encode_count(subreqs, dst);
                 } else if &cmd_bytes[..] == b"MGET" {
                     return self.merge_encode_join(subreqs, dst);
+                } else if &cmd_bytes[..] == b"EVAL" {
+                    // return self.merge_encode_join(subreqs, dst);
                 } else {
                     unreachable!();
                 }
@@ -566,7 +567,10 @@ impl Encoder for CmdCodec {
         }
 
         let mut rslt = None;
-        mem::swap(&mut rslt, &mut item.cmd.borrow_mut().reply.as_ref().cloned());
+        mem::swap(
+            &mut rslt,
+            &mut item.cmd.borrow_mut().reply.as_ref().cloned(),
+        );
         let reply = rslt.expect("encode simple reply never empty");
         self.rc.encode(Rc::new(reply), dst)
     }
@@ -579,9 +583,10 @@ impl Default for CmdCodec {
 }
 
 pub fn new_asking_cmd() -> Cmd {
-    let req = Resp::new_array(Some(vec![
-        Resp::new_plain(RESP_BULK, Some(b"ASKING".to_vec())),
-    ]));
+    let req = Resp::new_array(Some(vec![Resp::new_plain(
+        RESP_BULK,
+        Some(b"ASKING".to_vec()),
+    )]));
     let notify = Notify::new(task::current());
     notify.add(1);
     let cmd = Command {
