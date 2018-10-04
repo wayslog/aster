@@ -7,24 +7,36 @@ use slots::SlotsMap;
 
 use futures::lazy;
 use futures::unsync::mpsc::{channel, Receiver, Sender};
-use futures::AsyncSink;
-use tokio::runtime::current_thread;
+use futures::{Async, AsyncSink};
 use tokio::net::TcpStream;
 use tokio::prelude::{Future, Sink, Stream};
+use tokio::runtime::current_thread;
 use tokio_codec::Decoder;
 
 use std::cell::RefCell;
-use std::collections::{VecDeque, HashSet};
+use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
 
 pub struct Cluster {
     pub cc: ClusterConfig,
     pub slots: RefCell<SlotsMap>,
+    tx: RefCell<Option<Sender<(String, Cmd)>>>,
 }
 
 impl Cluster {
-    pub fn init_node_conn(&mut self) -> Result<(), Error> {
-        // let cmd = new_cluster_nodes_cmd();
+    pub fn new(cc: ClusterConfig) -> Cluster {
+        Cluster {
+            cc: cc,
+            slots: RefCell::new(SlotsMap::default()),
+            tx: RefCell::new(None),
+        }
+    }
+
+    pub fn set_redirect(&self, sender: Sender<(String, Cmd)>) {
+        *self.tx.borrow_mut() = Some(sender);
+    }
+
+    pub fn init_node_conn(&self) -> Result<(), Error> {
         let mut slots_map = self.slots.borrow_mut();
         for addr in &self.cc.servers {
             let tx = self.create_node_conn(&addr)?;
@@ -34,19 +46,82 @@ impl Cluster {
         Ok(())
     }
 
+    pub fn create_redirect(cluster: Rc<Cluster>) -> Sender<(String, Cmd)> {
+        let (tx, rx) = channel(2048);
+        struct Redirection {
+            recv: Receiver<(String, Cmd)>,
+            cluster: Rc<Cluster>,
+            store: Option<(String, Cmd)>,
+        }
+
+        impl Future for Redirection {
+            type Item = ();
+            type Error = ();
+
+            fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+                loop {
+                    if self.store.is_some() {
+                        let mut redirect = None;
+                        std::mem::swap(&mut redirect, &mut self.store);
+                        if let Some((addr, cmd)) = redirect {
+                            match self.cluster.execute(&addr, cmd).map_err(|err| {
+                                error!("fail to redirect command due to {:?}", err);
+                            })? {
+                                AsyncSink::NotReady(val) => {
+                                    self.store = Some((addr, val));
+                                    return Ok(Async::NotReady);
+                                }
+                                AsyncSink::Ready => {
+                                    debug!("success redirect one command");
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some((addr, cmd)) = try_ready!(
+                        self.recv
+                            .poll()
+                            .map_err(|err| error!("fail to redirect the command due to {:?}", err))
+                    ) {
+                        self.store = Some((addr, cmd));
+                    } else {
+                        warn!("redirect future is dropped");
+                        return Ok(Async::Ready(()));
+                    }
+                }
+            }
+        }
+
+        current_thread::spawn(Redirection {
+            recv: rx,
+            cluster: cluster,
+            store: None,
+        });
+
+        tx
+    }
+
     pub fn create_node_conn(&self, node: &str) -> AsResult<Sender<Cmd>> {
         let addr_string = node.to_string();
         let (tx, rx): (Sender<Cmd>, Receiver<Cmd>) = channel(1024);
         let ret_tx = tx.clone();
+        let redirection = self
+            .tx
+            .borrow()
+            .as_ref()
+            .cloned()
+            .expect("redirect channel is never be empty");
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
             .and_then(move |_| {
                 addr_string
                     .as_str()
                     .parse()
                     .map_err(|err| error!("fail to parse addr {:?}", err))
-            }).and_then(|addr| {
+            })
+            .and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-            }).and_then(|sock| {
+            })
+            .and_then(|sock| {
                 let codec = RespCodec {};
                 let (sink, stream) = codec.framed(sock).split();
                 let arx = rx.map_err(|err| {
@@ -56,7 +131,7 @@ impl Cluster {
                 let buf = Rc::new(RefCell::new(VecDeque::new()));
                 let nd = NodeDown::new(arx, sink, buf.clone());
                 current_thread::spawn(nd);
-                let nr = NodeRecv::new(stream, buf.clone());
+                let nr = NodeRecv::new(stream, buf.clone(), redirection);
                 current_thread::spawn(nr);
                 Ok(())
             });
@@ -75,7 +150,8 @@ impl Cluster {
                     .map_err(|err| {
                         error!("fail to complete send cmd to node conn due {:?}", err);
                         Error::Critical
-                    }).map(|_| AsyncSink::Ready)
+                    })
+                    .map(|_| AsyncSink::Ready)
             }
             Err(err) => {
                 error!("send fail with send error: {:?}", err);
@@ -95,7 +171,7 @@ impl Cluster {
         }
     }
 
-    pub fn dispatch_all(&self, cmds:&mut VecDeque<Cmd>) -> Result<AsyncSink<usize>, Error> {
+    pub fn dispatch_all(&self, cmds: &mut VecDeque<Cmd>) -> Result<AsyncSink<usize>, Error> {
         let mut node_set = HashSet::new();
         let mut is_ready = true;
         let mut count = 0;
@@ -139,8 +215,10 @@ impl Cluster {
 
         for node in node_set.into_iter() {
             let mut slots_map = self.slots.borrow_mut();
-            let sender = slots_map.get_sender_by_addr(&node).expect("never be null after send");
-            sender.poll_complete().map_err(|err|{
+            let sender = slots_map
+                .get_sender_by_addr(&node)
+                .expect("never be null after send");
+            sender.poll_complete().map_err(|err| {
                 error!("fail to complete send cmd to node conn due {:?}", err);
                 Error::Critical
             })?;

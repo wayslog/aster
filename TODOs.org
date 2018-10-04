@@ -2,3 +2,5 @@
 * TODOS
 ** TODO implement inline protocol
 ** TODO implement cluster slots cmd (for jedis only)
+** TODO add cluster redirect logic
+*** done with code but neeed tests

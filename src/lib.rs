@@ -16,9 +16,9 @@ extern crate crc16;
 extern crate itoa;
 extern crate net2;
 extern crate tokio_codec;
+extern crate tokio_executor;
 extern crate tokio_io;
 extern crate tokio_timer;
-extern crate tokio_executor;
 #[macro_use]
 extern crate serde_derive;
 extern crate toml;
@@ -30,9 +30,9 @@ pub mod fetcher;
 mod handler;
 mod init;
 mod node;
+mod notify;
 mod resp;
 mod slots;
-mod notify;
 
 pub use cluster::Cluster;
 use cmd::CmdCodec;
@@ -42,19 +42,17 @@ use handler::Handle;
 use fetcher::Fetcher;
 use init::ClusterInitilizer;
 use resp::Resp;
-use slots::SlotsMap;
 
 use futures::lazy;
 use futures::unsync::mpsc::channel;
 use futures::Async;
 // use futures::task::current;
 use net2::TcpBuilder;
-use tokio::runtime::current_thread;
 use tokio::net::TcpListener;
 use tokio::prelude::{Future, Stream};
+use tokio::runtime::current_thread;
 use tokio_codec::Decoder;
 
-use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::thread;
@@ -100,14 +98,12 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
             let name = cc.name.clone();
             let thb = thread::Builder::new().name(format!("cluster-{}", name));
             thb.spawn(move || {
-                let smap = SlotsMap::default();
-                let cluster = Cluster {
-                    cc: cc,
-                    slots: RefCell::new(smap),
-                };
+                let cluster = Cluster::new(cc);
                 start_cluster(cluster)
-            }).unwrap()
-        }).collect()
+            })
+            .unwrap()
+        })
+        .collect()
 }
 
 pub fn start_cluster(cluster: Cluster) {
@@ -119,26 +115,29 @@ pub fn start_cluster(cluster: Cluster) {
         .expect("parse socket never fail");
 
     let fut = lazy(move || -> Result<(SocketAddr, Cluster), ()> { Ok((addr, cluster)) })
-        .and_then(|(addr, mut cluster)| {
+        .and_then(|(addr, cluster)| {
             let listen = create_reuse_port_listener(&addr).expect("bind never fail");
             info!("success listen at {}", &cluster.cc.bind);
-            cluster.init_node_conn().unwrap();
+            // cluster.init_node_conn().unwrap();
             let initilizer = ClusterInitilizer::new(cluster, listen).map_err(|err| {
                 error!("fail to init cluster with given server due {:?}", err);
             });
             initilizer
-        }).and_then(|(cluster, listen)| {
+        })
+        .and_then(|(cluster, listen)| {
             // TODO: how to spawn timer func with current_thread
             let fetcher = Fetcher::new(cluster.clone())
                 .for_each(|_| {
                     debug!("success fetch new slots_map");
                     Ok(())
-                }).map_err(|err| {
+                })
+                .map_err(|err| {
                     error!("fail to fetch new slots_mapd due {:?}", err);
                 });
             current_thread::spawn(fetcher);
             Ok((cluster, listen))
-        }).and_then(|(cluster, listen)| {
+        })
+        .and_then(|(cluster, listen)| {
             let rc_cluster = cluster.clone();
             let amt = listen
                 .incoming()
@@ -152,7 +151,8 @@ pub fn start_cluster(cluster: Cluster) {
                         .forward(handle_resp_tx)
                         .map_err(|err| {
                             error!("fail to send into handle due to {:?}", err);
-                        }).then(|_| Ok(()));
+                        })
+                        .then(|_| Ok(()));
                     current_thread::spawn(input);
                     let handle = Handle::new(
                         cluster,
@@ -161,12 +161,14 @@ pub fn start_cluster(cluster: Cluster) {
                             Error::Critical
                         }),
                         cmd_tx,
-                    ).map_err(|err| {
+                    )
+                    .map_err(|err| {
                         error!("get handle error due {:?}", err);
                     });
                     current_thread::spawn(handle);
                     Ok(())
-                }).map_err(|err| {
+                })
+                .map_err(|err| {
                     error!("fail to start_cluster due {:?}", err);
                 });
             current_thread::spawn(amt);

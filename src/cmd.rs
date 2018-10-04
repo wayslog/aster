@@ -23,19 +23,35 @@ pub enum CmdType {
     Write,
     Ctrl,
     NotSupport,
+    Fake,
 }
+
 
 #[derive(Debug, Clone)]
 pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
 }
 
-
 impl Cmd {
     pub fn new(command: Command) -> Cmd {
         Cmd {
             cmd: Rc::new(RefCell::new(command)),
         }
+    }
+
+    pub fn set_is_ask(&self, is_ask: bool) {
+        self.cmd.borrow_mut().is_ask = is_ask;
+    }
+
+    pub fn is_fake(&self) -> bool {
+        match self.cmd.borrow().get_cmd_type() {
+            CmdType::Fake => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_ask(&self) -> bool {
+        self.cmd.borrow().is_ask
     }
 
     pub fn is_complex(&self) -> bool {
@@ -560,6 +576,30 @@ impl Default for CmdCodec {
     fn default() -> Self {
         CmdCodec { rc: RespCodec {} }
     }
+}
+
+pub fn new_asking_cmd() -> Cmd {
+    let req = Resp::new_array(Some(vec![
+        Resp::new_plain(RESP_BULK, Some(b"ASKING".to_vec())),
+    ]));
+    let notify = Notify::new(task::current());
+    notify.add(1);
+    let cmd = Command {
+        is_done: false,
+        is_ask: false,
+        is_inline: false,
+
+        is_complex: false,
+        cmd_type: CmdType::Ctrl,
+
+        crc: 0u16,
+        notify: notify,
+
+        req: Rc::new(req),
+        sub_reqs: None,
+        reply: None,
+    };
+    Cmd::new(cmd)
 }
 
 pub fn new_cluster_nodes_cmd() -> Cmd {
