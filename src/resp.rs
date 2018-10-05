@@ -11,6 +11,7 @@ use com::*;
 // pub static LF_STR: &'static str = "\n";
 
 pub type RespType = u8;
+pub const RESP_INLINE: RespType = 0u8;
 pub const RESP_STRING: RespType = '+' as u8;
 pub const RESP_INT: RespType = ':' as u8;
 pub const RESP_ERROR: RespType = '-' as u8;
@@ -102,6 +103,18 @@ impl Resp {
         }
     }
 
+    fn parse_inline(line: &[u8]) -> AsResult<Self> {
+        let mut line_size = line.len();
+        if line[line_size -1 ] == BYTE_CR {
+            line_size -= 1;
+        }
+        Ok(Resp{
+            rtype: RESP_INLINE,
+            data: Some(line[..line_size].to_vec()),
+            array: None,
+        })
+    }
+
     pub fn parse(src: &[u8]) -> AsResult<Self> {
         if src.len() == 0 {
             return Err(Error::MoreData);
@@ -109,12 +122,26 @@ impl Resp {
 
         let mut iter = src.splitn(2, |x| *x == BYTE_LF);
         let line = iter.next().ok_or(Error::MoreData)?;
-        if line[line.len() - 1] != BYTE_CR || line.len() == src.len() {
+
+        // line is not end with addtional '\n'
+        if line.len() == src.len() {
+            return Err(Error::MoreData);
+        }
+
+        let rtype = line[0];
+        match rtype {
+            RESP_STRING | RESP_INT | RESP_ERROR | RESP_BULK | RESP_ARRAY => {}
+            _ => {
+                // trying to parse inline
+                return Self::parse_inline(line);
+            }
+        }
+
+        if line[line.len() - 1] != BYTE_CR {
             return Err(Error::MoreData);
         }
 
         let line_size = line.len() + 1;
-        let rtype = line[0];
 
         match rtype {
             RESP_STRING | RESP_INT | RESP_ERROR => {
@@ -182,7 +209,10 @@ impl Resp {
                 debug_assert_eq!(resp.binary_size(), parsed);
                 Ok(resp)
             }
-            _ => unreachable!(),
+            _ => {
+                // trying to parse inline protocol
+                unreachable!();
+            }
         }
     }
 
@@ -209,7 +239,7 @@ impl Resp {
                     return Ok(5);
                 }
 
-                let data = self.data.as_ref().expect("never nulll");
+                let data = self.data.as_ref().expect("bulk never nulll");
                 let data_len = data.len();
                 let len_len = Self::write_len(dst, data_len)?;
                 // let len_len = itoa::write(&mut dst[1..], data_len)?;
@@ -229,11 +259,11 @@ impl Resp {
                     return Ok(5);
                 }
 
-                let data = self.data.as_ref().expect("never null");
+                let data = self.data.as_ref().expect("array never null");
                 dst.extend_from_slice(data);
                 dst.extend_from_slice(BYTES_CRLF);
                 let mut size = 1 + data.len() + 2;
-                for item in self.array.as_ref().expect("never empty") {
+                for item in self.array.as_ref().expect("non-null array item never empty") {
                     size += item.write(dst)?;
                 }
                 Ok(size)
@@ -305,6 +335,9 @@ impl Resp {
                 }
                 size
             }
+            RESP_INLINE => {
+                self.data.as_ref().expect("inline always have data").len() + 2
+            }
             _ => unreachable!(),
         }
     }
@@ -321,6 +354,15 @@ impl Resp {
             .as_mut()
             .map(|x| x.get_mut(i))
             .expect("must be array")
+    }
+
+    pub fn is_inline(&self) -> bool {
+        self.rtype == RESP_INLINE
+    }
+
+    pub fn unwrap_data(self) -> Option<Vec<u8>> {
+        let Resp {rtype: _rtype, data: d, array: _array} = self;
+        d
     }
 }
 

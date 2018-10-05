@@ -1,4 +1,4 @@
-use cmd::{Cmd, CmdType, Command, RESP_OBJ_ERROR_NOT_SUPPORT};
+use cmd::{Cmd, CmdType, Command, RESP_OBJ_ERROR_NOT_SUPPORT, RESP_OBJ_STRING_PONG};
 use com::*;
 use resp::Resp;
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
@@ -40,6 +40,16 @@ where
         }
     }
 
+    fn deal_ctrl(&mut self, cmd: Cmd) {
+        let req = cmd.rc_req();
+        let cmd_bytes = req.cmd_bytes();
+        if cmd_bytes == b"PING" {
+            cmd.done(RESP_OBJ_STRING_PONG.clone());
+        } else {
+            cmd.done_with_error(&RESP_OBJ_ERROR_NOT_SUPPORT);
+        }
+    }
+
     fn try_read(&mut self) -> Result<Async<Option<()>>, Error> {
         loop {
             if self.cmds.len() > MAX_CONCURRENCY {
@@ -63,8 +73,11 @@ where
                         let cmd_type = rc_cmd.cmd_type();
                         match cmd_type {
                             CmdType::NotSupport => {
-                                // CmdType::NotSupport | CmdType::Ctrl => {
                                 rc_cmd.done_with_error(&RESP_OBJ_ERROR_NOT_SUPPORT);
+                                continue;
+                            }
+                            CmdType::Ctrl => {
+                                self.deal_ctrl(rc_cmd);
                                 continue;
                             }
                             _ => {}

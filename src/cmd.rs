@@ -4,7 +4,7 @@ use bytes::{BufMut, BytesMut};
 use com::*;
 use crc16;
 use resp::RespCodec;
-use resp::{Resp, BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT};
+use resp::{Resp, BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
 use tokio_codec::{Decoder, Encoder};
 
 use futures::task;
@@ -137,6 +137,13 @@ impl Command {
     }
 
     pub fn from_resp(resp: Resp) -> Command {
+        if resp.is_inline() {
+            let data = resp.unwrap_data().expect("inline resp data is never empty");
+            let dstring = String::from_utf8_lossy(&data);
+            let args = dstring.split(" ").map(|x| x.to_string()).collect();
+            return new_cmd(args);
+        }
+
         let local_task = task::current();
         let notify = Notify::new(local_task);
         let mut command = Self::inner_from_resp(resp, notify);
@@ -465,6 +472,10 @@ lazy_static!{
     {
         Resp::new_plain(RESP_ERROR, Some("command format wrong".as_bytes().to_vec())) };
 
+    pub static ref RESP_OBJ_STRING_PONG: Resp =
+    {
+        Resp::new_plain(RESP_STRING, Some("PONG".as_bytes().to_vec())) };
+
     pub static ref CMD_COMPLEX: BTreeSet<&'static [u8]> = {
         let cmds = vec!["MSET", "MGET", "DEL", "EXISTS", "EVAL"];
 
@@ -577,14 +588,12 @@ impl Default for CmdCodec {
     }
 }
 
-#[allow(unused)]
-pub fn new_cmd(args: Vec<String>) -> Cmd {
+pub fn new_cmd(args: Vec<String>) -> Command {
     let resps: Vec<_> = args.into_iter().map(|x| {
         Resp::new_plain(RESP_BULK, Some(x.as_bytes().to_vec()))
     }).collect();
     let req = Resp::new_array(Some(resps));
-    let cmd = Command::from_resp(req);
-    Cmd::new(cmd)
+    Command::from_resp(req)
 }
 
 pub fn new_asking_cmd() -> Cmd {
