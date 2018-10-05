@@ -566,12 +566,7 @@ impl Encoder for CmdCodec {
             }
         }
 
-        let mut rslt = None;
-        mem::swap(
-            &mut rslt,
-            &mut item.cmd.borrow_mut().reply.as_ref().cloned(),
-        );
-        let reply = rslt.expect("encode simple reply never empty");
+        let reply = item.swap_reply().expect("encode simple reply never empty");
         self.rc.encode(Rc::new(reply), dst)
     }
 }
@@ -580,6 +575,16 @@ impl Default for CmdCodec {
     fn default() -> Self {
         CmdCodec { rc: RespCodec {} }
     }
+}
+
+#[allow(unused)]
+pub fn new_cmd(args: Vec<String>) -> Cmd {
+    let resps: Vec<_> = args.into_iter().map(|x| {
+        Resp::new_plain(RESP_BULK, Some(x.as_bytes().to_vec()))
+    }).collect();
+    let req = Resp::new_array(Some(resps));
+    let cmd = Command::from_resp(req);
+    Cmd::new(cmd)
 }
 
 pub fn new_asking_cmd() -> Cmd {

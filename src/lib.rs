@@ -26,13 +26,14 @@ extern crate toml;
 mod cluster;
 mod cmd;
 mod com;
-pub mod fetcher;
+mod fetcher;
 mod handler;
 mod init;
 mod node;
 mod notify;
 mod resp;
 mod slots;
+pub mod proxy;
 
 pub use cluster::Cluster;
 use cmd::CmdCodec;
