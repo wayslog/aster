@@ -141,7 +141,9 @@ impl Command {
             let data = resp.unwrap_data().expect("inline resp data is never empty");
             let dstring = String::from_utf8_lossy(&data);
             let args = dstring.split(" ").map(|x| x.to_string()).collect();
-            return new_cmd(args);
+            let mut cmd = new_cmd(args);
+            cmd.is_inline = true;
+            return cmd;
         }
 
         let local_task = task::current();
@@ -589,9 +591,10 @@ impl Default for CmdCodec {
 }
 
 pub fn new_cmd(args: Vec<String>) -> Command {
-    let resps: Vec<_> = args.into_iter().map(|x| {
-        Resp::new_plain(RESP_BULK, Some(x.as_bytes().to_vec()))
-    }).collect();
+    let resps: Vec<_> = args
+        .into_iter()
+        .map(|x| Resp::new_plain(RESP_BULK, Some(x.as_bytes().to_vec())))
+        .collect();
     let req = Resp::new_array(Some(resps));
     Command::from_resp(req)
 }
