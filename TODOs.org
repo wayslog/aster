@@ -1,6 +1,13 @@
 
-* TODOS
-** TODO implement inline protocol
+* TODOS [2/7]
+** DONE implement inline protocol
+   CLOSED: [2018-10-10 Wed 11:08]
 ** TODO implement cluster slots cmd (for jedis only)
-** TODO add cluster redirect logic
+** DONE add cluster redirect logic
+   CLOSED: [2018-10-10 Wed 11:08]
 *** done with code but neeed tests
+** TODO fetch bugs for slotsmap
+*** may panic when fetch fail
+** TODO more test cases for redis
+** TODO support for memcache and redis singleton.
+** TODO support for memcache binary protocol
