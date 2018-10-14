@@ -16,7 +16,7 @@ dependencies = [
 
 [[package]]
 name = "asswecan"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "btoi 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "bytes 0.4.10 (registry+https://github.com/rust-lang/crates.io-index)",
