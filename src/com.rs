@@ -9,6 +9,7 @@ use std::net;
 pub enum Error {
     None,
     MoreData,
+    NotSupport,
     BadMsg,
     BadKey,
     BadCmd,
@@ -49,6 +50,8 @@ pub type AsResult<T> = result::Result<T, Error>;
 
 const LOWER_BEGIN: u8 = 'a' as u8;
 const LOWER_END: u8 = 'z' as u8;
+const UPPER_BEGIN: u8 = 'A' as u8;
+const UPPER_END: u8 = 'Z' as u8;
 const UPPER_TO_LOWER: u8 = 'a' as u8 - 'A' as u8;
 
 pub fn update_to_upper(src: &mut [u8]) {
@@ -57,5 +60,14 @@ pub fn update_to_upper(src: &mut [u8]) {
             continue;
         }
         *b = *b - UPPER_TO_LOWER;
+    }
+}
+
+pub fn update_to_lower(src: &mut [u8]) {
+    for b in src {
+        if *b < UPPER_BEGIN || *b > UPPER_END {
+            continue;
+        }
+        *b = *b + UPPER_TO_LOWER;
     }
 }

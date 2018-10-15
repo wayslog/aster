@@ -30,9 +30,10 @@ mod handler;
 mod init;
 mod node;
 mod notify;
-pub mod proxy;
 mod resp;
 mod slots;
+pub mod proxy;
+pub mod mc;
 
 pub use cluster::Cluster;
 use cmd::CmdCodec;

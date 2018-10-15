@@ -163,10 +163,12 @@ impl Resp {
                     });
                 }
                 let size = count as usize + 2;
-                let data = iter.next().ok_or(Error::MoreData)?;
-                if data.len() < size {
+                // BUG: if the body contains '\n'
+                // the request is always NeedMoreData.
+                if src.len() < line_size + size {
                     return Err(Error::MoreData);
                 }
+                let data = &src[line_size..line_size + size];
 
                 let resp = Resp {
                     rtype: rtype,
