@@ -1,5 +1,3 @@
-
-
 use futures::task::Task;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -13,6 +13,7 @@ pub enum Error {
     BadMsg,
     BadKey,
     BadCmd,
+    BadConfig,
     BadSlotsMap,
     IoError(io::Error),
     Critical,

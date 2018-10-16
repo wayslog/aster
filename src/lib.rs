@@ -21,6 +21,7 @@ extern crate tokio_timer;
 #[macro_use]
 extern crate serde_derive;
 extern crate toml;
+extern crate md5;
 
 mod cluster;
 mod cmd;
@@ -34,6 +35,7 @@ mod resp;
 mod slots;
 pub mod proxy;
 pub mod mc;
+pub mod ketama;
 
 pub use cluster::Cluster;
 use cmd::CmdCodec;

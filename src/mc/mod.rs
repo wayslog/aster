@@ -20,6 +20,32 @@ const BYTES_SPACE: &'static [u8] = b" ";
 const BYTES_END: &'static [u8] = b"END\r\n";
 const BYTES_VALUE: &'static [u8] = b"VALUE";
 
+// storage commands
+pub const REQ_SET_BYTES: &'static [u8] = b"set";
+pub const REQ_ADD_BYTES: &'static [u8] = b"add";
+pub const REQ_REPLACE_BYTES: &'static [u8] = b"replace";
+pub const REQ_APPEND_BYTES: &'static [u8] = b"append";
+pub const REQ_PREPEND_BYTES: &'static [u8] = b"prepend";
+pub const REQ_CAS_BYTES: &'static [u8] = b"cas";
+
+// retrieval commands
+pub const REQ_GET_BYTES: &'static [u8] = b"get";
+pub const REQ_GETS_BYTES: &'static [u8] = b"gets";
+
+// delete commands
+pub const REQ_DELETE_BYTES: &'static [u8] = b"delete";
+
+// Incr/Decr
+pub const REQ_INCR_BYTES: &'static [u8] = b"incr";
+pub const REQ_DECR_BYTES: &'static [u8] = b"decr";
+
+// Touch
+pub const REQ_TOUCH_BYTES: &'static [u8] = b"touch";
+
+// get and touch
+pub const REQ_GAT_BYTES: &'static [u8] = b"gat";
+pub const REQ_GATS_BYTES: &'static [u8] = b"gats";
+
 #[derive(Clone, Copy, Debug)]
 pub enum ReqType {
     // storage commands
@@ -450,28 +476,8 @@ impl Encoder for NodeCodec {
     }
 }
 
-// storage commands
-pub const REQ_SET_BYTES: &'static [u8] = b"set";
-pub const REQ_ADD_BYTES: &'static [u8] = b"add";
-pub const REQ_REPLACE_BYTES: &'static [u8] = b"replace";
-pub const REQ_APPEND_BYTES: &'static [u8] = b"append";
-pub const REQ_PREPEND_BYTES: &'static [u8] = b"prepend";
-pub const REQ_CAS_BYTES: &'static [u8] = b"cas";
-
-// retrieval commands
-pub const REQ_GET_BYTES: &'static [u8] = b"get";
-pub const REQ_GETS_BYTES: &'static [u8] = b"gets";
-
-// delete commands
-pub const REQ_DELETE_BYTES: &'static [u8] = b"delete";
-
-// Incr/Decr
-pub const REQ_INCR_BYTES: &'static [u8] = b"incr";
-pub const REQ_DECR_BYTES: &'static [u8] = b"decr";
-
-// Touch
-pub const REQ_TOUCH_BYTES: &'static [u8] = b"touch";
-
-// get and touch
-pub const REQ_GAT_BYTES: &'static [u8] = b"gat";
-pub const REQ_GATS_BYTES: &'static [u8] = b"gats";
+impl Default for NodeCodec {
+    fn default() -> Self {
+        NodeCodec {}
+    }
+}
