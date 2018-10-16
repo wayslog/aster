@@ -6,6 +6,7 @@ use notify::Notify;
 // use bytes::{BufMut, BytesMut};
 use bytes::BytesMut;
 use futures::task;
+use log::Level;
 use tokio_codec::{Decoder, Encoder};
 
 use std::cell::RefCell;
@@ -16,6 +17,8 @@ const BYTE_CR: u8 = '\r' as u8;
 const BYTE_SPACE: u8 = ' ' as u8;
 
 const BYTES_SPACE: &'static [u8] = b" ";
+const BYTES_END: &'static [u8] = b"END\r\n";
+const BYTES_VALUE: &'static [u8] = b"VALUE";
 
 #[derive(Clone, Copy, Debug)]
 pub enum ReqType {
@@ -46,29 +49,18 @@ impl ReqType {
         match self {
             ReqType::Set | ReqType::Get | ReqType::Add | ReqType::Cas | ReqType::Gat => 3,
             ReqType::Gats | ReqType::Gets | ReqType::Incr | ReqType::Decr => 4,
+            ReqType::Touch => 5,
             ReqType::Append | ReqType::Delete => 6,
             ReqType::Prepend | ReqType::Replace => 7,
-            ReqType::Touch => 5,
         }
     }
-}
 
-#[derive(Clone, Debug)]
-pub struct Req {
-    req: Rc<RefCell<MCReq>>,
-}
-
-#[derive(Clone, Debug)]
-pub struct MCReq {
-    rtype: ReqType,
-    data: BytesMut,
-    key: Range,
-
-    is_done: bool,
-    notify: Notify,
-
-    subs: Option<Vec<Req>>,
-    reply: Option<Vec<u8>>,
+    fn is_complex(&self) -> bool {
+        match self {
+            ReqType::Get | ReqType::Gets | ReqType::Gats | ReqType::Gat => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -84,6 +76,43 @@ impl Range {
             end: end,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct Req {
+    req: Rc<RefCell<MCReq>>,
+}
+
+impl Req {
+    pub fn is_complex(&self) -> bool {
+        self.req.borrow().rtype.is_complex()
+    }
+
+    pub fn done(&self, data: BytesMut) {
+        let mut refreq = self.req.borrow_mut();
+        refreq.reply = Some(data);
+        refreq.notify.done();
+    }
+
+    pub fn done_with_error(&self, err: &[u8]) {
+        let buf = BytesMut::from(err);
+        let mut refreq = self.req.borrow_mut();
+        refreq.reply = Some(buf);
+        refreq.notify.done();
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct MCReq {
+    rtype: ReqType,
+    data: BytesMut,
+    key: Range,
+
+    is_done: bool,
+    notify: Notify,
+
+    subs: Option<Vec<Req>>,
+    reply: Option<BytesMut>,
 }
 
 pub struct HandleCodec {}
@@ -133,7 +162,6 @@ impl HandleCodec {
             Err(Error::NotSupport)
         }
     }
-
 
     fn parse_touch_retrieval(src: &mut BytesMut, rtype: ReqType, le: usize) -> AsResult<Req> {
         let data = src.split_to(le);
@@ -192,7 +220,6 @@ impl HandleCodec {
             req: Rc::new(RefCell::new(mcreq)),
         })
     }
-
 
     fn parse_key_range(src: &BytesMut, skip: usize) -> Range {
         let mut fields = src.split(|x| *x == BYTE_SPACE);
@@ -298,8 +325,12 @@ impl HandleCodec {
             btoi::btoi::<usize>(size_bytes)?
         };
         let range = Self::parse_key_range(&src, 0);
+        let tsize = body_size + le + 2;
+        if tsize > src.len() {
+            return Err(Error::MoreData);
+        }
 
-        let data = src.split_to(body_size + le);
+        let data = src.split_to(tsize);
         let local = task::current();
         let notify = Notify::new(local);
         notify.add(1);
@@ -307,9 +338,7 @@ impl HandleCodec {
             req: Rc::new(RefCell::new(MCReq {
                 rtype: rtype,
                 data: data,
-                // FIXME: match the really key position.
                 key: range,
-
                 is_done: false,
                 notify: notify,
                 subs: None,
@@ -325,8 +354,12 @@ impl Decoder for HandleCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        Self::parse(src)?;
-        Ok(None)
+        let opt_value = Self::parse(src).map(|x| Some(x)).or_else(|err| match err {
+            Error::MoreData => Ok(None),
+            ev => Err(ev),
+        })?;
+
+        Ok(opt_value)
     }
 }
 
@@ -334,14 +367,86 @@ impl Encoder for HandleCodec {
     type Item = Req;
     type Error = Error;
 
-    fn encode(&mut self, _item: Self::Item, _dst: &mut BytesMut) -> Result<(), Self::Error> {
-        unimplemented!();
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        if item.is_complex() {
+            let req = item.req.borrow();
+            req.subs
+                .as_ref()
+                .expect("HandleCodec subs is never be empty")
+                .iter()
+                .for_each(|x| {
+                    let subreq = x.req.borrow();
+                    let subreply = subreq
+                        .reply
+                        .as_ref()
+                        .expect("HandleCodec subs reply is never be empty");
+                    if subreply.ends_with(BYTES_END) {
+                        dst.extend(&subreply[..subreply.len() - BYTES_END.len()]);
+                    }
+                    if log_enabled!(Level::Trace) {
+                        trace!("skip merge complex bytes as {:?}", subreply);
+                    }
+                });
+            return Ok(dst.extend(BYTES_END));
+        }
+
+        let req = item.req.borrow();
+        let buf = req
+            .reply
+            .as_ref()
+            .expect("HandleCodec encode reply is never be empty");
+        Ok(dst.extend(&*buf))
     }
 }
 
 impl Default for HandleCodec {
     fn default() -> Self {
         HandleCodec {}
+    }
+}
+
+pub struct NodeCodec {}
+
+impl Decoder for NodeCodec {
+    type Item = BytesMut;
+    type Error = Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        let le_opt = src.iter().position(|x| *x == BYTE_LF);
+        let le = if let Some(le) = le_opt {
+            le
+        } else {
+            return Ok(None);
+        };
+        let buf = if src.starts_with(BYTES_VALUE) {
+            // 读取 value body
+            let size = {
+                let mut iter = src.split(|x| *x == BYTE_SPACE);
+                let lbs = iter
+                    .skip(3)
+                    .next()
+                    .expect("NodeCodec decode body length never be empty");
+                btoi::btoi::<usize>(lbs)?
+            };
+            let tsize = le + size + 2;
+            if src.len() < tsize {
+                return Ok(None);
+            }
+            src.split_to(le + size + 2)
+        } else {
+            src.split_to(le)
+        };
+        Ok(Some(buf))
+    }
+}
+
+impl Encoder for NodeCodec {
+    type Item = Req;
+    type Error = Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let req = item.req.borrow();
+        Ok(dst.extend(&req.data))
     }
 }
 
