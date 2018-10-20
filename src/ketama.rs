@@ -4,42 +4,38 @@ use std::cmp::Ordering;
 use std::hash::Hasher;
 use std::marker::PhantomData;
 
-#[derive(Eq, Ord)]
-pub struct NodeHash {
+const POINTER_PER_SERVER: f64 = 160.0;
+
+#[derive(Eq, Ord, Debug)]
+struct NodeHash {
     pub node: String,
     pub hash: u64,
 }
 
 impl PartialEq for NodeHash {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.hash == other.hash
     }
 }
 
 impl PartialOrd for NodeHash {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if self.hash > other.hash {
-            Some(Ordering::Greater)
-        } else if self.hash < other.hash {
-            Some(Ordering::Less)
-        } else {
-            Some(Ordering::Equal)
-        }
+        Some(self.hash.cmp(&other.hash))
     }
 }
 
 pub struct HashRing<T: Hasher + Default> {
-    pub nodes: Vec<String>,
-    pub spots: Vec<usize>,
-    pub ticks: Vec<NodeHash>,
-    pub _hash: PhantomData<T>,
+    nodes: Vec<String>,
+    spots: Vec<usize>,
+    ticks: Vec<NodeHash>,
+    _hash: PhantomData<T>,
 }
-
-const POINTER_PER_SERVER: f64 = 160.0;
 
 impl<T: Hasher + Default> HashRing<T> {
     pub fn new(nodes: Vec<String>, spots: Vec<usize>) -> AsResult<Self> {
-        if nodes.len() == spots.len() {
+        if nodes.len() != spots.len() {
             return Err(Error::BadConfig);
         }
 
@@ -55,10 +51,11 @@ impl<T: Hasher + Default> HashRing<T> {
 
     fn node_hash(key: &str, align: usize) -> u64 {
         let md5::Digest(bs) = md5::compute(key.as_bytes());
-        (((bs[3 + align + 4] as u64) & 0xFF) << 24)
-            | (((bs[2 + align + 4] as u64) & 0xFF) << 16)
-            | (((bs[1 + align + 4] as u64) & 0xFF) << 8)
-            | (((bs[align + 4] as u64) & 0xFF) << 0)
+        let v = (((bs[3 + align * 4] as u64) & 0xFF) << 24)
+            | (((bs[2 + align * 4] as u64) & 0xFF) << 16)
+            | (((bs[1 + align * 4] as u64) & 0xFF) << 8)
+            | (((bs[0 + align * 4] as u64) & 0xFF) << 0);
+        v
     }
 
     fn init(&mut self) {
@@ -111,14 +108,9 @@ impl<T: Hasher + Default> HashRing<T> {
         let mut hash = T::default();
         hash.write(key.as_ref());
         let value = hash.finish();
+
         let find = self.ticks.binary_search_by(|x| {
-            if x.hash > value {
-                Ordering::Greater
-            } else if x.hash < value {
-                Ordering::Less
-            } else {
-                Ordering::Equal
-            }
+            x.hash.cmp(&value)
         });
 
         let pos = match find {
@@ -127,5 +119,62 @@ impl<T: Hasher + Default> HashRing<T> {
             Err(val) => val,
         };
         self.ticks[pos].node.clone()
+    }
+}
+
+#[cfg(test)]
+mod test_ketama {
+    use self::super::*;
+    use fnv::Fnv1a64;
+    use test::Bencher;
+
+    #[bench]
+    fn ketma_dist_get_node(b: &mut Bencher) {
+        let ring = HashRing::<Fnv1a64>::new(
+            vec![
+                "redis-1".to_owned(),
+                "redis-2".to_owned(),
+                "redis-3".to_owned(),
+            ],
+            vec![10, 10, 10],
+        ).expect("create new hash ring success");
+        let keys = vec![b"a".to_vec(), b"b".to_vec(), b"val-a".to_vec()];
+
+        b.iter(||{
+            for key in &*keys {
+                let _= ring.get_node(key);
+            }
+        });
+    }
+
+    #[bench]
+    fn ketma_dist_add_node(b: &mut Bencher) {
+        let mut ring = HashRing::<Fnv1a64>::new(
+            vec![
+                "redis-1".to_owned(),
+                "redis-2".to_owned(),
+                "redis-3".to_owned(),
+            ],
+            vec![10, 10, 10],
+        ).expect("create new hash ring success");
+
+        b.iter(||{
+            ring.add_node("redis-4".to_owned(), 10);
+        });
+    }
+
+    #[test]
+    fn ketama_dist() {
+        let ring = HashRing::<Fnv1a64>::new(
+            vec![
+                "redis-1".to_owned(),
+                "redis-2".to_owned(),
+                "redis-3".to_owned(),
+            ],
+            vec![10, 10, 10],
+        )
+        .expect("create new hash ring success");
+        let node = ring.get_node("a");
+        assert_eq!(&node, "redis-2");
     }
 }

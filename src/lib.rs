@@ -1,5 +1,7 @@
 #![deny(warnings)]
+#![feature(test)]
 
+extern crate test;
 extern crate tokio;
 #[macro_use(try_ready)]
 extern crate futures;
@@ -36,6 +38,7 @@ mod slots;
 pub mod proxy;
 pub mod mc;
 pub mod ketama;
+pub mod fnv;
 
 pub use cluster::Cluster;
 use cmd::CmdCodec;
