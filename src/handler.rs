@@ -1,4 +1,4 @@
-use cmd::{Cmd, CmdType, Command, RESP_OBJ_ERROR_NOT_SUPPORT, RESP_OBJ_STRING_PONG};
+use cmd::{Cmd, CmdType, RESP_OBJ_ERROR_NOT_SUPPORT, RESP_OBJ_STRING_PONG};
 use com::*;
 use resp::Resp;
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
@@ -58,9 +58,8 @@ where
 
             match try_ready!(self.input.poll()) {
                 Some(val) => {
-                    let cmd = Command::from_resp(val);
-                    let is_complex = cmd.is_complex();
-                    let rc_cmd = Cmd::new(cmd);
+                    let rc_cmd = Cmd::from(val);
+                    let is_complex = rc_cmd.is_complex();
                     self.cmds.push_back(rc_cmd.clone());
                     if is_complex {
                         for sub in rc_cmd

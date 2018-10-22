@@ -31,8 +31,15 @@ pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
 }
 
+impl From<Resp> for Cmd {
+    fn from(resp: Resp) -> Cmd {
+        let command = Command::from_resp(resp);
+        Cmd::new(command)
+    }
+}
+
 impl Cmd {
-    pub fn new(command: Command) -> Cmd {
+    fn new(command: Command) -> Cmd {
         Cmd {
             cmd: Rc::new(RefCell::new(command)),
         }
@@ -55,6 +62,10 @@ impl Cmd {
 
     pub fn is_complex(&self) -> bool {
         self.cmd.borrow().is_complex()
+    }
+
+    pub fn set_is_complex(&self, is_complex: bool) {
+        self.cmd.borrow_mut().is_complex = is_complex;
     }
 
     pub fn cmd_type(&self) -> CmdType {
@@ -113,6 +124,12 @@ pub struct Command {
     pub reply: Option<Resp>,
 }
 
+impl From<Resp> for Command {
+    fn from(resp: Resp) -> Command {
+        Command::from_resp(resp)
+    }
+}
+
 impl Command {
     fn inner_from_resp(mut resp: Resp, notify: Notify) -> Command {
         Self::cmd_to_upper(&mut resp);
@@ -136,7 +153,7 @@ impl Command {
         }
     }
 
-    pub fn from_resp(resp: Resp) -> Command {
+    fn from_resp(resp: Resp) -> Command {
         if resp.is_inline() {
             let data = resp.unwrap_data().expect("inline resp data is never empty");
             let dstring = String::from_utf8_lossy(&data);
@@ -194,14 +211,6 @@ impl Command {
         return self.crc;
     }
 
-    pub fn is_batch(&self) -> bool {
-        self.sub_reqs.is_some()
-    }
-
-    pub fn subs(&self) -> &[Cmd] {
-        self.sub_reqs.as_ref().expect("call subs never fail")
-    }
-
     pub fn get_cmd_type(&self) -> CmdType {
         self.cmd_type
     }
@@ -242,9 +251,9 @@ impl Command {
                 Resp::new_array(Some(vec![RESP_OBJ_BULK_SET.clone(), key, val]))
             })
             .map(|resp| {
-                let mut cmd = Command::inner_from_resp(resp, self.notify.clone());
-                cmd.is_complex = is_complex;
-                Cmd::new(cmd)
+                let cmd = Cmd::from(resp);
+                cmd.set_is_complex(is_complex);
+                cmd
             })
             .collect();
 
@@ -596,7 +605,7 @@ pub fn new_cmd(args: Vec<String>) -> Command {
         .map(|x| Resp::new_plain(RESP_BULK, Some(x.as_bytes().to_vec())))
         .collect();
     let req = Resp::new_array(Some(resps));
-    Command::from_resp(req)
+    Command::from(req)
 }
 
 pub fn new_asking_cmd() -> Cmd {

@@ -3,7 +3,7 @@ use com::*;
 use crc16;
 use futures::unsync::mpsc::Sender;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem;
 
 pub const SLOTS_COUNT: usize = 16384;
@@ -25,12 +25,13 @@ impl Slots {
             if !items[2].contains("master") {
                 return None;
             }
-            let sub_slots: Vec<_> = items[8..]
+            let sub_slots: HashSet<_> = items[8..]
                 .iter()
                 .map(|x| x)
                 .map(|item| Self::parse_item(item))
                 .flatten()
                 .collect();
+
             let addr = items[1].split("@").next().expect("must contains addr");
 
             Some((addr.to_owned(), sub_slots))
@@ -54,6 +55,17 @@ impl Slots {
         if item.len() == 0 {
             return slots;
         }
+
+        if item.contains("->-") {
+            debug!("parse cluster nodes result for migrating item={}", item);
+            return item
+                .split("->-")
+                .take(1)
+                .map(|x| x.trim_start_matches('['))
+                .map(|num_str| num_str.parse::<usize>().expect("must parse integer done"))
+                .collect();
+        }
+
         let mut iter = item.split("-");
         let begin_str = iter.next().expect("must have integer");
         let begin = begin_str.parse::<usize>().expect("must parse integer done");

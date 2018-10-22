@@ -1,5 +1,4 @@
 #![deny(warnings)]
-#![feature(integer_atomics)]
 
 extern crate tokio;
 #[macro_use(try_ready)]
@@ -31,9 +30,9 @@ mod handler;
 mod init;
 mod node;
 mod notify;
+pub mod proxy;
 mod resp;
 mod slots;
-pub mod proxy;
 
 pub use cluster::Cluster;
 use cmd::CmdCodec;
@@ -55,6 +54,7 @@ use tokio::runtime::current_thread;
 use tokio_codec::Decoder;
 
 use std::collections::VecDeque;
+use std::io::ErrorKind;
 use std::net::SocketAddr;
 use std::thread;
 
@@ -92,12 +92,13 @@ fn load_config() -> Config {
 
 pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
     let count = cc.thread;
+    info!("asswecan start {} listen at {} with {} thread", &cc.name, &cc.bind, count);
     (0..count)
         .into_iter()
-        .map(|_| {
+        .map(|i| {
             let cc = cc.clone();
             let name = cc.name.clone();
-            let thb = thread::Builder::new().name(format!("cluster-{}", name));
+            let thb = thread::Builder::new().name(format!("cluster-{}-{}", name, i+1));
             thb.spawn(move || {
                 let cluster = Cluster::new(cc);
                 start_cluster(cluster)
@@ -118,7 +119,6 @@ pub fn start_cluster(cluster: Cluster) {
     let fut = lazy(move || -> Result<(SocketAddr, Cluster), ()> { Ok((addr, cluster)) })
         .and_then(|(addr, cluster)| {
             let listen = create_reuse_port_listener(&addr).expect("bind never fail");
-            info!("success listen at {}", &cluster.cc.bind);
             // cluster.init_node_conn().unwrap();
             let initilizer = ClusterInitilizer::new(cluster, listen).map_err(|err| {
                 error!("fail to init cluster with given server due {:?}", err);
@@ -150,8 +150,9 @@ pub fn start_cluster(cluster: Cluster) {
                     let (handle_resp_tx, handle_resp_rx) = channel(2048);
                     let input = resp_rx
                         .forward(handle_resp_tx)
-                        .map_err(|err| {
-                            error!("fail to send into handle due to {:?}", err);
+                        .map_err(|err| match err {
+                            Error::IoError(ref e) if e.kind() == ErrorKind::ConnectionReset => {}
+                            e => error!("fail to send into handle due to {:?}", e),
                         })
                         .then(|_| Ok(()));
                     current_thread::spawn(input);
