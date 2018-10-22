@@ -1,8 +1,7 @@
 //! proxy is the mod which contains genneral proxy
 use com::*;
 
-use bytes::BytesMut;
-use futures::{Async, Future, Sink, Stream, AsyncSink};
+use futures::{Async, AsyncSink, Future, Sink, Stream};
 
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -23,6 +22,9 @@ impl<T: Request> Proxy<T> {
 }
 
 pub trait Request: Sized + Clone + Debug {
+    type Reply: Clone + Debug + Sized;
+    type ReqError: Clone;
+
     fn key(&self) -> &[u8];
     fn cmd(&self) -> &[u8];
     fn subs(&self) -> Option<Vec<Self>>;
@@ -31,8 +33,8 @@ pub trait Request: Sized + Clone + Debug {
 
     fn is_notsupport(&self) -> bool;
 
-    fn done(&self, data: BytesMut);
-    fn done_with_error(&self, err: &[u8]);
+    fn done(&self, data: Self::Reply);
+    fn done_with_error(&self, err: &Self::ReqError);
 }
 
 pub struct Handle<T, I, O, D>
@@ -57,37 +59,6 @@ where
     T: Request,
     D: Into<T>,
 {
-    fn try_read(&mut self) -> Result<Async<Option<()>>, Error> {
-        loop {
-            if self.cmds.len() > MAX_CONCURRENCY {
-                return Ok(Async::NotReady);
-            }
-
-            match try_ready!(self.input.poll()) {
-                Some(val) => {
-                    let cmd: T = Into::into(val);
-                    let is_complex = cmd.is_complex();
-                    self.cmds.push_back(cmd.clone());
-
-                    if is_complex {
-                        for sub in cmd.subs().expect("sub_reqs in try_read never be empty") {
-                            self.waitq.push_back(sub);
-                        }
-                    } else {
-                        if cmd.is_notsupport() {
-                            cmd.done_with_error(b"cmd not support");
-                            continue;
-                        }
-                        self.waitq.push_back(cmd);
-                    }
-                }
-                None => {
-                    return Ok(Async::Ready(None));
-                }
-            }
-        }
-    }
-
     fn try_send(&mut self) -> Result<Async<()>, Error> {
         loop {
             if self.waitq.is_empty() {
@@ -132,11 +103,52 @@ where
     }
 }
 
+impl<T, I, O, D> Handle<T, I, O, D>
+where
+    I: Stream<Item = D, Error = Error>,
+    O: Sink<SinkItem = T, SinkError = Error>,
+    T: Request<ReqError = Vec<u8>>,
+    D: Into<T>,
+{
+    fn try_read(&mut self) -> Result<Async<Option<()>>, Error> {
+        loop {
+            if self.cmds.len() > MAX_CONCURRENCY {
+                return Ok(Async::NotReady);
+            }
+
+            match try_ready!(self.input.poll()) {
+                Some(val) => {
+                    let cmd: T = Into::into(val);
+                    let is_complex = cmd.is_complex();
+                    self.cmds.push_back(cmd.clone());
+
+                    if is_complex {
+                        for sub in cmd.subs().expect("sub_reqs in try_read never be empty") {
+                            self.waitq.push_back(sub);
+                        }
+                    } else {
+                        if cmd.is_notsupport() {
+                            // TODO: impl as lazy_static
+                            let notsupport = b"cmd not support".to_vec();
+                            cmd.done_with_error(&notsupport);
+                            continue;
+                        }
+                        self.waitq.push_back(cmd);
+                    }
+                }
+                None => {
+                    return Ok(Async::Ready(None));
+                }
+            }
+        }
+    }
+}
+
 impl<T, I, O, D> Future for Handle<T, I, O, D>
 where
     I: Stream<Item = D, Error = Error>,
     O: Sink<SinkItem = T, SinkError = Error>,
-    T: Request,
+    T: Request<ReqError = Vec<u8>>,
     D: Into<T>,
 {
     type Item = ();
@@ -190,4 +202,3 @@ where
         }
     }
 }
-
