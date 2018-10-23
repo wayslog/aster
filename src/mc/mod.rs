@@ -1,8 +1,8 @@
-use btoi;
 use com::*;
 use notify::Notify;
+use proxy::Request;
 
-// use btoi;
+use btoi;
 // use bytes::{BufMut, BytesMut};
 use bytes::BytesMut;
 use futures::task;
@@ -104,6 +104,42 @@ impl Range {
     }
 }
 
+impl Request for Req {
+    type Reply = BytesMut;
+
+    fn key(&self) -> Vec<u8> {
+        let Range { start, end } = { self.req.borrow().key };
+        let data = &mut self.req.borrow_mut().data[start..end];
+        unsafe { Vec::from_raw_parts(data.as_mut_ptr(), end - start, end - start) }
+    }
+
+    fn subs(&self) -> Option<Vec<Self>> {
+        self.req.borrow().subs.clone()
+    }
+
+    fn is_done(&self) -> bool {
+        self.req.borrow().is_done
+    }
+
+    fn valid(&self) -> bool {
+        // check is not support and set error fast
+        true
+    }
+
+    fn done(&self, data: Self::Reply) {
+        let mut refreq = self.req.borrow_mut();
+        refreq.reply = Some(data);
+        refreq.notify.done();
+    }
+    fn done_with_error(&self, err: Error) {
+        let data = format!("{:?}", err);
+        let buf = BytesMut::from(data.as_bytes().to_vec());
+        let mut refreq = self.req.borrow_mut();
+        refreq.reply = Some(buf);
+        refreq.notify.done();
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Req {
     req: Rc<RefCell<MCReq>>,
@@ -112,19 +148,6 @@ pub struct Req {
 impl Req {
     pub fn is_complex(&self) -> bool {
         self.req.borrow().rtype.is_complex()
-    }
-
-    pub fn done(&self, data: BytesMut) {
-        let mut refreq = self.req.borrow_mut();
-        refreq.reply = Some(data);
-        refreq.notify.done();
-    }
-
-    pub fn done_with_error(&self, err: &[u8]) {
-        let buf = BytesMut::from(err);
-        let mut refreq = self.req.borrow_mut();
-        refreq.reply = Some(buf);
-        refreq.notify.done();
     }
 }
 
@@ -140,6 +163,7 @@ pub struct MCReq {
     subs: Option<Vec<Req>>,
     reply: Option<BytesMut>,
 }
+
 
 pub struct HandleCodec {}
 

@@ -1,40 +1,83 @@
 //! proxy is the mod which contains genneral proxy
 use com::*;
+use fnv::Fnv1a64;
+use ketama::HashRing;
 
+use futures::sync::mpsc::Sender;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 
-use std::collections::VecDeque;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
 use std::rc::Rc;
-// use std::cell::RefCell;
-use std::marker::PhantomData;
 
 const MAX_CONCURRENCY: usize = 1024;
 
 pub struct Proxy<T: Request> {
-    _placeholder: PhantomData<T>,
+    ring: RefCell<HashRing<Fnv1a64>>,
+    conns: RefCell<HashMap<String, Sender<T>>>,
 }
 
 impl<T: Request> Proxy<T> {
-    fn dispatch_all(&self, _cmds: &mut VecDeque<T>) -> Result<AsyncSink<usize>, Error> {
-        unimplemented!()
+    fn create_conn(_node: String) -> AsResult<Sender<T>> {
+        unimplemented!();
+    }
+
+    fn dispatch_all(&self, cmds: &mut VecDeque<T>) -> Result<AsyncSink<()>, Error> {
+        let mut nodes = HashSet::new();
+        loop {
+            if let Some(cmd) = cmds.front().cloned() {
+                let node = self.ring.borrow().get_node(cmd.key());
+                if let Some(conn) = self.conns.borrow_mut().get_mut(&node) {
+                    match conn.start_send(cmd).map_err(|err| {
+                        error!("fail to dispatch to backend due to {:?}", err);
+                        Error::Critical
+                    })? {
+                        AsyncSink::Ready => {
+                            let _ = cmds.pop_front().expect("pop_front never be empty");
+                            nodes.insert(node.clone());
+                        }
+                        AsyncSink::NotReady(_) => {
+                            break;
+                        }
+                    }
+                } else {
+                    let conn = Self::create_conn(node.clone())?;
+                    self.conns.borrow_mut().insert(node, conn);
+                }
+            } else {
+                return Ok(AsyncSink::Ready);
+            }
+        }
+
+        if !nodes.is_empty() {
+            for node in nodes.into_iter() {
+                self.conns
+                    .borrow_mut()
+                    .get_mut(&node)
+                    .expect("node connection is never be absent")
+                    .poll_complete()
+                    .map_err(|err| {
+                        error!("fail to complete to proxy to backend due to {:?}", err);
+                        Error::Critical
+                    })?;
+            }
+        }
+
+        Ok(AsyncSink::Ready)
     }
 }
 
 pub trait Request: Sized + Clone + Debug {
     type Reply: Clone + Debug + Sized;
-    type ReqError: Clone;
 
-    fn key(&self) -> &[u8];
-    fn cmd(&self) -> &[u8];
+    fn key(&self) -> Vec<u8>;
     fn subs(&self) -> Option<Vec<Self>>;
     fn is_done(&self) -> bool;
-    fn is_complex(&self) -> bool;
 
-    fn is_notsupport(&self) -> bool;
-
+    fn valid(&self) -> bool;
     fn done(&self, data: Self::Reply);
-    fn done_with_error(&self, err: &Self::ReqError);
+    fn done_with_error(&self, err: Error);
 }
 
 pub struct Handle<T, I, O, D>
@@ -65,7 +108,7 @@ where
                 return Ok(Async::NotReady);
             }
 
-            if let AsyncSink::NotReady(_count) = self.proxy.dispatch_all(&mut self.waitq)? {
+            if let AsyncSink::NotReady(()) = self.proxy.dispatch_all(&mut self.waitq)? {
                 return Ok(Async::NotReady);
             }
         }
@@ -107,7 +150,7 @@ impl<T, I, O, D> Handle<T, I, O, D>
 where
     I: Stream<Item = D, Error = Error>,
     O: Sink<SinkItem = T, SinkError = Error>,
-    T: Request<ReqError = Vec<u8>>,
+    T: Request,
     D: Into<T>,
 {
     fn try_read(&mut self) -> Result<Async<Option<()>>, Error> {
@@ -119,20 +162,16 @@ where
             match try_ready!(self.input.poll()) {
                 Some(val) => {
                     let cmd: T = Into::into(val);
-                    let is_complex = cmd.is_complex();
                     self.cmds.push_back(cmd.clone());
+                    if !cmd.valid() {
+                        continue;
+                    }
 
-                    if is_complex {
-                        for sub in cmd.subs().expect("sub_reqs in try_read never be empty") {
+                    if let Some(subs) = cmd.subs() {
+                        for sub in subs.into_iter() {
                             self.waitq.push_back(sub);
                         }
                     } else {
-                        if cmd.is_notsupport() {
-                            // TODO: impl as lazy_static
-                            let notsupport = b"cmd not support".to_vec();
-                            cmd.done_with_error(&notsupport);
-                            continue;
-                        }
                         self.waitq.push_back(cmd);
                     }
                 }
@@ -148,7 +187,7 @@ impl<T, I, O, D> Future for Handle<T, I, O, D>
 where
     I: Stream<Item = D, Error = Error>,
     O: Sink<SinkItem = T, SinkError = Error>,
-    T: Request<ReqError = Vec<u8>>,
+    T: Request,
     D: Into<T>,
 {
     type Item = ();
@@ -198,6 +237,134 @@ where
                     }
                     Async::Ready(_) => {}
                 }
+            }
+        }
+    }
+}
+
+pub struct NodeDown<T, I, O>
+where
+    I: Stream<Item = T, Error = Error>,
+    O: Sink<SinkItem = T, SinkError = Error>,
+    T: Request,
+{
+    closed: bool,
+    input: I,
+    output: O,
+    store: VecDeque<T>,
+    buf: Rc<RefCell<VecDeque<T>>>,
+    count: usize,
+}
+
+impl<T, I, O> NodeDown<T, I, O>
+where
+    I: Stream<Item = T, Error = Error>,
+    O: Sink<SinkItem = T, SinkError = Error>,
+    T: Request,
+{
+    fn try_forword(&mut self) -> AsResult<()> {
+        loop {
+            if !self.store.is_empty() {
+                let cmd = self
+                    .store
+                    .front()
+                    .cloned()
+                    .expect("node down store is never be empty");
+                match self.output.start_send(cmd)? {
+                    AsyncSink::NotReady(_) => {
+                        return Ok(());
+                    }
+                    AsyncSink::Ready => {
+                        let cmd = self
+                            .store
+                            .pop_front()
+                            .expect("try_forward store never be empty");
+                        self.buf.borrow_mut().push_back(cmd);
+                        self.count += 1;
+                        continue;
+                    }
+                }
+            }
+
+            match self.input.poll()? {
+                Async::Ready(Some(v)) => {
+                    self.store.push_back(v);
+                }
+
+                Async::Ready(None) => {
+                    self.closed = true;
+                    return Ok(());
+                }
+
+                Async::NotReady => {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+impl<T, I, O> Future for NodeDown<T, I, O>
+where
+    I: Stream<Item = T, Error = Error>,
+    O: Sink<SinkItem = T, SinkError = Error>,
+    T: Request,
+{
+    type Item = ();
+    type Error = ();
+    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        if self.closed {
+            return Ok(Async::Ready(()));
+        }
+
+        self.try_forword()
+            .map_err(|err| error!("fail to forward due to {:?}", err))?;
+
+        if self.count > 0 {
+            try_ready!(self.output.poll_complete().map_err(|err| {
+                error!("fail to flush into backend due to {:?}", err);
+                self.closed = true;
+            }));
+            self.count = 0;
+        }
+        Ok(Async::NotReady)
+    }
+}
+
+pub struct NodeRecv<T, S>
+where
+    S: Stream<Item = T::Reply, Error = Error>,
+    T: Request,
+{
+    closed: bool,
+    recv: S,
+    buf: Rc<RefCell<VecDeque<T>>>,
+}
+
+impl<T, S> Future for NodeRecv<T, S>
+where
+    S: Stream<Item = T::Reply, Error = Error>,
+    T: Request,
+{
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        if self.closed {
+            return Ok(Async::Ready(()));
+        }
+
+        loop {
+            if let Some(resp) = try_ready!(self.recv.poll().map_err(|err| {
+                error!("fail to recv from back end, may closed due to {:?}", err);
+                self.closed = true;
+            })) {
+                let cmd = self.buf.borrow_mut().pop_front().unwrap();
+                cmd.done(resp);
+            } else {
+                error!("TODO: should quick error for");
+                self.closed = true;
+                return Ok(Async::Ready(()));
             }
         }
     }
