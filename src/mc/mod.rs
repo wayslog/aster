@@ -346,7 +346,6 @@ impl HandleCodec {
 
     fn parse_retrieval(src: &mut BytesMut, rtype: ReqType, le: usize) -> AsResult<Req> {
         let data = src.split_to(le);
-        info!("data {:?}", data);
         let fields: Vec<_> = data[..le - 2]
             .split(|x| *x == BYTE_SPACE)
             .filter(|v| !v.is_empty())
