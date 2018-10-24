@@ -1,51 +1,149 @@
 //! proxy is the mod which contains genneral proxy
 use com::*;
+use create_reuse_port_listener;
 use fnv::Fnv1a64;
 use ketama::HashRing;
+use ClusterConfig;
 
-use futures::sync::mpsc::Sender;
+use futures::lazy;
+use futures::unsync::mpsc::{channel, Sender};
 use futures::{Async, AsyncSink, Future, Sink, Stream};
+use tokio::net::TcpStream;
+use tokio::runtime::current_thread;
 use tokio_codec::{Decoder, Encoder};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Debug;
+use std::net::SocketAddr;
 use std::rc::Rc;
 
 const MAX_CONCURRENCY: usize = 1024;
 
+pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
+    let addr = proxy
+        .cc
+        .bind
+        .clone()
+        .parse::<SocketAddr>()
+        .expect("parse socket never fail");
+
+    let fut = lazy(move || -> Result<(SocketAddr, Proxy<T>), ()> { Ok((addr, proxy)) })
+        .and_then(|(addr, proxy)| {
+            let listen = create_reuse_port_listener(&addr).expect("bind never fail");
+            Ok((Rc::new(proxy), listen))
+        })
+        .and_then(|(proxy, listen)| {
+            let rc_proxy = proxy.clone();
+            let amt = listen
+                .incoming()
+                .for_each(move |sock| {
+                    let codec = T::handle_codec();
+                    let (req_tx, req_rx) = codec.framed(sock).split();
+                    let proxy = rc_proxy.clone();
+                    // TODO: remove magic number.
+                    let handle = Handle::new(proxy, req_rx, req_tx).map_err(|err| {
+                        error!("get handle error due {:?}", err);
+                    });
+                    current_thread::spawn(handle);
+                    Ok(())
+                })
+                .map_err(|err| {
+                    error!("fail to start_cluster due {:?}", err);
+                });
+            current_thread::spawn(amt);
+            Ok(())
+        });
+
+    current_thread::block_on_all(fut).unwrap();
+}
+
 pub struct Proxy<T: Request> {
+    pub cc: ClusterConfig,
     ring: RefCell<HashRing<Fnv1a64>>,
     conns: RefCell<HashMap<String, Sender<T>>>,
 }
 
-impl<T: Request> Proxy<T> {
-    fn create_conn(_node: String) -> AsResult<Sender<T>> {
-        unimplemented!();
+impl<T: Request + 'static> Proxy<T> {
+    pub fn new(cc: ClusterConfig) -> AsResult<Proxy<T>> {
+        let weight = cc.servers.iter().map(|_| 1).collect();
+        let ring = HashRing::<Fnv1a64>::new(cc.servers.clone(), weight)?;
+        Ok(Proxy {
+            cc: cc,
+            ring: RefCell::new(ring),
+            conns: RefCell::new(HashMap::new()),
+        })
+    }
+
+    fn create_conn(node: String) -> AsResult<Sender<T>> {
+        let node_addr = node.clone();
+        let (tx, rx) = channel(10234 * 8);
+        let ret_tx = tx.clone();
+        let amt = lazy(|| -> Result<(), ()> { Ok(()) })
+            .and_then(move |_| {
+                node_addr
+                    .as_str()
+                    .parse()
+                    .map_err(|err| error!("fail to parse addr {:?}", err))
+            })
+            .and_then(|addr| {
+                TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+            })
+            .and_then(|sock| {
+                let codec = <T as Request>::node_codec();
+                let (sink, stream) = codec.framed(sock).split();
+                let arx = rx.map_err(|err| {
+                    info!("fail to send due to {:?}", err);
+                    Error::Critical
+                });
+                let buf = Rc::new(RefCell::new(VecDeque::new()));
+                let nd = NodeDown {
+                    closed: false,
+                    input: arx,
+                    output: sink,
+                    store: VecDeque::with_capacity(4),
+                    buf: buf.clone(),
+                    count: 0,
+                };
+                current_thread::spawn(nd);
+                let nr = NodeRecv {
+                    closed: false,
+                    recv: stream,
+                    buf: buf.clone(),
+                };
+                current_thread::spawn(nr);
+                Ok(())
+            });
+        current_thread::spawn(amt);
+        Ok(ret_tx)
     }
 
     fn dispatch_all(&self, cmds: &mut VecDeque<T>) -> Result<AsyncSink<()>, Error> {
         let mut nodes = HashSet::new();
         loop {
-            if let Some(cmd) = cmds.front().cloned() {
-                let node = self.ring.borrow().get_node(cmd.key());
-                if let Some(conn) = self.conns.borrow_mut().get_mut(&node) {
-                    match conn.start_send(cmd).map_err(|err| {
-                        error!("fail to dispatch to backend due to {:?}", err);
-                        Error::Critical
-                    })? {
-                        AsyncSink::Ready => {
-                            let _ = cmds.pop_front().expect("pop_front never be empty");
-                            nodes.insert(node.clone());
-                        }
-                        AsyncSink::NotReady(_) => {
-                            break;
-                        }
+            if let Some(req) = cmds.front().cloned() {
+                let node = self.ring.borrow().get_node(req.key());
+                let mut conns = self.conns.borrow_mut();
+                {
+                    if let Some(conn) = conns.get_mut(&node) {
+                        match conn.start_send(req).map_err(|err| {
+                            error!("fail to dispatch to backend due to {:?}", err);
+                            Error::Critical
+                        })? {
+                            AsyncSink::Ready => {
+                                let _ = cmds.pop_front().expect("pop_front never be empty");
+                                nodes.insert(node.clone());
+                            }
+                            AsyncSink::NotReady(_) => {
+                                break;
+                            }
+                        };
+                        continue;
                     }
-                } else {
-                    let conn = Self::create_conn(node.clone())?;
-                    self.conns.borrow_mut().insert(node, conn);
                 }
+
+                let conn = Self::create_conn(node.clone())?;
+                conns.insert(node, conn);
             } else {
                 return Ok(AsyncSink::Ready);
             }
@@ -74,6 +172,7 @@ pub trait Request: Sized + Clone + Debug {
     type HandleCodec: Decoder<Item = Self, Error = Error> + Encoder<Item = Self, Error = Error>;
     type NodeCodec: Decoder<Item = Self::Reply, Error = Error> + Encoder<Item = Self, Error = Error>;
 
+    fn reregister(&self);
     fn handle_codec() -> Self::HandleCodec;
     fn node_codec() -> Self::NodeCodec;
 
@@ -105,9 +204,20 @@ impl<T, I, O, D> Handle<T, I, O, D>
 where
     I: Stream<Item = D, Error = Error>,
     O: Sink<SinkItem = T, SinkError = Error>,
-    T: Request,
+    T: Request + 'static,
     D: Into<T>,
 {
+    fn new(proxy: Rc<Proxy<T>>, input: I, output: O) -> Handle<T, I, O, D> {
+        Handle {
+            proxy: proxy,
+            input: input,
+            output: output,
+            cmds: VecDeque::new(),
+            count: 0,
+            waitq: VecDeque::new(),
+        }
+    }
+
     fn try_send(&mut self) -> Result<Async<()>, Error> {
         loop {
             if self.waitq.is_empty() {
@@ -127,12 +237,12 @@ where
                 break;
             }
 
-            let rc_cmd = self.cmds.front().cloned().expect("cmds is never be None");
-            if !rc_cmd.is_done() {
+            let rc_req = self.cmds.front().cloned().expect("cmds is never be None");
+            if !rc_req.is_done() {
                 break;
             }
 
-            match self.output.start_send(rc_cmd)? {
+            match self.output.start_send(rc_req)? {
                 AsyncSink::NotReady(_) => {
                     break;
                 }
@@ -167,18 +277,19 @@ where
 
             match try_ready!(self.input.poll()) {
                 Some(val) => {
-                    let cmd: T = Into::into(val);
-                    self.cmds.push_back(cmd.clone());
-                    if !cmd.valid() {
+                    let req: T = Into::into(val);
+                    req.reregister();
+                    self.cmds.push_back(req.clone());
+                    if !req.valid() {
                         continue;
                     }
 
-                    if let Some(subs) = cmd.subs() {
+                    if let Some(subs) = req.subs() {
                         for sub in subs.into_iter() {
                             self.waitq.push_back(sub);
                         }
                     } else {
-                        self.waitq.push_back(cmd);
+                        self.waitq.push_back(req);
                     }
                 }
                 None => {
@@ -193,7 +304,7 @@ impl<T, I, O, D> Future for Handle<T, I, O, D>
 where
     I: Stream<Item = D, Error = Error>,
     O: Sink<SinkItem = T, SinkError = Error>,
-    T: Request,
+    T: Request + 'static,
     D: Into<T>,
 {
     type Item = ();
@@ -223,7 +334,7 @@ where
                 }
             }
 
-            // step 2: send to cluster.
+            // step 2: send to proxy.
             if can_send {
                 // send until the output stream is unsendable.
                 match self.try_send()? {
@@ -234,7 +345,7 @@ where
                 }
             }
 
-            // step 3: wait all the cluster is done.
+            // step 3: wait all the proxy is done.
             if can_write {
                 // step 4: poll send back to client.
                 match self.try_write()? {
@@ -271,21 +382,21 @@ where
     fn try_forword(&mut self) -> AsResult<()> {
         loop {
             if !self.store.is_empty() {
-                let cmd = self
+                let req = self
                     .store
                     .front()
                     .cloned()
                     .expect("node down store is never be empty");
-                match self.output.start_send(cmd)? {
+                match self.output.start_send(req)? {
                     AsyncSink::NotReady(_) => {
                         return Ok(());
                     }
                     AsyncSink::Ready => {
-                        let cmd = self
+                        let req = self
                             .store
                             .pop_front()
                             .expect("try_forward store never be empty");
-                        self.buf.borrow_mut().push_back(cmd);
+                        self.buf.borrow_mut().push_back(req);
                         self.count += 1;
                         continue;
                     }
@@ -361,12 +472,12 @@ where
         }
 
         loop {
-            if let Some(resp) = try_ready!(self.recv.poll().map_err(|err| {
+            if let Some(reply) = try_ready!(self.recv.poll().map_err(|err| {
                 error!("fail to recv from back end, may closed due to {:?}", err);
                 self.closed = true;
             })) {
-                let cmd = self.buf.borrow_mut().pop_front().unwrap();
-                cmd.done(resp);
+                let req = self.buf.borrow_mut().pop_front().unwrap();
+                req.done(reply);
             } else {
                 error!("TODO: should quick error for");
                 self.closed = true;

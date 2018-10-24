@@ -1,4 +1,4 @@
-use futures::task::Task;
+use futures::task::{self, Task};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,6 +29,10 @@ impl Notify {
 
     pub fn add(&self, val: usize) {
         self.count.fetch_add(val, Ordering::Relaxed);
+    }
+
+    pub fn reregister(&mut self) {
+        self.task = task::current();
     }
 }
 

@@ -22,23 +22,23 @@ extern crate tokio_io;
 extern crate tokio_timer;
 #[macro_use]
 extern crate serde_derive;
-extern crate toml;
 extern crate md5;
+extern crate toml;
 
 mod cluster;
 mod cmd;
 mod com;
 mod fetcher;
+pub mod fnv;
 mod handler;
 mod init;
+pub mod ketama;
+pub mod mc;
 mod node;
 mod notify;
+pub mod proxy;
 mod resp;
 mod slots;
-pub mod proxy;
-pub mod mc;
-pub mod ketama;
-pub mod fnv;
 
 pub use cluster::Cluster;
 use cmd::CmdCodec;
@@ -98,16 +98,28 @@ fn load_config() -> Config {
 
 pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
     let count = cc.thread;
-    info!("asswecan start {} listen at {} with {} thread", &cc.name, &cc.bind, count);
+    info!(
+        "asswecan start {} listen at {} with {} thread",
+        &cc.name, &cc.bind, count
+    );
     (0..count)
         .into_iter()
         .map(|i| {
             let cc = cc.clone();
             let name = cc.name.clone();
-            let thb = thread::Builder::new().name(format!("cluster-{}-{}", name, i+1));
-            thb.spawn(move || {
-                let cluster = Cluster::new(cc);
-                start_cluster(cluster)
+            let thb = thread::Builder::new().name(format!("cluster-{}-{}", name, i + 1));
+            thb.spawn(move || match cc.cache_type {
+                CacheType::Memcache => {
+                    let p = proxy::Proxy::new(cc).unwrap();
+                    proxy::start_proxy::<mc::Req>(p);
+                }
+                CacheType::RedisCluster => {
+                    let cluster = Cluster::new(cc);
+                    start_cluster(cluster)
+                }
+                _ => {
+                    warn!("cache type is not supported");
+                }
             })
             .unwrap()
         })

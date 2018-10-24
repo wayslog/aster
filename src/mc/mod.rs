@@ -20,6 +20,7 @@ const BYTES_CRLF: &'static [u8] = b"\r\n";
 const BYTES_SPACE: &'static [u8] = b" ";
 const BYTES_END: &'static [u8] = b"END\r\n";
 const BYTES_VALUE: &'static [u8] = b"VALUE";
+const BYTES_NOREPLY: &'static [u8] = b"noreply";
 
 // storage commands
 pub const REQ_SET_BYTES: &'static [u8] = b"set";
@@ -117,6 +118,10 @@ impl Request for Req {
         NodeCodec::default()
     }
 
+    fn reregister(&self) {
+        self.req.borrow_mut().notify.reregister();
+    }
+
     fn key(&self) -> Vec<u8> {
         let Range { start, end } = { self.req.borrow().key };
         let data = &mut self.req.borrow_mut().data[start..end];
@@ -128,7 +133,7 @@ impl Request for Req {
     }
 
     fn is_done(&self) -> bool {
-        self.req.borrow().is_done
+        self.req.borrow().is_done()
     }
 
     fn valid(&self) -> bool {
@@ -138,6 +143,7 @@ impl Request for Req {
 
     fn done(&self, data: Self::Reply) {
         let mut refreq = self.req.borrow_mut();
+        refreq.is_done = true;
         refreq.reply = Some(data);
         refreq.notify.done();
     }
@@ -174,6 +180,15 @@ pub struct MCReq {
     reply: Option<BytesMut>,
 }
 
+impl MCReq {
+    fn is_done(&self) -> bool {
+        self.subs
+            .as_ref()
+            .map(|x| x.iter().all(|x| x.is_done()))
+            .unwrap_or(self.is_done)
+    }
+}
+
 pub struct HandleCodec {}
 
 impl HandleCodec {
@@ -182,11 +197,13 @@ impl HandleCodec {
         let line_pos = src
             .iter()
             .position(|x| *x == BYTE_LF)
-            .ok_or(Error::MoreData)?;
+            .ok_or(Error::MoreData)?
+            + 1;
         let cmd_end_pos = src
             .iter()
             .position(|x| *x == BYTE_CR)
-            .ok_or(Error::MoreData)?;
+            .ok_or(Error::MoreData)?
+            + 1;
         // TODO: validate cmd_end_pos position
         update_to_lower(&mut src[..cmd_end_pos]);
         if src.starts_with(REQ_SET_BYTES) {
@@ -323,11 +340,12 @@ impl HandleCodec {
 
     fn parse_retrieval(src: &mut BytesMut, rtype: ReqType, le: usize) -> AsResult<Req> {
         let data = src.split_to(le);
-        let fields: Vec<_> = data
+        info!("data {:?}", data);
+        let fields: Vec<_> = data[..le - 2]
             .split(|x| *x == BYTE_SPACE)
             .filter(|v| !v.is_empty())
             .collect();
-        let count = fields.len() - 2;
+        let count = fields.len() - 1;
         let cmd_size = rtype.len();
 
         let notify = Notify::new(task::current());
@@ -337,13 +355,12 @@ impl HandleCodec {
             .map(|i| {
                 let idx = 1 + i;
                 let key_len = fields[idx].len();
-                let size = cmd_size + 2 + key_len + 2;
+                let size = cmd_size + 1 + key_len + 2;
                 let mut buf = BytesMut::with_capacity(size);
                 buf.extend_from_slice(&fields[0]);
                 buf.extend_from_slice(BYTES_SPACE);
                 buf.extend_from_slice(&fields[idx]);
-                buf.extend_from_slice(BYTES_SPACE);
-                buf.extend_from_slice(&fields[fields.len() - 1]);
+                buf.extend_from_slice(BYTES_CRLF);
                 Req {
                     req: Rc::new(RefCell::new(MCReq {
                         rtype: rtype,
@@ -376,9 +393,9 @@ impl HandleCodec {
 
     fn parse_storage(src: &mut BytesMut, rtype: ReqType, le: usize) -> AsResult<Req> {
         let body_size = {
-            let mut fields = (&src[..le])
+            let mut fields = (&src[..le - 2])
                 .split(|x| *x == BYTE_SPACE)
-                .filter(|v| !v.is_empty());
+                .filter(|v| !v.is_empty() && *v != BYTES_NOREPLY);
 
             let size_bytes = fields.skip(4).next().ok_or(Error::BadMsg)?;
             btoi::btoi::<usize>(size_bytes)?
@@ -413,9 +430,11 @@ impl Decoder for HandleCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let opt_value = Self::parse(src).map(|x| Some(x)).or_else(|err| match err {
-            Error::MoreData => Ok(None),
-            ev => Err(ev),
+        let opt_value = Self::parse(src).map(|x| Some(x)).or_else(|err| {
+            match err {
+                Error::MoreData => Ok(None),
+                ev => Err(ev),
+            }
         })?;
 
         Ok(opt_value)
@@ -473,14 +492,15 @@ impl Decoder for NodeCodec {
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let le_opt = src.iter().position(|x| *x == BYTE_LF);
         let le = if let Some(le) = le_opt {
-            le
+            le + 1
         } else {
             return Ok(None);
         };
+
         let buf = if src.starts_with(BYTES_VALUE) {
             // 读取 value body
             let size = {
-                let mut iter = src.split(|x| *x == BYTE_SPACE);
+                let mut iter = src[..le - 2].split(|x| *x == BYTE_SPACE);
                 let lbs = iter
                     .skip(3)
                     .next()
@@ -495,6 +515,7 @@ impl Decoder for NodeCodec {
         } else {
             src.split_to(le)
         };
+
         Ok(Some(buf))
     }
 }
