@@ -123,9 +123,10 @@ impl Request for Req {
     }
 
     fn key(&self) -> Vec<u8> {
-        let Range { start, end } = { self.req.borrow().key };
-        let data = &mut self.req.borrow_mut().data[start..end];
-        unsafe { Vec::from_raw_parts(data.as_mut_ptr(), end - start, end - start) }
+        // let Range { start, end } = { self.req.borrow().key.clone() };
+        // self.req.borrow().data[start..end].to_vec()
+        // unsafe { Vec::from_raw_parts(data.as_mut_ptr(), end - start, end - start) }
+        self.req.borrow().key()
     }
 
     fn subs(&self) -> Option<Vec<Self>> {
@@ -186,6 +187,11 @@ impl MCReq {
             .as_ref()
             .map(|x| x.iter().all(|x| x.is_done()))
             .unwrap_or(self.is_done)
+    }
+
+    fn key(&self) -> Vec<u8> {
+        let Range { start, end } = self.key;
+        self.data[start..end].to_vec()
     }
 }
 
@@ -431,11 +437,9 @@ impl Decoder for HandleCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let opt_value = Self::parse(src).map(|x| Some(x)).or_else(|err| {
-            match err {
-                Error::MoreData => Ok(None),
-                ev => Err(ev),
-            }
+        let opt_value = Self::parse(src).map(|x| Some(x)).or_else(|err| match err {
+            Error::MoreData => Ok(None),
+            ev => Err(ev),
         })?;
 
         Ok(opt_value)
