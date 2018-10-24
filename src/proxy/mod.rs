@@ -7,7 +7,7 @@ use ClusterConfig;
 
 use futures::lazy;
 use futures::unsync::mpsc::{channel, Sender};
-use futures::{Async, AsyncSink, Future, Sink, Stream};
+use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
 use tokio::net::TcpStream;
 use tokio::runtime::current_thread;
 use tokio_codec::{Decoder, Encoder};
@@ -40,9 +40,25 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
                 .for_each(move |sock| {
                     let codec = T::handle_codec();
                     let (req_tx, req_rx) = codec.framed(sock).split();
+                    let (handle_tx, handle_rx) = channel(2048);
+                    let input = HandleInput {
+                        sink: handle_tx,
+                        stream: req_rx,
+                        buffered: None,
+                        count: 0,
+                    };
+                    current_thread::spawn(input);
+
                     let proxy = rc_proxy.clone();
-                    // TODO: remove magic number.
-                    let handle = Handle::new(proxy, req_rx, req_tx).map_err(|err| {
+                    let handle = Handle::new(
+                        proxy,
+                        handle_rx.map_err(|_err| {
+                            error!("fail to recv from upstream handle rx");
+                            Error::Critical
+                        }),
+                        req_tx,
+                    )
+                    .map_err(|err| {
                         error!("get handle error due {:?}", err);
                     });
                     current_thread::spawn(handle);
@@ -185,6 +201,90 @@ pub trait Request: Sized + Clone + Debug {
     fn done_with_error(&self, err: Error);
 }
 
+pub struct HandleInput<T, U, D>
+where
+    T: Stream<Error = D>,
+    U: Sink<SinkItem = T::Item>,
+    D: Debug,
+{
+    sink: U,
+    stream: T,
+    buffered: Option<T::Item>,
+    count: usize,
+}
+
+impl<T, U, D> HandleInput<T, U, D>
+where
+    T: Stream<Error = D>,
+    U: Sink<SinkItem = T::Item>,
+    D: Debug,
+{
+    fn try_start_send(&mut self, item: T::Item) -> Poll<(), U::SinkError> {
+        debug_assert!(self.buffered.is_none());
+        if let AsyncSink::NotReady(item) = self.sink.start_send(item)? {
+            self.buffered = Some(item);
+            return Ok(Async::NotReady);
+        }
+        Ok(Async::Ready(()))
+    }
+}
+
+impl<T, U, D> Future for HandleInput<T, U, D>
+where
+    T: Stream<Error = D>,
+    U: Sink<SinkItem = T::Item>,
+    D: Debug,
+{
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        loop {
+            if let Some(item) = self.buffered.take() {
+                match self
+                    .try_start_send(item)
+                    .map_err(|_err| error!("fail to send to back end"))?
+                {
+                    Async::NotReady => break,
+                    Async::Ready(_) => {
+                        self.count += 1;
+                        continue;
+                    }
+                }
+            }
+
+            match self
+                .stream
+                .poll()
+                .map_err(|err| error!("fail to poll from upstream {:?}", err))?
+            {
+                Async::Ready(Some(item)) => {
+                    self.buffered = Some(item);
+                }
+                Async::Ready(None) => {
+                    try_ready!(
+                        self.sink
+                            .close()
+                            .map_err(|_err| error!("fail to close handle tx"))
+                    );
+                    return Ok(Async::Ready(()));
+                }
+                Async::NotReady => {
+                    break;
+                }
+            }
+        }
+
+        if self.count > 0 {
+            try_ready!(self.sink.poll_complete().map_err(|_err| {
+                error!("fail to poll_complete to back end");
+            }));
+            self.count = 0;
+        }
+        Ok(Async::NotReady)
+    }
+}
+
 pub struct Handle<T, I, O, D>
 where
     I: Stream<Item = D, Error = Error>,
@@ -278,7 +378,7 @@ where
             match try_ready!(self.input.poll()) {
                 Some(val) => {
                     let req: T = Into::into(val);
-                    // req.reregister();
+                    req.reregister();
                     self.cmds.push_back(req.clone());
                     if !req.valid() {
                         continue;

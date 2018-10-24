@@ -119,7 +119,8 @@ impl Request for Req {
     }
 
     fn reregister(&self) {
-        self.req.borrow_mut().notify.reregister();
+        // self.req.borrow_mut().notify.reregister();
+        self.req.borrow_mut().reregister();
     }
 
     fn key(&self) -> Vec<u8> {
@@ -192,6 +193,18 @@ impl MCReq {
     fn key(&self) -> Vec<u8> {
         let Range { start, end } = self.key;
         self.data[start..end].to_vec()
+    }
+
+    fn reregister(&mut self) {
+        if self.subs.is_some() {
+            self.subs
+                .as_mut()
+                .map(|x| x.iter_mut().for_each(|y| y.reregister()))
+                .unwrap();
+            return;
+        }
+
+        self.notify.reregister();
     }
 }
 

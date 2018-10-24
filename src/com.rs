@@ -2,8 +2,8 @@ use btoi;
 use futures::unsync::mpsc::SendError;
 use std::convert::From;
 use std::io;
-use std::result;
 use std::net;
+use std::result;
 
 #[derive(Debug)]
 pub enum Error {
@@ -21,7 +21,6 @@ pub enum Error {
     SendError(SendError<::Resp>),
     AddrParseError(net::AddrParseError),
 }
-
 
 impl From<net::AddrParseError> for Error {
     fn from(oe: net::AddrParseError) -> Error {
