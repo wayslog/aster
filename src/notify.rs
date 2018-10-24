@@ -1,17 +1,17 @@
-use futures::task::{self, Task};
+use futures::task::Task;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug)]
 pub struct Notify {
-    task: Task,
+    task: Option<Task>,
     count: Rc<AtomicUsize>,
 }
 
 impl Notify {
     pub fn new(task: Task) -> Self {
         Notify {
-            task: task,
+            task: Some(task),
             count: Rc::new(AtomicUsize::new(0)),
         }
     }
@@ -23,7 +23,7 @@ impl Notify {
     pub fn done(&self) {
         let pv = self.count.fetch_sub(1, Ordering::Relaxed);
         if pv == 1 {
-            self.task.notify();
+            self.task.as_ref().expect("never be empty").notify();
         }
     }
 
@@ -31,8 +31,8 @@ impl Notify {
         self.count.fetch_add(val, Ordering::Relaxed);
     }
 
-    pub fn reregister(&mut self) {
-        self.task = task::current();
+    pub fn reregister(&mut self, task: Task) {
+        self.task = Some(task);
     }
 }
 

@@ -5,7 +5,7 @@ use proxy::Request;
 use btoi;
 // use bytes::{BufMut, BytesMut};
 use bytes::BytesMut;
-use futures::task;
+use futures::task::{self, Task};
 use log::Level;
 use tokio_codec::{Decoder, Encoder};
 
@@ -118,9 +118,9 @@ impl Request for Req {
         NodeCodec::default()
     }
 
-    fn reregister(&self) {
+    fn reregister(&self, task: Task) {
         // self.req.borrow_mut().notify.reregister();
-        self.req.borrow_mut().reregister();
+        self.req.borrow_mut().reregister(task);
     }
 
     fn key(&self) -> Vec<u8> {
@@ -195,16 +195,16 @@ impl MCReq {
         self.data[start..end].to_vec()
     }
 
-    fn reregister(&mut self) {
+    fn reregister(&mut self, task: Task) {
         if self.subs.is_some() {
             self.subs
                 .as_mut()
-                .map(|x| x.iter_mut().for_each(|y| y.reregister()))
+                .map(|x| x.iter_mut().for_each(|y| y.reregister(task.clone())))
                 .unwrap();
             return;
         }
 
-        self.notify.reregister();
+        self.notify.reregister(task.clone());
     }
 }
 

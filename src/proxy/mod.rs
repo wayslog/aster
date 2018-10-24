@@ -6,6 +6,7 @@ use ketama::HashRing;
 use ClusterConfig;
 
 use futures::lazy;
+use futures::task::{self, Task};
 use futures::unsync::mpsc::{channel, Sender};
 use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
 use tokio::net::TcpStream;
@@ -184,11 +185,11 @@ impl<T: Request + 'static> Proxy<T> {
 }
 
 pub trait Request: Sized + Clone + Debug {
-    type Reply: Clone + Debug + Sized;
+    type Reply: Clone + Debug;
     type HandleCodec: Decoder<Item = Self, Error = Error> + Encoder<Item = Self, Error = Error>;
     type NodeCodec: Decoder<Item = Self::Reply, Error = Error> + Encoder<Item = Self, Error = Error>;
 
-    fn reregister(&self);
+    fn reregister(&self, task: Task);
     fn handle_codec() -> Self::HandleCodec;
     fn node_codec() -> Self::NodeCodec;
 
@@ -378,7 +379,7 @@ where
             match try_ready!(self.input.poll()) {
                 Some(val) => {
                     let req: T = Into::into(val);
-                    req.reregister();
+                    req.reregister(task::current());
                     self.cmds.push_back(req.clone());
                     if !req.valid() {
                         continue;
