@@ -16,6 +16,7 @@ const BYTE_LF: u8 = '\n' as u8;
 const BYTE_CR: u8 = '\r' as u8;
 const BYTE_SPACE: u8 = ' ' as u8;
 
+const BYTES_CRLF: &'static [u8] = b"\r\n";
 const BYTES_SPACE: &'static [u8] = b" ";
 const BYTES_END: &'static [u8] = b"END\r\n";
 const BYTES_VALUE: &'static [u8] = b"VALUE";
@@ -106,6 +107,15 @@ impl Range {
 
 impl Request for Req {
     type Reply = BytesMut;
+    type HandleCodec = HandleCodec;
+    type NodeCodec = NodeCodec;
+
+    fn handle_codec() -> Self::HandleCodec {
+        HandleCodec::default()
+    }
+    fn node_codec() -> Self::NodeCodec {
+        NodeCodec::default()
+    }
 
     fn key(&self) -> Vec<u8> {
         let Range { start, end } = { self.req.borrow().key };
@@ -163,7 +173,6 @@ pub struct MCReq {
     subs: Option<Vec<Req>>,
     reply: Option<BytesMut>,
 }
-
 
 pub struct HandleCodec {}
 
@@ -478,11 +487,11 @@ impl Decoder for NodeCodec {
                     .expect("NodeCodec decode body length never be empty");
                 btoi::btoi::<usize>(lbs)?
             };
-            let tsize = le + size + 2;
+            let tsize = le + size + BYTES_CRLF.len() + BYTES_END.len();
             if src.len() < tsize {
                 return Ok(None);
             }
-            src.split_to(le + size + 2)
+            src.split_to(tsize)
         } else {
             src.split_to(le)
         };

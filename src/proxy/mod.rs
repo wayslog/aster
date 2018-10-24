@@ -5,6 +5,7 @@ use ketama::HashRing;
 
 use futures::sync::mpsc::Sender;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
+use tokio_codec::{Decoder, Encoder};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -70,6 +71,11 @@ impl<T: Request> Proxy<T> {
 
 pub trait Request: Sized + Clone + Debug {
     type Reply: Clone + Debug + Sized;
+    type HandleCodec: Decoder<Item = Self, Error = Error> + Encoder<Item = Self, Error = Error>;
+    type NodeCodec: Decoder<Item = Self::Reply, Error = Error> + Encoder<Item = Self, Error = Error>;
+
+    fn handle_codec() -> Self::HandleCodec;
+    fn node_codec() -> Self::NodeCodec;
 
     fn key(&self) -> Vec<u8>;
     fn subs(&self) -> Option<Vec<Self>>;
