@@ -393,6 +393,7 @@ impl HandleCodec {
 
     fn parse_storage(src: &mut BytesMut, rtype: ReqType, le: usize) -> AsResult<Req> {
         let body_size = {
+            // FIXME: set no reply flag and ignore reply for NodeDown
             let mut fields = (&src[..le - 2])
                 .split(|x| *x == BYTE_SPACE)
                 .filter(|v| !v.is_empty() && *v != BYTES_NOREPLY);

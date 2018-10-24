@@ -278,7 +278,7 @@ where
             match try_ready!(self.input.poll()) {
                 Some(val) => {
                     let req: T = Into::into(val);
-                    req.reregister();
+                    // req.reregister();
                     self.cmds.push_back(req.clone());
                     if !req.valid() {
                         continue;
