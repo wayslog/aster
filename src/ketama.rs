@@ -1,9 +1,9 @@
 use com::*;
+use log::Level;
 use md5;
 use std::cmp::Ordering;
 use std::hash::Hasher;
 use std::marker::PhantomData;
-use log::Level;
 
 const POINTER_PER_SERVER: f64 = 160.0;
 
@@ -47,7 +47,7 @@ impl<T: Hasher + Default> HashRing<T> {
             _hash: PhantomData,
         };
         ring.init();
-        debug!("ring init for {:#?}", ring.ticks);
+        debug!("ring init for {:?}", ring.ticks);
         Ok(ring)
     }
 
@@ -111,9 +111,7 @@ impl<T: Hasher + Default> HashRing<T> {
         hash.write(key.as_ref());
         let value = hash.finish();
 
-        let find = self.ticks.binary_search_by(|x| {
-            x.hash.cmp(&value)
-        });
+        let find = self.ticks.binary_search_by(|x| x.hash.cmp(&value));
 
         let pos = match find {
             Ok(val) => val,
@@ -121,7 +119,6 @@ impl<T: Hasher + Default> HashRing<T> {
             Err(val) => val,
         };
         let node = self.ticks[pos].node.clone();
-
         if log_enabled!(Level::Trace) {
             trace!("get node of {}", &node);
         }
@@ -144,12 +141,13 @@ mod test_ketama {
                 "redis-3".to_owned(),
             ],
             vec![10, 10, 10],
-        ).expect("create new hash ring success");
+        )
+        .expect("create new hash ring success");
         let keys = vec![b"a".to_vec(), b"b".to_vec(), b"val-a".to_vec()];
 
-        b.iter(||{
+        b.iter(|| {
             for key in &*keys {
-                let _= ring.get_node(key);
+                let _ = ring.get_node(key);
             }
         });
     }
@@ -163,9 +161,10 @@ mod test_ketama {
                 "redis-3".to_owned(),
             ],
             vec![10, 10, 10],
-        ).expect("create new hash ring success");
+        )
+        .expect("create new hash ring success");
 
-        b.iter(||{
+        b.iter(|| {
             ring.add_node("redis-4".to_owned(), 10);
         });
     }
@@ -174,14 +173,22 @@ mod test_ketama {
     fn ketama_dist() {
         let ring = HashRing::<Fnv1a64>::new(
             vec![
-                "redis-1".to_owned(),
-                "redis-2".to_owned(),
-                "redis-3".to_owned(),
+                "mc-1".to_owned(),
+                "mc-2".to_owned(),
+                "mc-3".to_owned(),
+                "mc-4".to_owned(),
+                "mc-5".to_owned(),
+                "mc-6".to_owned(),
+                "mc-7".to_owned(),
+                "mc-8".to_owned(),
+                "mc-9".to_owned(),
+                "mc-x".to_owned(),
             ],
-            vec![10, 10, 10],
+            vec![10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
         )
         .expect("create new hash ring success");
         let node = ring.get_node("a");
-        assert_eq!(&node, "redis-2");
+        assert_eq!(&node, "mc-1");
+        assert_eq!(&ring.get_node("memtier-102"), "mc-x")
     }
 }
