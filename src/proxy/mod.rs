@@ -89,6 +89,15 @@ impl ServerLine {
         for server in servers {
             let mut iter = server.split(" ");
             let first_part = iter.next().expect("first partation must exists");
+            if first_part.chars().filter(|x| *x == ':').count() == 1 {
+                let alias = iter.next().map(|x| x.to_string());
+                sl.push(ServerLine {
+                    addr: first_part.to_string(),
+                    weight: 1,
+                    alias: alias,
+                });
+            }
+
             let mut fp_sp = first_part.rsplitn(2, ':').filter(|x| !x.is_empty());
             let weight = {
                 let weight_str = fp_sp.next().unwrap_or("1");
@@ -207,7 +216,11 @@ impl<T: Request + 'static> Proxy<T> {
             if let Some(req) = cmds.front().cloned() {
                 let name = self.ring.borrow().get_node(req.key());
                 let node = if self.is_alias {
-                    self.alias.borrow().get(&name).expect("alias get never be empty").to_string()
+                    self.alias
+                        .borrow()
+                        .get(&name)
+                        .expect("alias get never be empty")
+                        .to_string()
                 } else {
                     name
                 };
