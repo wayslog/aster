@@ -1,6 +1,7 @@
 use btoi;
 use futures::unsync::mpsc::SendError;
 use std::convert::From;
+use std::num;
 use std::io;
 use std::net;
 use std::result;
@@ -17,10 +18,12 @@ pub enum Error {
     BadSlotsMap,
     IoError(io::Error),
     Critical,
+    StrParseIntError(num::ParseIntError),
     ParseIntError(btoi::ParseIntegerError),
     SendError(SendError<::Resp>),
     AddrParseError(net::AddrParseError),
 }
+
 
 impl From<net::AddrParseError> for Error {
     fn from(oe: net::AddrParseError) -> Error {
@@ -43,6 +46,12 @@ impl From<io::Error> for Error {
 impl From<btoi::ParseIntegerError> for Error {
     fn from(oe: btoi::ParseIntegerError) -> Error {
         Error::ParseIntError(oe)
+    }
+}
+
+impl From<num::ParseIntError> for Error {
+    fn from(oe: num::ParseIntError) -> Error {
+        Error::StrParseIntError(oe)
     }
 }
 

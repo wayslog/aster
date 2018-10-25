@@ -3,6 +3,7 @@ use md5;
 use std::cmp::Ordering;
 use std::hash::Hasher;
 use std::marker::PhantomData;
+use log::Level;
 
 const POINTER_PER_SERVER: f64 = 160.0;
 
@@ -46,6 +47,7 @@ impl<T: Hasher + Default> HashRing<T> {
             _hash: PhantomData,
         };
         ring.init();
+        info!("ring init for {:#?}", ring.ticks);
         Ok(ring)
     }
 
@@ -118,7 +120,12 @@ impl<T: Hasher + Default> HashRing<T> {
             Err(val) if self.ticks.len() == val => 0,
             Err(val) => val,
         };
-        self.ticks[pos].node.clone()
+        let node = self.ticks[pos].node.clone();
+
+        if log_enabled!(Level::Trace) {
+            trace!("get node of {}", &node);
+        }
+        node
     }
 }
 

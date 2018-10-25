@@ -75,20 +75,86 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
     current_thread::block_on_all(fut).unwrap();
 }
 
+#[allow(unused)]
+struct ServerLine {
+    addr: String,
+    weight: usize,
+    alias: Option<String>,
+}
+
+impl ServerLine {
+    fn parse_servers(servers: &[String]) -> AsResult<Vec<ServerLine>> {
+        // e.g.: 192.168.1.2:1074:10 redis-20
+        let mut sl = Vec::with_capacity(servers.len());
+        for server in servers {
+            let mut iter = server.split(" ");
+            let first_part = iter.next().expect("first partation must exists");
+            let mut fp_sp = first_part.rsplitn(2, ':').filter(|x| !x.is_empty());
+            let weight = {
+                let weight_str = fp_sp.next().unwrap_or("1");
+                weight_str.parse::<usize>()?
+            };
+            let addr = fp_sp.next().expect("addr never be absent").to_owned();
+            drop(fp_sp);
+            let alias = iter.next().map(|x| x.to_string());
+            sl.push(ServerLine {
+                addr: addr,
+                weight: weight,
+                alias: alias,
+            });
+        }
+        Ok(sl)
+    }
+
+    fn unwrap_spot(sls: &Vec<ServerLine>) -> (Vec<String>, Vec<String>, Vec<usize>) {
+        let mut nodes = Vec::new();
+        let mut alias = Vec::new();
+        let mut weights = Vec::new();
+        for sl in sls {
+            if sl.alias.is_some() {
+                alias.push(
+                    sl.alias
+                        .as_ref()
+                        .cloned()
+                        .expect("node addr can't be empty"),
+                );
+            }
+            nodes.push(sl.addr.clone());
+            weights.push(sl.weight);
+        }
+        (nodes, alias, weights)
+    }
+}
+
 pub struct Proxy<T: Request> {
     pub cc: ClusterConfig,
     ring: RefCell<HashRing<Fnv1a64>>,
     conns: RefCell<HashMap<String, Sender<T>>>,
+    is_alias: bool,
+    alias: RefCell<HashMap<String, String>>,
 }
 
 impl<T: Request + 'static> Proxy<T> {
     pub fn new(cc: ClusterConfig) -> AsResult<Proxy<T>> {
-        let weight = cc.servers.iter().map(|_| 1).collect();
-        let ring = HashRing::<Fnv1a64>::new(cc.servers.clone(), weight)?;
+        let sls = ServerLine::parse_servers(&cc.servers)?;
+        let (addrs, alias, weights) = ServerLine::unwrap_spot(&sls);
+        let ring = if alias.is_empty() {
+            HashRing::<Fnv1a64>::new(addrs.clone(), weights)?
+        } else {
+            HashRing::<Fnv1a64>::new(alias.clone(), weights)?
+        };
+        let alias_map: HashMap<_, _> = alias
+            .iter()
+            .enumerate()
+            .map(|(index, alias_name)| (alias_name.clone(), addrs[index].clone()))
+            .collect();
+
         Ok(Proxy {
             cc: cc,
             ring: RefCell::new(ring),
             conns: RefCell::new(HashMap::new()),
+            is_alias: !alias_map.is_empty(),
+            alias: RefCell::new(alias_map),
         })
     }
 
@@ -139,7 +205,13 @@ impl<T: Request + 'static> Proxy<T> {
         let mut nodes = HashSet::new();
         loop {
             if let Some(req) = cmds.front().cloned() {
-                let node = self.ring.borrow().get_node(req.key());
+                let name = self.ring.borrow().get_node(req.key());
+                let node = if self.is_alias {
+                    self.alias.borrow().get(&name).expect("alias get never be empty").to_string()
+                } else {
+                    name
+                };
+
                 let mut conns = self.conns.borrow_mut();
                 {
                     if let Some(conn) = conns.get_mut(&node) {
