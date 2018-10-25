@@ -5,7 +5,7 @@ use proxy::Request;
 use btoi;
 // use bytes::{BufMut, BytesMut};
 use bytes::BytesMut;
-use futures::task::{self, Task};
+use futures::task::Task;
 use log::Level;
 use tokio_codec::{Decoder, Encoder};
 
@@ -269,7 +269,7 @@ impl HandleCodec {
         let expire_size = fields.len();
         let prefix_size = cmd_size + 1 + expire_size + 1;
 
-        let notify = Notify::new(task::current());
+        let notify = Notify::empty();
 
         let subs = (0..count)
             .into_iter()
@@ -284,8 +284,7 @@ impl HandleCodec {
                 buf.extend_from_slice(&fields[1]);
                 buf.extend_from_slice(BYTES_SPACE);
                 buf.extend_from_slice(&fields[idx]);
-                buf.extend_from_slice(BYTES_SPACE);
-                buf.extend_from_slice(&fields[fields.len() - 1]);
+                buf.extend_from_slice(BYTES_CRLF);
                 Req {
                     req: Rc::new(RefCell::new(MCReq {
                         rtype: rtype,
@@ -342,7 +341,7 @@ impl HandleCodec {
         let data = src.split_to(le);
         let range = Self::parse_key_range(&data, 0);
 
-        let notify = Notify::new(task::current());
+        let notify = Notify::empty();
         notify.add(1);
         Ok(Req {
             req: Rc::new(RefCell::new(MCReq {
@@ -366,7 +365,7 @@ impl HandleCodec {
         let count = fields.len() - 1;
         let cmd_size = rtype.len();
 
-        let notify = Notify::new(task::current());
+        let notify = Notify::empty();
 
         let subs = (0..count)
             .into_iter()
@@ -426,8 +425,7 @@ impl HandleCodec {
         }
 
         let data = src.split_to(tsize);
-        let local = task::current();
-        let notify = Notify::new(local);
+        let notify = Notify::empty();
         notify.add(1);
         let req = Req {
             req: Rc::new(RefCell::new(MCReq {

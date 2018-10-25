@@ -16,6 +16,13 @@ impl Notify {
         }
     }
 
+    pub fn empty() -> Self {
+        Notify {
+            task: None,
+            count: Rc::new(AtomicUsize::new(0)),
+        }
+    }
+
     pub fn done_without_notify(&self) {
         self.count.fetch_sub(1, Ordering::Relaxed);
     }
@@ -23,7 +30,9 @@ impl Notify {
     pub fn done(&self) {
         let pv = self.count.fetch_sub(1, Ordering::Relaxed);
         if pv == 1 {
-            self.task.as_ref().expect("never be empty").notify();
+            if let Some(task) = self.task.as_ref() {
+                task.notify();
+            }
         }
     }
 
