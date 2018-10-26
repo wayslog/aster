@@ -122,6 +122,7 @@ impl Cluster {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
             })
             .and_then(|sock| {
+                sock.set_nodelay(true).expect("set nodelay must ok");
                 let codec = RespCodec {};
                 let (sink, stream) = codec.framed(sock).split();
                 let arx = rx.map_err(|err| {

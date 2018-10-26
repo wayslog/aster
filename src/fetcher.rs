@@ -28,7 +28,7 @@ pub struct Fetcher {
 impl Fetcher {
     pub fn new(cluster: Rc<Cluster>) -> Fetcher {
         let servers = cluster.cc.servers.clone();
-        let duration = Duration::from_secs(cluster.cc.fetch);
+        let duration = Duration::from_secs(cluster.cc.fetch.as_ref().cloned().unwrap_or(30*60));
         Fetcher {
             cluster: cluster,
             cursor: 0,

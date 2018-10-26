@@ -47,7 +47,7 @@ impl<T: Hasher + Default> HashRing<T> {
             _hash: PhantomData,
         };
         ring.init();
-        debug!("ring init for {:?}", ring.ticks);
+        debug!("ring init for with ticks {:?}", ring.ticks);
         Ok(ring)
     }
 

@@ -1,7 +1,7 @@
 [[clusters]]
 name="test-redis-cluster"
-bind="0.0.0.0:9001"
-cache_type="RedisCluster"
+listen_addr="0.0.0.0:9001"
+cache_type="redis_cluster"
 servers = ["127.0.0.1:7000", "127.0.0.1:7001"]
 thread = 1
 # default 10 * 60 seconds
@@ -10,9 +10,8 @@ fetch = 600
 
 [[clusters]]
 name="test-mc-cluster"
-bind="0.0.0.0:9002"
-cache_type="Memcache"
+listen_addr="0.0.0.0:9002"
+cache_type="memcache"
 servers = ["127.0.0.1:11211:10 mc-1"]
 thread = 1
 # default 10 * 60 seconds
-fetch = 600

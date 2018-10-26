@@ -97,10 +97,10 @@ fn load_config() -> Config {
 }
 
 pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
-    let count = cc.thread;
+    let count = usize::max(cc.thread, 1);
     info!(
         "asswecan start {} listen at {} with {} thread",
-        &cc.name, &cc.bind, count
+        &cc.name, &cc.listen_addr, count
     );
     (0..count)
         .into_iter()
@@ -129,7 +129,7 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
 pub fn start_cluster(cluster: Cluster) {
     let addr = cluster
         .cc
-        .bind
+        .listen_addr
         .clone()
         .parse::<SocketAddr>()
         .expect("parse socket never fail");
@@ -161,6 +161,7 @@ pub fn start_cluster(cluster: Cluster) {
             let amt = listen
                 .incoming()
                 .for_each(move |sock| {
+                    sock.set_nodelay(true).expect("set nodelay must ok");
                     let codec = CmdCodec::default();
                     let (cmd_tx, resp_rx) = codec.framed(sock).split();
                     let cluster = rc_cluster.clone();
@@ -233,20 +234,40 @@ pub struct Config {
 
 #[derive(Deserialize, Debug, Clone, Copy)]
 pub enum CacheType {
+    #[serde(rename = "redis")]
     Redis,
+    #[serde(rename = "memcache")]
     Memcache,
+    #[serde(rename = "memcache_binary")]
     MemcacheBinary,
+    #[serde(rename = "redis_cluster")]
     RedisCluster,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ClusterConfig {
     pub name: String,
-    pub bind: String,
+    pub listen_addr: String,
+    pub hash_tag: Option<String>,
+
+    pub ping_fail_limit: Option<usize>,
+    pub ping_auto_eject: Option<bool>,
+    pub thread: usize,
     pub cache_type: CacheType,
     pub servers: Vec<String>,
-    pub thread: usize,
-    pub fetch: u64,
+    pub fetch: Option<u64>,
+
+    // dead codes
+
+    // command not support now
+    pub dial_timeout: Option<u64>,
+    pub read_timeout: Option<u64>,
+    pub write_timeout: Option<u64>,
+    // dead option: not support other proto
+    pub listen_proto: Option<String>,
+    // dead option: always 1
+    pub node_connections: Option<String>,
+
 }
 
 pub struct Batch<S>

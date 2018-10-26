@@ -24,7 +24,7 @@ const MAX_CONCURRENCY: usize = 1024;
 pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
     let addr = proxy
         .cc
-        .bind
+        .listen_addr
         .clone()
         .parse::<SocketAddr>()
         .expect("parse socket never fail");
@@ -39,6 +39,7 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
             let amt = listen
                 .incoming()
                 .for_each(move |sock| {
+                    sock.set_nodelay(true).expect("set nodelay must ok");
                     let codec = T::handle_codec();
                     let (req_tx, req_rx) = codec.framed(sock).split();
                     let (handle_tx, handle_rx) = channel(2048);
@@ -141,6 +142,7 @@ pub struct Proxy<T: Request> {
     conns: RefCell<HashMap<String, Sender<T>>>,
     is_alias: bool,
     alias: RefCell<HashMap<String, String>>,
+    hash_tag: Vec<u8>,
 }
 
 impl<T: Request + 'static> Proxy<T> {
@@ -158,13 +160,26 @@ impl<T: Request + 'static> Proxy<T> {
             .map(|(index, alias_name)| (alias_name.clone(), addrs[index].clone()))
             .collect();
 
+        let hash_tag = cc
+            .hash_tag
+            .as_ref()
+            .cloned()
+            .unwrap_or("".to_string())
+            .as_bytes()
+            .to_vec();
+
         Ok(Proxy {
             cc: cc,
             ring: RefCell::new(ring),
             conns: RefCell::new(HashMap::new()),
             is_alias: !alias_map.is_empty(),
             alias: RefCell::new(alias_map),
+            hash_tag: hash_tag,
         })
+    }
+
+    fn trim_hash_tag<'b>(&self, key: &'b [u8]) -> &'b [u8] {
+        trim_hash_tag(&self.hash_tag, key)
     }
 
     fn create_conn(node: String) -> AsResult<Sender<T>> {
@@ -182,6 +197,7 @@ impl<T: Request + 'static> Proxy<T> {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
             })
             .and_then(|sock| {
+                sock.set_nodelay(true).expect("set nodelay must ok");
                 let codec = <T as Request>::node_codec();
                 let (sink, stream) = codec.framed(sock).split();
                 let arx = rx.map_err(|err| {
@@ -214,7 +230,7 @@ impl<T: Request + 'static> Proxy<T> {
         let mut nodes = HashSet::new();
         loop {
             if let Some(req) = cmds.front().cloned() {
-                let name = self.ring.borrow().get_node(req.key());
+                let name = self.ring.borrow().get_node(self.trim_hash_tag(&req.key()));
                 let node = if self.is_alias {
                     self.alias
                         .borrow()
@@ -671,4 +687,35 @@ where
             }
         }
     }
+}
+
+fn trim_hash_tag<'a, 'b>(hash_tag: &'a [u8], key: &'b [u8]) -> &'b [u8] {
+    if hash_tag.len() != 2 {
+        return key;
+    }
+    if let Some(begin) = key.iter().position(|x| *x == hash_tag[0]) {
+        if let Some(end_offset) = key[begin..].iter().position(|x| *x == hash_tag[1]) {
+            return &key[begin + 1..begin + end_offset];
+        }
+    }
+    key
+}
+
+#[cfg(test)]
+#[test]
+fn test_trim_hash_tag() {
+    assert_eq!(trim_hash_tag(b"{}", b"abc{a}b"), b"a");
+    assert_eq!(trim_hash_tag(b"{}", b"abc{ab"), b"abc{ab");
+    assert_eq!(trim_hash_tag(b"{}", b"abc{ab}"), b"ab");
+    assert_eq!(trim_hash_tag(b"{}", b"abc{ab}asd{abc}d"), b"ab");
+    assert_eq!(
+        trim_hash_tag(b"{", b"abc{ab}asd{abc}d"),
+        b"abc{ab}asd{abc}d"
+    );
+    assert_eq!(trim_hash_tag(b"", b"abc{ab}asd{abc}d"), b"abc{ab}asd{abc}d");
+    assert_eq!(
+        trim_hash_tag(b"abc", b"abc{ab}asd{abc}d"),
+        b"abc{ab}asd{abc}d"
+    );
+    assert_eq!(trim_hash_tag(b"ab", b"abc{ab}asd{abc}d"), b"");
 }
