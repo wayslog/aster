@@ -1,6 +1,5 @@
-use redis::cmd::Cmd;
 use com::*;
-use crc16;
+use redis::cmd::Cmd;
 
 use futures::unsync::mpsc::Sender;
 
@@ -84,20 +83,9 @@ impl Slots {
     }
 }
 
-impl Slots {
-    pub fn crc16(&self) -> u16 {
-        let mut state = crc16::State::<crc16::XMODEM>::new();
-        for addr in self.0.iter() {
-            state.update(addr.as_bytes());
-        }
-        state.get()
-    }
-}
-
 pub struct SlotsMap {
     nodes: HashMap<String, Sender<Cmd>>,
     slots: Vec<String>,
-    crc16: u16,
 }
 
 impl Default for SlotsMap {
@@ -105,7 +93,6 @@ impl Default for SlotsMap {
         SlotsMap {
             nodes: HashMap::new(),
             slots: vec![],
-            crc16: ::std::u16::MAX,
         }
     }
 }
@@ -115,12 +102,17 @@ impl SlotsMap {
         match Slots::parse(data) {
             Ok(slots) => {
                 let mut slots = slots;
-                if self.crc16() == slots.crc16() {
-                    return false;
+                if self
+                    .slots
+                    .iter()
+                    .zip(slots.0.iter())
+                    .any(|(my, other)| my != other)
+                {
+                    mem::swap(&mut self.slots, &mut slots.0);
+                    true
+                } else {
+                    false
                 }
-                mem::swap(&mut self.slots, &mut slots.0);
-                self.crc16 = slots.crc16();
-                true
             }
             Err(err) => {
                 warn!("fail to update slots map by given data due {:?}", err);
@@ -142,9 +134,5 @@ impl SlotsMap {
             .get(slot)
             .cloned()
             .expect("slot must be full matched")
-    }
-
-    fn crc16(&self) -> u16 {
-        self.crc16
     }
 }

@@ -3,6 +3,7 @@ use com::*;
 use redis::cmd::{new_cluster_nodes_cmd, Cmd};
 use redis::resp::RESP_BULK;
 
+use futures::task;
 use tokio::prelude::{Async, AsyncSink, Stream};
 use tokio::timer::Interval;
 
@@ -36,7 +37,7 @@ impl Fetcher {
             servers: servers,
             state: FetchState::Pending,
             info_cmd: new_cluster_nodes_cmd(),
-            internal: Interval::new(Instant::now() + duration, duration),
+            internal: Interval::new(Instant::now(), duration),
         }
     }
 }
@@ -59,6 +60,8 @@ impl Stream for Fetcher {
                 FetchState::Pending => {
                     // initialize
                     self.info_cmd = new_cluster_nodes_cmd();
+                    let local_task = task::current();
+                    self.info_cmd.cmd_reregister(local_task);
                     self.state = FetchState::Ready;
                 }
                 FetchState::Ready => {
@@ -113,6 +116,8 @@ impl Stream for Fetcher {
                     self.cursor = 0;
                     self.state = FetchState::Ready;
                     self.info_cmd = new_cluster_nodes_cmd();
+                    let task = task::current();
+                    self.info_cmd.cmd_reregister(task);
                     return Ok(Async::Ready(Some(())));
                 }
             }

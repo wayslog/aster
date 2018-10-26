@@ -8,7 +8,7 @@ use redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_
 
 use bytes::{BufMut, BytesMut};
 use crc16;
-use futures::task::{self, Task};
+use futures::task::Task;
 use tokio_codec::{Decoder, Encoder};
 
 use std::cell::RefCell;
@@ -102,7 +102,6 @@ impl Cmd {
                 for req in sub_reqs {
                     req.cmd_reregister(task.clone());
                 }
-
             }
         }
         self.cmd.borrow_mut().notify.reregister(task)
@@ -727,7 +726,7 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
         Resp::new_plain(RESP_BULK, Some(b"CLUSTER".to_vec())),
         Resp::new_plain(RESP_BULK, Some(b"NODES".to_vec())),
     ]));
-    let notify = Notify::new(task::current());
+    let notify = Notify::empty();
     notify.add(1);
     let cmd = Command {
         is_done: false,

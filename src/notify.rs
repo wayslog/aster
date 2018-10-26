@@ -9,6 +9,7 @@ pub struct Notify {
 }
 
 impl Notify {
+    #[allow(unused)]
     pub fn new(task: Task) -> Self {
         Notify {
             task: Some(task),
