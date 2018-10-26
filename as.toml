@@ -9,9 +9,18 @@ fetch = 600
 
 
 [[clusters]]
-name="test-mc-cluster"
-listen_addr="0.0.0.0:9002"
+name="test-mc-proxy"
+listen_addr="0.0.0.0:9003"
 cache_type="memcache"
 servers = ["127.0.0.1:11211:10 mc-1"]
+thread = 1
+# default 10 * 60 seconds
+
+
+[[clusters]]
+name="test-redis-proxy"
+listen_addr="0.0.0.0:9002"
+cache_type="redis"
+servers = ["127.0.0.1:6379:10 redis-1"]
 thread = 1
 # default 10 * 60 seconds

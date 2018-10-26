@@ -1,15 +1,16 @@
 // use bytes::BufMut;
 use btoi;
-use bytes::{BufMut, BytesMut};
 use com::*;
+use notify::Notify;
+use proxy::Request;
+use redis::resp::{Resp, RespCodec};
+use redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
+
+use bytes::{BufMut, BytesMut};
 use crc16;
-use redis::resp::RespCodec;
-use redis::resp::{Resp, BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
+use futures::task::{self, Task};
 use tokio_codec::{Decoder, Encoder};
 
-use futures::task;
-
-use notify::Notify;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::mem;
@@ -24,6 +25,56 @@ pub enum CmdType {
     Ctrl,
     NotSupport,
     IngnoreReply,
+}
+
+impl Request for Cmd {
+    type Reply = Resp;
+    type HandleCodec = HandleCodec;
+    type NodeCodec = NodeCodec;
+
+    fn reregister(&self, task: Task) {
+        self.cmd_reregister(task)
+    }
+
+    fn handle_codec() -> Self::HandleCodec {
+        HandleCodec::default()
+    }
+    fn node_codec() -> Self::NodeCodec {
+        NodeCodec::default()
+    }
+
+    fn key(&self) -> Vec<u8> {
+        self.cmd.borrow().key()
+    }
+    fn subs(&self) -> Option<Vec<Self>> {
+        self.sub_reqs()
+    }
+
+    fn is_done(&self) -> bool {
+        self.is_done()
+    }
+
+    fn valid(&self) -> bool {
+        let cmd_type = self.cmd_type();
+        match cmd_type {
+            CmdType::NotSupport => {
+                self.done_with_error(&RESP_OBJ_ERROR_NOT_SUPPORT);
+                false
+            }
+            _ => true,
+        }
+    }
+
+    fn done(&self, data: Resp) {
+        self.done(data)
+    }
+
+    fn done_with_error(&self, err: Error) {
+        let err_str = format!("{:?}", err);
+        let err_bs = err_str.as_bytes().to_vec();
+        let resp = Resp::new_plain(RESP_ERROR, Some(err_bs));
+        self.done_with_error(&resp);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +94,18 @@ impl Cmd {
         Cmd {
             cmd: Rc::new(RefCell::new(command)),
         }
+    }
+
+    pub fn cmd_reregister(&self, task: Task) {
+        if self.is_complex() {
+            if let Some(sub_reqs) = self.sub_reqs() {
+                for req in sub_reqs {
+                    req.cmd_reregister(task.clone());
+                }
+
+            }
+        }
+        self.cmd.borrow_mut().notify.reregister(task)
     }
 
     pub fn set_is_ask(&self, is_ask: bool) {
@@ -163,8 +226,7 @@ impl Command {
             return cmd;
         }
 
-        let local_task = task::current();
-        let notify = Notify::new(local_task);
+        let notify = Notify::empty();
         let mut command = Self::inner_from_resp(resp, notify);
         command.mksubs();
         command
@@ -207,6 +269,33 @@ impl Command {
 }
 
 impl Command {
+    pub fn key(&self) -> Vec<u8> {
+        let req = self.req.as_ref();
+        let key_pos = if req
+            .get(0)
+            .map(|y| {
+                y.data
+                    .as_ref()
+                    .map(|x| x != b"EVAL")
+                    .expect("command inner is never be empty for Command::key")
+            })
+            .expect("command is never be empty for Command::key")
+        {
+            1
+        } else {
+            3
+        };
+
+        if let Some(key_req) = req.get(key_pos) {
+            return key_req
+                .data
+                .as_ref()
+                .cloned()
+                .expect("key_req's key is never be empty");
+        }
+        Vec::new()
+    }
+
     pub fn crc(&self) -> u16 {
         return self.crc;
     }
@@ -613,7 +702,7 @@ pub fn new_asking_cmd() -> Cmd {
         RESP_BULK,
         Some(b"ASKING".to_vec()),
     )]));
-    let notify = Notify::new(task::current());
+    let notify = Notify::empty();
     notify.add(1);
     let cmd = Command {
         is_done: false,
@@ -656,4 +745,128 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
         reply: None,
     };
     Cmd::new(cmd)
+}
+
+pub struct HandleCodec {
+    rc: RespCodec,
+}
+
+impl HandleCodec {
+    fn merge_encode_count(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
+        let mut sum = 0;
+        for subcmd in subs {
+            let mut reply = &mut subcmd.cmd.borrow_mut().reply;
+            let subresp = reply.as_mut().expect("subreply must be some resp but None");
+            if subresp.rtype == RESP_ERROR {
+                // should swallow the error and convert as 0 count of key.
+                continue;
+            }
+            debug_assert_eq!(subresp.rtype, RESP_INT);
+            let count_bs = subresp.data.as_ref().expect("resp_int data must be some");
+            let count = btoi::btoi::<i64>(count_bs)?;
+            sum += count;
+        }
+
+        if !dst.has_remaining_mut() {
+            dst.reserve(1);
+        }
+        dst.put_u8(RESP_INT);
+        let buf = format!("{}", sum);
+        dst.extend_from_slice(buf.as_bytes());
+        dst.extend_from_slice(BYTES_CRLF);
+        Ok(())
+    }
+
+    fn merge_encode_ok(&mut self, _subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
+        Ok(dst.extend_from_slice(&b"+OK\r\n"[..]))
+    }
+
+    fn merge_encode_join(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
+        if !dst.has_remaining_mut() {
+            dst.reserve(1);
+        }
+        dst.put_u8(RESP_ARRAY);
+
+        let count = subs.len();
+        let buf = format!("{}", count);
+        dst.extend_from_slice(buf.as_bytes());
+        dst.extend_from_slice(BYTES_CRLF);
+        for sub in subs {
+            self.encode(sub, dst)?;
+        }
+        Ok(())
+    }
+}
+
+impl Decoder for HandleCodec {
+    type Item = Cmd;
+    type Error = Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        self.rc.decode(src).map(|x| x.map(|y| y.into()))
+    }
+}
+
+impl Encoder for HandleCodec {
+    type Item = Cmd;
+    type Error = Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        if item.is_complex() {
+            if let Some(subreqs) = item.sub_reqs() {
+                let cmd_bytes = item.rc_req().cmd_bytes().to_vec();
+                if &cmd_bytes[..] == b"MSET" {
+                    return self.merge_encode_ok(subreqs, dst);
+                } else if &cmd_bytes[..] == b"EXISTS" {
+                    return self.merge_encode_count(subreqs, dst);
+                } else if &cmd_bytes[..] == b"DEL" {
+                    return self.merge_encode_count(subreqs, dst);
+                } else if &cmd_bytes[..] == b"MGET" {
+                    return self.merge_encode_join(subreqs, dst);
+                } else if &cmd_bytes[..] == b"EVAL" {
+                    // return self.merge_encode_join(subreqs, dst);
+                } else {
+                    unreachable!();
+                }
+            }
+        }
+
+        let reply = item.swap_reply().expect("encode simple reply never empty");
+        self.rc.encode(Rc::new(reply), dst)
+    }
+}
+
+impl Default for HandleCodec {
+    fn default() -> Self {
+        HandleCodec { rc: RespCodec {} }
+    }
+}
+
+pub struct NodeCodec {
+    rc: RespCodec,
+}
+
+impl Default for NodeCodec {
+    fn default() -> Self {
+        NodeCodec { rc: RespCodec {} }
+    }
+}
+
+impl Decoder for NodeCodec {
+    type Item = Resp;
+    type Error = Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        self.rc.decode(src)
+    }
+}
+
+impl Encoder for NodeCodec {
+    type Item = Cmd;
+    type Error = Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let req = item.rc_req();
+        self.rc.encode(req, dst)
+    }
 }

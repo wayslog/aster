@@ -90,6 +90,10 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
                     let cluster = Cluster::new(cc);
                     start_cluster(cluster)
                 }
+                CacheType::Redis => {
+                    let p = proxy::Proxy::new(cc).unwrap();
+                    proxy::start_proxy::<redis::cmd::Cmd>(p);
+                }
                 _ => {
                     warn!("cache type is not supported");
                 }

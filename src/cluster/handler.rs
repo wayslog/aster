@@ -3,6 +3,7 @@ use com::*;
 use redis::cmd::{Cmd, CmdType, RESP_OBJ_ERROR_NOT_SUPPORT, RESP_OBJ_STRING_PONG};
 use redis::resp::Resp;
 
+use futures::task;
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
 
 const MAX_CONCURRENCY: usize = 1024 * 8;
@@ -60,6 +61,8 @@ where
             match try_ready!(self.input.poll()) {
                 Some(val) => {
                     let rc_cmd = Cmd::from(val);
+                    let local_task = task::current();
+                    rc_cmd.cmd_reregister(local_task);
                     let is_complex = rc_cmd.is_complex();
                     self.cmds.push_back(rc_cmd.clone());
                     if is_complex {
