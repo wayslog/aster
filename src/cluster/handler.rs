@@ -1,8 +1,9 @@
-use cmd::{Cmd, CmdType, RESP_OBJ_ERROR_NOT_SUPPORT, RESP_OBJ_STRING_PONG};
+use cluster::Cluster;
 use com::*;
-use resp::Resp;
+use redis::cmd::{Cmd, CmdType, RESP_OBJ_ERROR_NOT_SUPPORT, RESP_OBJ_STRING_PONG};
+use redis::resp::Resp;
+
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
-use Cluster;
 
 const MAX_CONCURRENCY: usize = 1024 * 8;
 // use aho_corasick::{AcAutomaton, Automaton, Match};

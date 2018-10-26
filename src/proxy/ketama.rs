@@ -84,6 +84,7 @@ impl<T: Hasher + Default> HashRing<T> {
         self.ticks.sort();
     }
 
+    #[allow(unused)]
     pub fn add_node(&mut self, node: String, spot: usize) {
         let mut tmp_nodes = self.nodes.clone();
         let mut tmp_spots = self.spots.clone();
@@ -98,6 +99,7 @@ impl<T: Hasher + Default> HashRing<T> {
         self.init();
     }
 
+    #[allow(unused)]
     pub fn del_node(&mut self, node: String) {
         if let Some(pos) = self.nodes.iter().position(|x| x == &node) {
             self.nodes.remove(pos);
@@ -129,7 +131,7 @@ impl<T: Hasher + Default> HashRing<T> {
 #[cfg(test)]
 mod test_ketama {
     use self::super::*;
-    use fnv::Fnv1a64;
+    use proxy::fnv::Fnv1a64;
     use test::Bencher;
 
     #[bench]

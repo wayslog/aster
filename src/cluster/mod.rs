@@ -1,14 +1,19 @@
-use self::super::ClusterConfig;
-use cmd::Cmd;
-use com::*;
-use node::{NodeDown, NodeRecv};
-use resp::RespCodec;
-use slots::SlotsMap;
+mod fetcher;
+mod handler;
+mod init;
+mod node;
+mod slots;
 
-use handler::Handle;
-use cmd::CmdCodec;
-use init::ClusterInitilizer;
-use fetcher::Fetcher;
+use self::super::ClusterConfig;
+use self::node::{NodeDown, NodeRecv};
+use self::slots::SlotsMap;
+use com::*;
+use redis::cmd::{Cmd, CmdCodec};
+use redis::resp::RespCodec;
+
+use self::fetcher::Fetcher;
+use self::handler::Handle;
+use self::init::ClusterInitilizer;
 
 use futures::lazy;
 use futures::unsync::mpsc::{channel, Receiver, Sender};
@@ -18,10 +23,10 @@ use tokio::prelude::{Future, Sink, Stream};
 use tokio::runtime::current_thread;
 use tokio_codec::Decoder;
 
-use std::io::ErrorKind;
-use std::net::SocketAddr;
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
+use std::io::ErrorKind;
+use std::net::SocketAddr;
 use std::rc::Rc;
 
 pub struct Cluster {
@@ -239,7 +244,6 @@ impl Cluster {
         }
     }
 }
-
 
 pub fn start_cluster(cluster: Cluster) {
     let addr = cluster

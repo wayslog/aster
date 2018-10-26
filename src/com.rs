@@ -1,3 +1,5 @@
+use redis::resp;
+
 use btoi;
 use futures::unsync::mpsc::SendError;
 use net2::TcpBuilder;
@@ -24,7 +26,7 @@ pub enum Error {
     Critical,
     StrParseIntError(num::ParseIntError),
     ParseIntError(btoi::ParseIntegerError),
-    SendError(SendError<::Resp>),
+    SendError(SendError<resp::Resp>),
     AddrParseError(net::AddrParseError),
 }
 
@@ -34,8 +36,8 @@ impl From<net::AddrParseError> for Error {
     }
 }
 
-impl From<SendError<::Resp>> for Error {
-    fn from(oe: SendError<::Resp>) -> Error {
+impl From<SendError<resp::Resp>> for Error {
+    fn from(oe: SendError<resp::Resp>) -> Error {
         Error::SendError(oe)
     }
 }

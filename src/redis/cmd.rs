@@ -3,8 +3,8 @@ use btoi;
 use bytes::{BufMut, BytesMut};
 use com::*;
 use crc16;
-use resp::RespCodec;
-use resp::{Resp, BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
+use redis::resp::RespCodec;
+use redis::resp::{Resp, BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
 use tokio_codec::{Decoder, Encoder};
 
 use futures::task;

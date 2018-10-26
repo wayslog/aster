@@ -1,6 +1,7 @@
-use cmd::Cmd;
+use redis::cmd::Cmd;
 use com::*;
 use crc16;
+
 use futures::unsync::mpsc::Sender;
 
 use std::collections::{HashMap, HashSet};

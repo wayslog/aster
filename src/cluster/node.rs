@@ -1,6 +1,6 @@
-use cmd::{Cmd, new_asking_cmd};
+use redis::cmd::{Cmd, new_asking_cmd};
+use redis::resp::{Resp, RESP_ERROR};
 use com::*;
-use resp::{Resp, RESP_ERROR};
 
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
 

@@ -1,7 +1,11 @@
 //! proxy is the mod which contains genneral proxy
+
+mod fnv;
+mod ketama;
+
 use com::*;
-use fnv::Fnv1a64;
-use ketama::HashRing;
+use self::fnv::Fnv1a64;
+use self::ketama::HashRing;
 use ClusterConfig;
 
 use futures::lazy;

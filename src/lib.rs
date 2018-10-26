@@ -26,23 +26,14 @@ extern crate md5;
 extern crate toml;
 
 mod cluster;
-mod cmd;
+mod redis;
 mod com;
-mod fetcher;
-pub mod fnv;
-mod handler;
-mod init;
-pub mod ketama;
-pub mod mc;
-mod node;
+mod mc;
 mod notify;
-pub mod proxy;
-mod resp;
-mod slots;
+mod proxy;
 
 use cluster::{start_cluster, Cluster};
 pub use com::*;
-use resp::Resp;
 // use futures::task::current;
 use std::thread;
 

@@ -1,10 +1,11 @@
+use cluster::Cluster;
+use com::*;
+use redis::cmd::{new_cluster_nodes_cmd, Cmd};
+use redis::resp::RESP_BULK;
+
 use tokio::prelude::{Async, AsyncSink, Stream};
 use tokio::timer::Interval;
 
-use self::super::Cluster;
-use cmd::{new_cluster_nodes_cmd, Cmd};
-use com::*;
-use resp::RESP_BULK;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -28,7 +29,7 @@ pub struct Fetcher {
 impl Fetcher {
     pub fn new(cluster: Rc<Cluster>) -> Fetcher {
         let servers = cluster.cc.servers.clone();
-        let duration = Duration::from_secs(cluster.cc.fetch.as_ref().cloned().unwrap_or(30*60));
+        let duration = Duration::from_secs(cluster.cc.fetch.as_ref().cloned().unwrap_or(30 * 60));
         Fetcher {
             cluster: cluster,
             cursor: 0,
@@ -73,7 +74,7 @@ impl Stream for Fetcher {
                         AsyncSink::NotReady(_) => {
                             debug!("not done for fetcher wait");
                             return Ok(Async::NotReady);
-                        },
+                        }
                         AsyncSink::Ready => {
                             debug!("execute done ready {}", addr);
                             self.state = FetchState::Wait;
@@ -88,7 +89,9 @@ impl Stream for Fetcher {
                         return Ok(Async::NotReady);
                     }
 
-                    let resp = cmd.swap_reply().expect("fetch result never be empty for an done cmd");
+                    let resp = cmd
+                        .swap_reply()
+                        .expect("fetch result never be empty for an done cmd");
 
                     if resp.rtype != RESP_BULK {
                         warn!("fetch fail due to bad resp {:?}", resp);
@@ -97,7 +100,8 @@ impl Stream for Fetcher {
                     }
 
                     let mut slots_map = self.cluster.slots.borrow_mut();
-                    let updated = slots_map.try_update_all(resp.data.as_ref().expect("never be empty"));
+                    let updated =
+                        slots_map.try_update_all(resp.data.as_ref().expect("never be empty"));
                     if updated {
                         info!("success update slotsmap due slots map is changed");
                     } else {

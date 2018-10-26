@@ -1,7 +1,7 @@
-use self::super::Cluster;
-use cmd::{new_cluster_nodes_cmd, Cmd};
+use cluster::Cluster;
 use com::*;
-use resp::RESP_BULK;
+use redis::cmd::{new_cluster_nodes_cmd, Cmd};
+use redis::resp::RESP_BULK;
 
 use tokio::net::TcpListener;
 use tokio::prelude::{Async, AsyncSink, Future};
