@@ -199,7 +199,7 @@ where
                 self.closed = true;
             })) {
                 let cmd = self.buf.borrow_mut().pop_front().unwrap();
-                if cmd.is_fake() {
+                if cmd.is_ignore_reply() {
                     continue;
                 }
 

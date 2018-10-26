@@ -23,7 +23,7 @@ pub enum CmdType {
     Write,
     Ctrl,
     NotSupport,
-    Fake,
+    IngnoreReply,
 }
 
 #[derive(Debug, Clone)]
@@ -49,9 +49,9 @@ impl Cmd {
         self.cmd.borrow_mut().is_ask = is_ask;
     }
 
-    pub fn is_fake(&self) -> bool {
+    pub fn is_ignore_reply(&self) -> bool {
         match self.cmd.borrow().get_cmd_type() {
-            CmdType::Fake => true,
+            CmdType::IngnoreReply => true,
             _ => false,
         }
     }
@@ -621,7 +621,7 @@ pub fn new_asking_cmd() -> Cmd {
         is_inline: false,
 
         is_complex: false,
-        cmd_type: CmdType::Fake,
+        cmd_type: CmdType::IngnoreReply,
 
         crc: 0u16,
         notify: notify,
