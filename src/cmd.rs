@@ -621,7 +621,7 @@ pub fn new_asking_cmd() -> Cmd {
         is_inline: false,
 
         is_complex: false,
-        cmd_type: CmdType::Ctrl,
+        cmd_type: CmdType::Fake,
 
         crc: 0u16,
         notify: notify,

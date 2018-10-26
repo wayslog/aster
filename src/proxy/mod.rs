@@ -1,6 +1,5 @@
 //! proxy is the mod which contains genneral proxy
 use com::*;
-use create_reuse_port_listener;
 use fnv::Fnv1a64;
 use ketama::HashRing;
 use ClusterConfig;
@@ -689,6 +688,7 @@ where
     }
 }
 
+#[inline]
 fn trim_hash_tag<'a, 'b>(hash_tag: &'a [u8], key: &'b [u8]) -> &'b [u8] {
     if hash_tag.len() != 2 {
         return key;

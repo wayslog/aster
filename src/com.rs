@@ -1,10 +1,14 @@
 use btoi;
 use futures::unsync::mpsc::SendError;
+use net2::TcpBuilder;
+use tokio::net::TcpListener;
+
 use std::convert::From;
-use std::num;
 use std::io;
 use std::net;
+use std::num;
 use std::result;
+use std::net::SocketAddr;
 
 #[derive(Debug)]
 pub enum Error {
@@ -23,7 +27,6 @@ pub enum Error {
     SendError(SendError<::Resp>),
     AddrParseError(net::AddrParseError),
 }
-
 
 impl From<net::AddrParseError> for Error {
     fn from(oe: net::AddrParseError) -> Error {
@@ -79,4 +82,32 @@ pub fn update_to_lower(src: &mut [u8]) {
         }
         *b = *b + UPPER_TO_LOWER;
     }
+}
+
+#[cfg(windows)]
+pub fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io::Error> {
+    let builder = TcpBuilder::new_v4()?;
+    let std_listener = builder
+        .reuse_address(true)
+        .expect("os not support SO_REUSEADDR")
+        .bind(addr)?
+        .listen(std::i32::MAX)?;
+    let hd = tokio::reactor::Handle::current();
+    TcpListener::from_std(std_listener, &hd)
+}
+
+#[cfg(not(windows))]
+pub fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io::Error> {
+    use net2::unix::UnixTcpBuilderExt;
+
+    let builder = TcpBuilder::new_v4()?;
+    let std_listener = builder
+        .reuse_address(true)
+        .expect("os not support SO_REUSEADDR")
+        .reuse_port(true)
+        .expect("os not support SO_REUSEPORT")
+        .bind(addr)?
+        .listen(std::i32::MAX)?;
+    let hd = tokio::reactor::Handle::current();
+    TcpListener::from_std(std_listener, &hd)
 }

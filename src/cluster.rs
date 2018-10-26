@@ -5,6 +5,11 @@ use node::{NodeDown, NodeRecv};
 use resp::RespCodec;
 use slots::SlotsMap;
 
+use handler::Handle;
+use cmd::CmdCodec;
+use init::ClusterInitilizer;
+use fetcher::Fetcher;
+
 use futures::lazy;
 use futures::unsync::mpsc::{channel, Receiver, Sender};
 use futures::{Async, AsyncSink};
@@ -13,6 +18,8 @@ use tokio::prelude::{Future, Sink, Stream};
 use tokio::runtime::current_thread;
 use tokio_codec::Decoder;
 
+use std::io::ErrorKind;
+use std::net::SocketAddr;
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 use std::rc::Rc;
@@ -231,17 +238,78 @@ impl Cluster {
             Ok(AsyncSink::NotReady(count))
         }
     }
+}
 
-    pub fn dispatch(&self, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
-        let slot = cmd.crc() as usize;
-        loop {
-            let mut slots_map = self.slots.borrow_mut();
-            let addr = slots_map.get_addr(slot);
-            if let Some(sender) = slots_map.get_sender_by_addr(&addr) {
-                return Cluster::try_dispatch(sender, cmd);
-            }
-            let tx = self.create_node_conn(&addr)?;
-            slots_map.add_node(addr, tx);
-        }
-    }
+
+pub fn start_cluster(cluster: Cluster) {
+    let addr = cluster
+        .cc
+        .listen_addr
+        .clone()
+        .parse::<SocketAddr>()
+        .expect("parse socket never fail");
+
+    let fut = lazy(move || -> Result<(SocketAddr, Cluster), ()> { Ok((addr, cluster)) })
+        .and_then(|(addr, cluster)| {
+            let listen = create_reuse_port_listener(&addr).expect("bind never fail");
+            // cluster.init_node_conn().unwrap();
+            let initilizer = ClusterInitilizer::new(cluster, listen).map_err(|err| {
+                error!("fail to init cluster with given server due {:?}", err);
+            });
+            initilizer
+        })
+        .and_then(|(cluster, listen)| {
+            // TODO: how to spawn timer func with current_thread
+            let fetcher = Fetcher::new(cluster.clone())
+                .for_each(|_| {
+                    debug!("success fetch new slots_map");
+                    Ok(())
+                })
+                .map_err(|err| {
+                    error!("fail to fetch new slots_mapd due {:?}", err);
+                });
+            current_thread::spawn(fetcher);
+            Ok((cluster, listen))
+        })
+        .and_then(|(cluster, listen)| {
+            let rc_cluster = cluster.clone();
+            let amt = listen
+                .incoming()
+                .for_each(move |sock| {
+                    sock.set_nodelay(true).expect("set nodelay must ok");
+                    let codec = CmdCodec::default();
+                    let (cmd_tx, resp_rx) = codec.framed(sock).split();
+                    let cluster = rc_cluster.clone();
+                    // TODO: remove magic number.
+                    let (handle_resp_tx, handle_resp_rx) = channel(2048);
+                    let input = resp_rx
+                        .forward(handle_resp_tx)
+                        .map_err(|err| match err {
+                            Error::IoError(ref e) if e.kind() == ErrorKind::ConnectionReset => {}
+                            e => error!("fail to send into handle due to {:?}", e),
+                        })
+                        .then(|_| Ok(()));
+                    current_thread::spawn(input);
+                    let handle = Handle::new(
+                        cluster,
+                        handle_resp_rx.map_err(|_| {
+                            error!("fail to pass handle");
+                            Error::Critical
+                        }),
+                        cmd_tx,
+                    )
+                    .map_err(|err| {
+                        error!("get handle error due {:?}", err);
+                    });
+                    current_thread::spawn(handle);
+                    Ok(())
+                })
+                .map_err(|err| {
+                    error!("fail to start_cluster due {:?}", err);
+                });
+            current_thread::spawn(amt);
+            Ok(())
+        });
+
+    current_thread::block_on_all(fut).unwrap();
 }
