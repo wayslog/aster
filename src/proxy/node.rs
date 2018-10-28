@@ -147,6 +147,9 @@ where
         loop {
             if let Some(reply) = try_ready!(self.recv.poll().map_err(|err| {
                 error!("fail to recv from back end, may closed due to {:?}", err);
+                for item in self.buf.borrow_mut().iter() {
+                    item.done_with_error(Error::Critical);
+                }
                 self.closed = true;
             })) {
                 let req = self.buf.borrow_mut().pop_front().unwrap();

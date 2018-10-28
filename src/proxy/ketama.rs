@@ -99,7 +99,6 @@ impl<T: Hasher + Default> HashRing<T> {
         self.init();
     }
 
-    #[allow(unused)]
     pub fn del_node(&mut self, node: String) {
         if let Some(pos) = self.nodes.iter().position(|x| x == &node) {
             self.nodes.remove(pos);

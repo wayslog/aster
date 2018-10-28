@@ -4,11 +4,14 @@ mod fnv;
 mod handler;
 mod ketama;
 mod node;
+mod ping;
 
 use self::fnv::Fnv1a64;
 use self::handler::{Handle, HandleInput};
 use self::ketama::HashRing;
 use self::node::{NodeDown, NodeRecv};
+use self::ping::Ping;
+
 use com::*;
 use ClusterConfig;
 
@@ -38,6 +41,28 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
         .and_then(|(addr, proxy)| {
             let listen = create_reuse_port_listener(&addr).expect("bind never fail");
             Ok((Rc::new(proxy), listen))
+        })
+        .map(|(proxy, listen)| {
+            if let Some(limit) = proxy.cc.ping_fail_limit {
+                info!("setup ping for cluster {}", proxy.cc.name);
+                // default ping interval 500
+                let interval = proxy
+                    .cc
+                    .ping_interval
+                    .clone()
+                    .map(|x| x as u64)
+                    .unwrap_or(500u64);
+
+                let addrs = proxy.spots.keys().map(|x| x.clone());
+                for addr in addrs.into_iter() {
+                    let ping = Ping::new(proxy.clone(), addr, limit, interval);
+                    current_thread::spawn(ping);
+                }
+            } else {
+                debug!("skip proxy ping feature for cluster {}", proxy.cc.name);
+            }
+
+            (proxy, listen)
         })
         .and_then(|(proxy, listen)| {
             let rc_proxy = proxy.clone();
@@ -138,10 +163,13 @@ impl ServerLine {
 
 pub struct Proxy<T: Request> {
     pub cc: ClusterConfig,
+
+    spots: HashMap<String, usize>,
+    alias: RefCell<HashMap<String, String>>,
+
     ring: RefCell<HashRing<Fnv1a64>>,
     conns: RefCell<HashMap<String, Sender<T>>>,
     is_alias: bool,
-    alias: RefCell<HashMap<String, String>>,
     hash_tag: Vec<u8>,
 }
 
@@ -150,15 +178,24 @@ impl<T: Request + 'static> Proxy<T> {
         let sls = ServerLine::parse_servers(&cc.servers)?;
         let (addrs, alias, weights) = ServerLine::unwrap_spot(&sls);
         let ring = if alias.is_empty() {
-            HashRing::<Fnv1a64>::new(addrs.clone(), weights)?
+            HashRing::<Fnv1a64>::new(addrs.clone(), weights.clone())?
         } else {
-            HashRing::<Fnv1a64>::new(alias.clone(), weights)?
+            HashRing::<Fnv1a64>::new(alias.clone(), weights.clone())?
         };
         let alias_map: HashMap<_, _> = alias
             .iter()
             .enumerate()
             .map(|(index, alias_name)| (alias_name.clone(), addrs[index].clone()))
             .collect();
+
+        let spots: HashMap<_, _> = if alias.is_empty() {
+            addrs.iter()
+        } else {
+            addrs.iter()
+        }
+        .zip(weights.iter())
+        .map(|(x, y)| (x.clone(), y.clone()))
+        .collect();
 
         let hash_tag = cc
             .hash_tag
@@ -170,6 +207,7 @@ impl<T: Request + 'static> Proxy<T> {
 
         Ok(Proxy {
             cc: cc,
+            spots: spots,
             ring: RefCell::new(ring),
             conns: RefCell::new(HashMap::new()),
             is_alias: !alias_map.is_empty(),
@@ -213,25 +251,79 @@ impl<T: Request + 'static> Proxy<T> {
         Ok(ret_tx)
     }
 
+    fn add_node(&self, node: &str) {
+        if let Some(spot) = self.spots.get(node) {
+            self.ring.borrow_mut().add_node(node.to_string(), *spot);
+        }
+    }
+
+    fn del_node(&self, node: &str) {
+        let mut ring_name = node.to_string();
+        if self.is_alias {
+            for (alias, name) in self.alias.borrow().iter() {
+                if name == node {
+                    ring_name = alias.to_string();
+                    break;
+                }
+            }
+        }
+        self.ring.borrow_mut().del_node(ring_name);
+    }
+
+    fn trans_alias(&self, who: &str) -> String {
+        if self.is_alias {
+            if let Some(addr) = self.alias.borrow().get(who) {
+                return addr.to_string();
+            }
+        }
+        return who.to_string();
+    }
+
+    fn execute(&self, who: &str, req: T) -> Result<AsyncSink<T>, Error> {
+        let node = self.trans_alias(who);
+        let mut connected = false;
+
+        loop {
+            info!("execute command to {}", &node);
+            let mut conns = self.conns.borrow_mut();
+            {
+                if let Some(conn) = conns.get_mut(&node) {
+                    match conn.start_send(req.clone()) {
+                        Ok(AsyncSink::Ready) => {
+                            conn.poll_complete().map_err(|err| {
+                                error!("execute fail to poll_complete due to {:?}", err);
+                                Error::Critical
+                            })?;
+                            return Ok(AsyncSink::Ready);
+                        }
+                        Ok(AsyncSink::NotReady(r)) => return Ok(AsyncSink::NotReady(r)),
+                        Err(err) => {
+                            error!("fail to execute to backend due to {:?}", err);
+                        }
+                    };
+                };
+            }
+
+            if connected {
+                return Err(Error::Critical);
+            }
+
+            let conn = Self::create_conn(node.clone())?;
+            conns.insert(node.clone(), conn);
+            connected = true;
+        }
+    }
+
     fn dispatch_all(&self, cmds: &mut VecDeque<T>) -> Result<AsyncSink<()>, Error> {
         let mut nodes = HashSet::new();
         loop {
             if let Some(req) = cmds.front().cloned() {
                 let name = self.ring.borrow().get_node(self.trim_hash_tag(&req.key()));
-                let node = if self.is_alias {
-                    self.alias
-                        .borrow()
-                        .get(&name)
-                        .expect("alias get never be empty")
-                        .to_string()
-                } else {
-                    name
-                };
-
+                let node = self.trans_alias(&name);
                 let mut conns = self.conns.borrow_mut();
                 {
                     if let Some(conn) = conns.get_mut(&node) {
-                        match conn.start_send(req).map_err(|err| {
+                        match conn.start_send(req.clone()).map_err(|err| {
                             error!("fail to dispatch to backend due to {:?}", err);
                             Error::Critical
                         })? {
@@ -277,9 +369,10 @@ pub trait Request: Sized + Clone + Debug {
     type HandleCodec: Decoder<Item = Self, Error = Error> + Encoder<Item = Self, Error = Error>;
     type NodeCodec: Decoder<Item = Self::Reply, Error = Error> + Encoder<Item = Self, Error = Error>;
 
-    fn reregister(&self, task: Task);
+    fn ping_request() -> Self;
     fn handle_codec() -> Self::HandleCodec;
     fn node_codec() -> Self::NodeCodec;
+    fn reregister(&self, task: Task);
 
     fn key(&self) -> Vec<u8>;
     fn subs(&self) -> Option<Vec<Self>>;

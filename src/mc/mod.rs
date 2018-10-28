@@ -118,6 +118,10 @@ impl Request for Req {
         NodeCodec::default()
     }
 
+    fn ping_request() -> Self {
+        new_ping_request()
+    }
+
     fn reregister(&self, task: Task) {
         // self.req.borrow_mut().notify.reregister();
         self.req.borrow_mut().reregister(task);
@@ -548,5 +552,21 @@ impl Encoder for NodeCodec {
 impl Default for NodeCodec {
     fn default() -> Self {
         NodeCodec {}
+    }
+}
+
+fn new_ping_request() -> Req {
+    let mcreq = MCReq {
+        rtype: ReqType::Set,
+        data: BytesMut::from(b"set ass-we-can-ping-value 0 0 1\r\n1\r\n".to_vec()),
+        key: Range::new(4, 4 + 21),
+        is_done: false,
+        notify: Notify::empty(),
+        subs: None,
+        reply: None,
+    };
+    mcreq.notify.add(1);
+    Req {
+        req: Rc::new(RefCell::new(mcreq)),
     }
 }

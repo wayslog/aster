@@ -109,6 +109,7 @@ where
     T: Request,
     D: Into<T>,
 {
+    closed: bool,
     proxy: Rc<Proxy<T>>,
     input: I,
     output: O,
@@ -126,6 +127,7 @@ where
 {
     pub fn new(proxy: Rc<Proxy<T>>, input: I, output: O) -> Handle<T, I, O, D> {
         Handle {
+            closed: false,
             proxy: proxy,
             input: input,
             output: output,
@@ -228,7 +230,7 @@ where
     type Error = Error;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        let mut can_read = true;
+        let mut can_read = !self.closed;
         let mut can_send = true;
         let mut can_write = true;
 
@@ -254,16 +256,38 @@ where
             // step 2: send to proxy.
             if can_send {
                 // send until the output stream is unsendable.
-                match self.try_send()? {
-                    Async::NotReady => {
+                match self.try_send() {
+                    Ok(Async::NotReady) => {
                         can_send = false;
                     }
-                    Async::Ready(_) => {}
+                    Ok(Async::Ready(_)) => {}
+                    Err(err) => {
+                        error!(
+                            "proxy handle trying to close the connection due to {:?}",
+                            err
+                        );
+                        for cmd in self.waitq.iter() {
+                            cmd.done_with_error(Error::ClusterDown);
+                        }
+                        self.waitq.clear();
+                        self.closed = true;
+                    }
                 }
             }
 
             // step 3: wait all the proxy is done.
             if can_write {
+                if self.closed && self.cmds.is_empty() {
+                    match self.output.close() {
+                        Ok(_) => {}
+                        Err(err) => {
+                            error!("close fail due to {:?}", err);
+                        }
+                    }
+
+                    return Ok(Async::Ready(()));
+                }
+
                 // step 4: poll send back to client.
                 match self.try_write()? {
                     Async::NotReady => {

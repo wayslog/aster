@@ -39,8 +39,13 @@ impl Request for Cmd {
     fn handle_codec() -> Self::HandleCodec {
         HandleCodec::default()
     }
+
     fn node_codec() -> Self::NodeCodec {
         NodeCodec::default()
+    }
+
+    fn ping_request() -> Self {
+        new_ping_request()
     }
 
     fn key(&self) -> Vec<u8> {
@@ -868,4 +873,29 @@ impl Encoder for NodeCodec {
         let req = item.rc_req();
         self.rc.encode(req, dst)
     }
+}
+
+fn new_ping_request() -> Cmd {
+    let req = Resp::new_array(Some(vec![Resp::new_plain(
+        RESP_BULK,
+        Some(b"PING".to_vec()),
+    )]));
+    let notify = Notify::empty();
+    notify.add(1);
+    let cmd = Command {
+        is_done: false,
+        is_ask: false,
+        is_inline: false,
+
+        is_complex: false,
+        cmd_type: CmdType::Read,
+
+        crc: 0u16,
+        notify: notify,
+
+        req: Rc::new(req),
+        sub_reqs: None,
+        reply: None,
+    };
+    Cmd::new(cmd)
 }

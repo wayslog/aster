@@ -22,6 +22,7 @@ pub enum Error {
     BadCmd,
     BadConfig,
     BadSlotsMap,
+    ClusterDown,
     IoError(io::Error),
     Critical,
     StrParseIntError(num::ParseIntError),

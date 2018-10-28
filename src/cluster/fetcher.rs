@@ -47,12 +47,6 @@ impl Stream for Fetcher {
     type Error = Error;
 
     fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
-        if let None = try_ready!(self.internal.poll().map_err(|err| {
-            error!("fetch by internal fail due {:?}", err);
-            Error::Critical
-        })) {
-            return Ok(Async::Ready(None));
-        }
 
         loop {
             // debug!("fetch status cursor={} cmd={:?}", self.cursor, self.info_cmd);
@@ -65,6 +59,13 @@ impl Stream for Fetcher {
                     self.state = FetchState::Ready;
                 }
                 FetchState::Ready => {
+                    if let None = try_ready!(self.internal.poll().map_err(|err| {
+                        error!("fetch by internal fail due {:?}", err);
+                        Error::Critical
+                    })) {
+                        return Ok(Async::Ready(None));
+                    }
+
                     let cursor = self.cursor;
                     if cursor == self.servers.len() {
                         debug!("fail to update slots map but pass the turn");

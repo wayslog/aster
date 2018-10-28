@@ -23,4 +23,6 @@ listen_addr="0.0.0.0:9002"
 cache_type="redis"
 servers = ["127.0.0.1:6379:10 redis-1"]
 thread = 1
+ping_fail_limit=3
+ping_interval=1000
 # default 10 * 60 seconds

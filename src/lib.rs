@@ -126,7 +126,8 @@ pub struct ClusterConfig {
     pub hash_tag: Option<String>,
 
     pub ping_fail_limit: Option<usize>,
-    pub ping_auto_eject: Option<bool>,
+    pub ping_interval: Option<usize>,
+
     pub thread: usize,
     pub cache_type: CacheType,
     pub servers: Vec<String>,
