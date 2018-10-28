@@ -83,6 +83,7 @@ impl Slots {
     }
 }
 
+#[derive(Debug)]
 pub struct SlotsMap {
     nodes: HashMap<String, Sender<Cmd>>,
     slots: Vec<String>,
@@ -102,7 +103,7 @@ impl SlotsMap {
         match Slots::parse(data) {
             Ok(slots) => {
                 let mut slots = slots;
-                if self
+                if self.slots.is_empty() || self
                     .slots
                     .iter()
                     .zip(slots.0.iter())
