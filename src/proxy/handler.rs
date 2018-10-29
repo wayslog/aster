@@ -3,6 +3,7 @@ use proxy::{Proxy, Request};
 
 use futures::task;
 use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
+use futures::unsync::oneshot::{Sender, Receiver};
 
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -20,6 +21,7 @@ where
     stream: T,
     buffered: Option<T::Item>,
     count: usize,
+    close: Receiver<()>,
 }
 
 impl<T, U, D> HandleInput<T, U, D>
@@ -28,8 +30,9 @@ where
     U: Sink<SinkItem = T::Item>,
     D: Debug,
 {
-    pub fn new(stream: T, sink: U) -> HandleInput<T, U, D> {
+    pub fn new(stream: T, sink: U, close: Receiver<()>) -> HandleInput<T, U, D> {
         Self {
+            close: close,
             sink: sink,
             stream: stream,
             buffered: None,
@@ -39,9 +42,11 @@ where
     fn try_start_send(&mut self, item: T::Item) -> Poll<(), U::SinkError> {
         debug_assert!(self.buffered.is_none());
         if let AsyncSink::NotReady(item) = self.sink.start_send(item)? {
+            info!("not send ok");
             self.buffered = Some(item);
             return Ok(Async::NotReady);
         }
+        info!("send ok");
         Ok(Async::Ready(()))
     }
 }
@@ -56,6 +61,16 @@ where
     type Error = ();
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        if let Ok(Async::Ready(_)) = self.close.poll() {
+            info!("exsits by notify");
+            try_ready!(
+                self.sink
+                    .close()
+                    .map_err(|_err| error!("fail to close handle tx"))
+            );
+            return Ok(Async::Ready(()));
+        }
+
         loop {
             if let Some(item) = self.buffered.take() {
                 match self
@@ -76,6 +91,7 @@ where
                 .map_err(|err| error!("fail to poll from upstream {:?}", err))?
             {
                 Async::Ready(Some(item)) => {
+                    info!("read new");
                     self.buffered = Some(item);
                 }
                 Async::Ready(None) => {
@@ -110,6 +126,7 @@ where
     D: Into<T>,
 {
     closed: bool,
+    close: Option<Sender<()>>,
     proxy: Rc<Proxy<T>>,
     input: I,
     output: O,
@@ -125,9 +142,10 @@ where
     T: Request + 'static,
     D: Into<T>,
 {
-    pub fn new(proxy: Rc<Proxy<T>>, input: I, output: O) -> Handle<T, I, O, D> {
+    pub fn new(proxy: Rc<Proxy<T>>, input: I, output: O, close: Sender<()>) -> Handle<T, I, O, D> {
         Handle {
             closed: false,
+            close: Some(close),
             proxy: proxy,
             input: input,
             output: output,
@@ -230,9 +248,14 @@ where
     type Error = Error;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        let mut can_read = !self.closed;
+        let mut can_read = true;
         let mut can_send = true;
         let mut can_write = true;
+
+        if self.closed {
+            info!("closed but not ready");
+        }
+
 
         loop {
             if !(can_read && can_send && can_write) {
@@ -284,7 +307,8 @@ where
                             error!("close fail due to {:?}", err);
                         }
                     }
-
+                    let close = self.close.take().expect("send back is never be empty");
+                    close.send(()).expect("close channel is never be canceled");
                     return Ok(Async::Ready(()));
                 }
 

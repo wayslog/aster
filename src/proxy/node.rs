@@ -1,11 +1,26 @@
 use self::super::Request;
 use com::*;
 
+use futures::unsync::oneshot::{channel, Receiver, Sender};
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+
+pub fn spawn_node<T, I, O, S>(input: I, output: O, recv: S) -> (NodeDown<T, I, O>, NodeRecv<T, S>)
+where
+    T: Request,
+    I: Stream<Item = T, Error = Error>,
+    O: Sink<SinkItem = T, SinkError = Error>,
+    S: Stream<Item = T::Reply, Error = Error>,
+{
+    let (tx, rx) = channel();
+    let buf = Rc::new(RefCell::new(VecDeque::new()));
+    let node_down = NodeDown::new(input, output, buf.clone(), tx);
+    let node_recv = NodeRecv::new(recv, buf.clone(), rx);
+    (node_down, node_recv)
+}
 
 pub struct NodeDown<T, I, O>
 where
@@ -14,6 +29,7 @@ where
     T: Request,
 {
     closed: bool,
+    close_chan: Option<Sender<bool>>,
     input: I,
     output: O,
     store: VecDeque<T>,
@@ -27,9 +43,15 @@ where
     O: Sink<SinkItem = T, SinkError = Error>,
     T: Request,
 {
-    pub fn new(input: I, output: O, buf: Rc<RefCell<VecDeque<T>>>) -> NodeDown<T, I, O> {
+    pub fn new(
+        input: I,
+        output: O,
+        buf: Rc<RefCell<VecDeque<T>>>,
+        close: Sender<bool>,
+    ) -> NodeDown<T, I, O> {
         Self {
             closed: false,
+            close_chan: Some(close),
             input: input,
             output: output,
             store: VecDeque::new(),
@@ -90,6 +112,8 @@ where
     type Error = ();
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
         if self.closed {
+            let close = self.close_chan.take().expect("never be empty for close channel");
+            close.send(self.closed).expect("close chan never be close first");
             return Ok(Async::Ready(()));
         }
 
@@ -113,6 +137,7 @@ where
     T: Request,
 {
     closed: bool,
+    close_chan: Receiver<bool>,
     recv: S,
     buf: Rc<RefCell<VecDeque<T>>>,
 }
@@ -122,11 +147,12 @@ where
     S: Stream<Item = T::Reply, Error = Error>,
     T: Request,
 {
-    pub fn new(stream: S, buf: Rc<RefCell<VecDeque<T>>>) -> NodeRecv<T, S> {
+    pub fn new(stream: S, buf: Rc<RefCell<VecDeque<T>>>, close: Receiver<bool>) -> NodeRecv<T, S> {
         Self {
             closed: false,
             recv: stream,
             buf: buf,
+            close_chan: close,
         }
     }
 }
@@ -141,6 +167,11 @@ where
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
         if self.closed {
+            return Ok(Async::Ready(()));
+        }
+
+        if let Ok(Async::Ready(_)) = self.close_chan.poll() {
+            self.closed = true;
             return Ok(Async::Ready(()));
         }
 

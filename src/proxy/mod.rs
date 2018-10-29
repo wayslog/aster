@@ -9,7 +9,7 @@ mod ping;
 use self::fnv::Fnv1a64;
 use self::handler::{Handle, HandleInput};
 use self::ketama::HashRing;
-use self::node::{NodeDown, NodeRecv};
+use self::node::spawn_node;
 use self::ping::Ping;
 
 use com::*;
@@ -18,6 +18,7 @@ use ClusterConfig;
 use futures::lazy;
 use futures::task::Task;
 use futures::unsync::mpsc::{channel, Sender};
+use futures::unsync::oneshot;
 use futures::{AsyncSink, Future, Sink, Stream};
 use tokio::net::TcpStream;
 use tokio::runtime::current_thread;
@@ -73,7 +74,8 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
                     let codec = T::handle_codec();
                     let (req_tx, req_rx) = codec.framed(sock).split();
                     let (handle_tx, handle_rx) = channel(2048);
-                    let input = HandleInput::new(req_rx, handle_tx);
+                    let (close_tx, close_rx) = oneshot::channel();
+                    let input = HandleInput::new(req_rx, handle_tx, close_rx);
                     current_thread::spawn(input);
 
                     let proxy = rc_proxy.clone();
@@ -84,6 +86,7 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
                             Error::Critical
                         }),
                         req_tx,
+                        close_tx,
                     )
                     .map_err(|err| {
                         error!("get handle error due {:?}", err);
@@ -242,9 +245,9 @@ impl<T: Request + 'static> Proxy<T> {
                     info!("fail to send due to {:?}", err);
                     Error::Critical
                 });
-                let buf = Rc::new(RefCell::new(VecDeque::new()));
-                current_thread::spawn(NodeDown::new(arx, sink, buf.clone()));
-                current_thread::spawn(NodeRecv::new(stream, buf.clone()));
+                let (nd, nr) = spawn_node(arx, sink, stream);
+                current_thread::spawn(nd);
+                current_thread::spawn(nr);
                 Ok(())
             });
         current_thread::spawn(amt);
