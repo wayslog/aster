@@ -22,15 +22,16 @@ extern crate tokio_io;
 extern crate tokio_timer;
 #[macro_use]
 extern crate serde_derive;
+extern crate hashbrown;
 extern crate md5;
 extern crate toml;
 
 mod cluster;
-mod redis;
 mod com;
 mod mc;
 mod notify;
 mod proxy;
+mod redis;
 
 use cluster::{start_cluster, Cluster};
 pub use com::*;

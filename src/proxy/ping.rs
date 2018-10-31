@@ -56,12 +56,10 @@ impl<T: Request> Future for Ping<T> {
 
                 match self.proxy.execute(&self.addr, req.clone()) {
                     Ok(AsyncSink::Ready) => {
-                        info!("baka");
                         self.retry += 1;
                         self.req = Some(req);
                     }
                     Ok(AsyncSink::NotReady(_)) => {
-                        info!("kaba");
                         return Ok(Async::NotReady);
                     }
                     Err(err) => {

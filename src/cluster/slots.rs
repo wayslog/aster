@@ -3,7 +3,7 @@ use redis::cmd::Cmd;
 
 use futures::unsync::mpsc::Sender;
 
-use std::collections::{HashMap, HashSet};
+use hashbrown::{HashMap, HashSet};
 use std::mem;
 
 pub const SLOTS_COUNT: usize = 16384;

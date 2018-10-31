@@ -11,8 +11,9 @@ use crc16;
 use futures::task::Task;
 use tokio_codec::{Decoder, Encoder};
 
+use hashbrown::HashMap;
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::mem;
 use std::rc::Rc;
 

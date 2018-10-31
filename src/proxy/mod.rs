@@ -24,8 +24,9 @@ use tokio::net::TcpStream;
 use tokio::runtime::current_thread;
 use tokio_codec::{Decoder, Encoder};
 
+use hashbrown::{HashMap, HashSet};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -287,7 +288,7 @@ impl<T: Request + 'static> Proxy<T> {
         let mut connected = false;
 
         loop {
-            info!("execute command to {}", &node);
+            // info!("execute command to {}", &node);
             let mut conns = self.conns.borrow_mut();
             {
                 if let Some(conn) = conns.get_mut(&node) {

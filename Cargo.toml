@@ -32,6 +32,7 @@ itoa="0.4"
 crc16="0.4"
 net2="*"
 md5="*"
+hashbrown = "0.1.2"
 
 [profile.release]
 debug = true
