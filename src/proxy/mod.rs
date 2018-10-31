@@ -24,7 +24,7 @@ use tokio::net::TcpStream;
 use tokio::runtime::current_thread;
 use tokio_codec::{Decoder, Encoder};
 
-use hashbrown::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -208,6 +208,7 @@ impl<T: Request + 'static> Proxy<T> {
             .unwrap_or("".to_string())
             .as_bytes()
             .to_vec();
+
 
         Ok(Proxy {
             cc: cc,

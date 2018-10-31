@@ -42,11 +42,9 @@ where
     fn try_start_send(&mut self, item: T::Item) -> Poll<(), U::SinkError> {
         debug_assert!(self.buffered.is_none());
         if let AsyncSink::NotReady(item) = self.sink.start_send(item)? {
-            info!("not send ok");
             self.buffered = Some(item);
             return Ok(Async::NotReady);
         }
-        info!("send ok");
         Ok(Async::Ready(()))
     }
 }
@@ -91,7 +89,6 @@ where
                 .map_err(|err| error!("fail to poll from upstream {:?}", err))?
             {
                 Async::Ready(Some(item)) => {
-                    info!("read new");
                     self.buffered = Some(item);
                 }
                 Async::Ready(None) => {

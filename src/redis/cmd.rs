@@ -9,11 +9,13 @@ use redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_
 use bytes::{BufMut, BytesMut};
 use crc16;
 use futures::task::Task;
+use hashbrown::HashMap;
 use tokio_codec::{Decoder, Encoder};
 
-use hashbrown::HashMap;
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeSet;
+use std::hash::BuildHasherDefault;
 use std::mem;
 use std::rc::Rc;
 
@@ -416,8 +418,10 @@ impl Command {
 }
 
 lazy_static!{
-    pub static ref CMD_TYPE: HashMap<&'static [u8], CmdType> = {
-        let mut hmap = HashMap::new();
+    pub static ref CMD_TYPE: HashMap<&'static [u8], CmdType, BuildHasherDefault<DefaultHasher>> = {
+        let s = BuildHasherDefault::<DefaultHasher>::default();
+        let mut hmap = HashMap::with_hasher(s);
+        // let mut hmap = HashMap::new();
 
         // special commands
         hmap.insert("DEL".as_bytes(), CmdType::Write);

@@ -8,9 +8,9 @@ use tokio::net::TcpListener;
 use std::convert::From;
 use std::io;
 use std::net;
+use std::net::SocketAddr;
 use std::num;
 use std::result;
-use std::net::SocketAddr;
 
 #[derive(Debug)]
 pub enum Error {
