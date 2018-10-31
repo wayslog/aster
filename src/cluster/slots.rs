@@ -6,8 +6,6 @@ use futures::unsync::mpsc::Sender;
 use hashbrown::{HashMap, HashSet};
 
 use std::mem;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::BuildHasherDefault;
 
 pub const SLOTS_COUNT: usize = 16384;
 pub static LF_STR: &'static str = "\n";
@@ -88,16 +86,14 @@ impl Slots {
 
 #[derive(Debug)]
 pub struct SlotsMap {
-    nodes: HashMap<String, Sender<Cmd>, BuildHasherDefault<DefaultHasher>>,
+    nodes: HashMap<String, Sender<Cmd>>,
     slots: Vec<String>,
 }
 
 impl Default for SlotsMap {
     fn default() -> Self {
-        let s = BuildHasherDefault::<DefaultHasher>::default();
-        let nodes = HashMap::with_hasher(s);
         SlotsMap {
-            nodes: nodes,
+            nodes: HashMap::new(),
             slots: vec![],
         }
     }
