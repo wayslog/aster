@@ -68,6 +68,12 @@ where
                     .front()
                     .cloned()
                     .expect("node down store is never be empty");
+
+                if req.is_done() {
+                    let _ = self.store.pop_front().unwrap();
+                    continue;
+                }
+
                 match self.output.start_send(req)? {
                     AsyncSink::NotReady(_) => {
                         return Ok(());
@@ -93,11 +99,19 @@ where
                     self.closed = true;
                     return Ok(());
                 }
-
                 Async::NotReady => {
                     return Ok(());
                 }
             }
+        }
+    }
+
+    fn done_first(&self) {
+        for req in self.store.iter() {
+            req.done_with_error(Error::ClusterDown);
+        }
+        for item in self.buf.borrow_mut().iter() {
+            item.done_with_error(Error::ClusterDown);
         }
     }
 }
@@ -112,19 +126,29 @@ where
     type Error = ();
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
         if self.closed {
-            let close = self.close_chan.take().expect("never be empty for close channel");
-            close.send(self.closed).expect("close chan never be close first");
+            self.done_first();
+            let close = self
+                .close_chan
+                .take()
+                .expect("never be empty for close channel");
+            close
+                .send(self.closed)
+                .expect("close chan never be close first");
             return Ok(Async::Ready(()));
         }
 
-        self.try_forword()
-            .map_err(|err| error!("fail to forward due to {:?}", err))?;
+        self.try_forword().map_err(|err| {
+            self.done_first();
+            error!("fail to forward due to {:?}", err);
+        })?;
 
         if self.count > 0 {
             try_ready!(self.output.poll_complete().map_err(|err| {
                 error!("fail to flush into backend due to {:?}", err);
+                self.done_first();
                 self.closed = true;
             }));
+            // debug!("trying to poll_complete with count {}", self.count);
             self.count = 0;
         }
         Ok(Async::NotReady)
@@ -171,7 +195,11 @@ where
         }
 
         if let Ok(Async::Ready(_)) = self.close_chan.poll() {
+            debug!("close by down");
             self.closed = true;
+            for item in self.buf.borrow_mut().iter() {
+                item.done_with_error(Error::ClusterDown);
+            }
             return Ok(Async::Ready(()));
         }
 
@@ -186,7 +214,10 @@ where
                 let req = self.buf.borrow_mut().pop_front().unwrap();
                 req.done(reply);
             } else {
-                error!("TODO: should quick error for");
+                for item in self.buf.borrow_mut().iter() {
+                    error!("TODO: should quick error for");
+                    item.done_with_error(Error::ClusterDown);
+                }
                 self.closed = true;
                 return Ok(Async::Ready(()));
             }

@@ -24,9 +24,9 @@ use tokio::net::TcpStream;
 use tokio::runtime::current_thread;
 use tokio_codec::{Decoder, Encoder};
 
-use std::collections::{HashMap, HashSet};
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -44,27 +44,11 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
             let listen = create_reuse_port_listener(&addr).expect("bind never fail");
             Ok((Rc::new(proxy), listen))
         })
-        .map(|(proxy, listen)| {
-            if let Some(limit) = proxy.cc.ping_fail_limit {
-                info!("setup ping for cluster {}", proxy.cc.name);
-                // default ping interval 500
-                let interval = proxy
-                    .cc
-                    .ping_interval
-                    .clone()
-                    .map(|x| x as u64)
-                    .unwrap_or(500u64);
-
-                let addrs = proxy.spots.keys().map(|x| x.clone());
-                for addr in addrs.into_iter() {
-                    let ping = Ping::new(proxy.clone(), addr, limit, interval);
-                    current_thread::spawn(ping);
-                }
-            } else {
-                debug!("skip proxy ping feature for cluster {}", proxy.cc.name);
-            }
-
-            (proxy, listen)
+        .and_then(|(proxy, listen)| {
+            proxy.init_conns().map_err(|err| {
+                error!("fail to create init proxy connections due to {:?}", err);
+            })?;
+            Ok((proxy, listen))
         })
         .and_then(|(proxy, listen)| {
             let rc_proxy = proxy.clone();
@@ -99,6 +83,27 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
                     error!("fail to start_cluster due {:?}", err);
                 });
             current_thread::spawn(amt);
+            Ok(proxy.clone())
+        })
+        .and_then(|proxy| {
+            if let Some(limit) = proxy.cc.ping_fail_limit {
+                info!("setup ping for cluster {}", proxy.cc.name);
+                // default ping interval 500
+                let interval = proxy
+                    .cc
+                    .ping_interval
+                    .clone()
+                    .map(|x| x as u64)
+                    .unwrap_or(500u64);
+
+                let addrs = proxy.spots.keys().map(|x| x.clone());
+                for addr in addrs.into_iter() {
+                    let ping = Ping::new(proxy.clone(), addr, limit, interval);
+                    current_thread::spawn(ping);
+                }
+            } else {
+                debug!("skip proxy ping feature for cluster {}", proxy.cc.name);
+            }
             Ok(())
         });
 
@@ -195,7 +200,7 @@ impl<T: Request + 'static> Proxy<T> {
         let spots: HashMap<_, _> = if alias.is_empty() {
             addrs.iter()
         } else {
-            addrs.iter()
+            alias.iter()
         }
         .zip(weights.iter())
         .map(|(x, y)| (x.clone(), y.clone()))
@@ -209,7 +214,6 @@ impl<T: Request + 'static> Proxy<T> {
             .as_bytes()
             .to_vec();
 
-
         Ok(Proxy {
             cc: cc,
             spots: spots,
@@ -221,8 +225,29 @@ impl<T: Request + 'static> Proxy<T> {
         })
     }
 
+    fn reconnect(&self, node: String) -> AsResult<()> {
+        let conn = Self::create_conn(node.clone())?;
+        if let Some(mut old) = self.conns.borrow_mut().insert(node, conn) {
+            old.close().map_err(|err| {
+                error!("force done for replaced data");
+                let req = err.into_inner();
+                req.done_with_error(Error::ClusterDown);
+                Error::Critical
+            })?;
+        }
+        Ok(())
+    }
+
     fn trim_hash_tag<'b>(&self, key: &'b [u8]) -> &'b [u8] {
         trim_hash_tag(&self.hash_tag, key)
+    }
+
+    fn init_conns(&self) -> AsResult<()> {
+        for server in self.alias.borrow().values().map(|x| x.to_string()) {
+            let conn = Self::create_conn(server.clone())?;
+            self.conns.borrow_mut().insert(server.clone(), conn);
+        }
+        Ok(())
     }
 
     fn create_conn(node: String) -> AsResult<Sender<T>> {
@@ -263,16 +288,7 @@ impl<T: Request + 'static> Proxy<T> {
     }
 
     fn del_node(&self, node: &str) {
-        let mut ring_name = node.to_string();
-        if self.is_alias {
-            for (alias, name) in self.alias.borrow().iter() {
-                if name == node {
-                    ring_name = alias.to_string();
-                    break;
-                }
-            }
-        }
-        self.ring.borrow_mut().del_node(ring_name);
+        self.ring.borrow_mut().del_node(node);
     }
 
     fn trans_alias(&self, who: &str) -> String {
@@ -286,36 +302,41 @@ impl<T: Request + 'static> Proxy<T> {
 
     fn execute(&self, who: &str, req: T) -> Result<AsyncSink<T>, Error> {
         let node = self.trans_alias(who);
-        let mut connected = false;
 
-        loop {
-            // info!("execute command to {}", &node);
+        let rslt = {
             let mut conns = self.conns.borrow_mut();
+            let conn = conns
+                .get_mut(&node)
+                .expect("start_send conn must be exists");
+            conn.start_send(req)
+        };
+        match rslt {
+            Ok(AsyncSink::Ready) => match self
+                .conns
+                .borrow_mut()
+                .get_mut(&node)
+                .expect("complte conn must be exists")
+                .poll_complete()
             {
-                if let Some(conn) = conns.get_mut(&node) {
-                    match conn.start_send(req.clone()) {
-                        Ok(AsyncSink::Ready) => {
-                            conn.poll_complete().map_err(|err| {
-                                error!("execute fail to poll_complete due to {:?}", err);
-                                Error::Critical
-                            })?;
-                            return Ok(AsyncSink::Ready);
-                        }
-                        Ok(AsyncSink::NotReady(r)) => return Ok(AsyncSink::NotReady(r)),
-                        Err(err) => {
-                            error!("fail to execute to backend due to {:?}", err);
-                        }
-                    };
-                };
+                Ok(_) => {
+                    return Ok(AsyncSink::Ready);
+                }
+                Err(err) => {
+                    self.reconnect(node)?;
+                    error!("execute fail to poll_complete due to {:?}", err);
+                    let req = err.into_inner();
+                    req.done_with_error(Error::ClusterDown);
+                    return Err(Error::Critical);
+                }
+            },
+            Ok(AsyncSink::NotReady(r)) => return Ok(AsyncSink::NotReady(r)),
+            Err(err) => {
+                self.reconnect(node)?;
+                error!("fail to execute to backend due to {:?}", err);
+                let req = err.into_inner();
+                req.done_with_error(Error::ClusterDown);
+                return Err(Error::ClusterDown);
             }
-
-            if connected {
-                return Err(Error::Critical);
-            }
-
-            let conn = Self::create_conn(node.clone())?;
-            conns.insert(node.clone(), conn);
-            connected = true;
         }
     }
 
@@ -325,27 +346,28 @@ impl<T: Request + 'static> Proxy<T> {
             if let Some(req) = cmds.front().cloned() {
                 let name = self.ring.borrow().get_node(self.trim_hash_tag(&req.key()));
                 let node = self.trans_alias(&name);
-                let mut conns = self.conns.borrow_mut();
-                {
-                    if let Some(conn) = conns.get_mut(&node) {
-                        match conn.start_send(req.clone()).map_err(|err| {
-                            error!("fail to dispatch to backend due to {:?}", err);
-                            Error::Critical
-                        })? {
-                            AsyncSink::Ready => {
-                                let _ = cmds.pop_front().expect("pop_front never be empty");
-                                nodes.insert(node.clone());
-                            }
-                            AsyncSink::NotReady(_) => {
-                                break;
-                            }
-                        };
-                        continue;
+                let result = {
+                    let mut conns = self.conns.borrow_mut();
+                    let conn = conns.get_mut(&node).expect("must get the conn");
+                    conn.start_send(req.clone()).map_err(|err| {
+                        error!("fail to dispatch to backend due to {:?}", err);
+                        Error::Critical
+                    })
+                };
+
+                match result {
+                    Ok(AsyncSink::Ready) => {
+                        let _ = cmds.pop_front().expect("pop_front never be empty");
+                        nodes.insert(node.clone());
+                    }
+                    Ok(AsyncSink::NotReady(_)) => {
+                        break;
+                    }
+                    Err(err) => {
+                        self.reconnect(node)?;
+                        return Err(err);
                     }
                 }
-
-                let conn = Self::create_conn(node.clone())?;
-                conns.insert(node, conn);
             } else {
                 return Ok(AsyncSink::Ready);
             }
@@ -353,15 +375,20 @@ impl<T: Request + 'static> Proxy<T> {
 
         if !nodes.is_empty() {
             for node in nodes.into_iter() {
-                self.conns
+                let rslt = self
+                    .conns
                     .borrow_mut()
                     .get_mut(&node)
                     .expect("node connection is never be absent")
-                    .poll_complete()
-                    .map_err(|err| {
+                    .poll_complete();
+                match rslt {
+                    Ok(_) => {}
+                    Err(err) => {
+                        self.reconnect(node)?;
                         error!("fail to complete to proxy to backend due to {:?}", err);
-                        Error::Critical
-                    })?;
+                        return Err(Error::ClusterDown);
+                    }
+                }
             }
         }
 

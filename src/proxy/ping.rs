@@ -2,8 +2,8 @@
 use proxy::*;
 
 use futures::{task, Async, AsyncSink, Future};
-use tokio::timer::Interval;
 use std::time::Duration;
+use tokio::timer::Interval;
 
 //use std::marker::PhantomData;
 
@@ -21,7 +21,7 @@ where
 
 impl<T: Request> Ping<T> {
     pub fn new(proxy: Rc<Proxy<T>>, addr: String, max_retry: usize, interval: u64) -> Ping<T> {
-        Ping{
+        Ping {
             proxy: proxy,
             addr: addr,
             max_retry: max_retry,
@@ -49,6 +49,8 @@ impl<T: Request> Future for Ping<T> {
                 })) {
                     return Ok(Async::Ready(()));
                 }
+                // debug!("");
+                // debug!("trying to execute ping command to {}", self.addr);
 
                 let req = T::ping_request();
                 let local_task = task::current();
@@ -71,6 +73,7 @@ impl<T: Request> Future for Ping<T> {
             }
 
             if self.req.is_some() {
+                // debug!("wait for command to done for {}", self.addr);
                 if !self
                     .req
                     .as_ref()

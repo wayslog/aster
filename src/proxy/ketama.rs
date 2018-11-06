@@ -47,7 +47,6 @@ impl<T: Hasher + Default> HashRing<T> {
             _hash: PhantomData,
         };
         ring.init();
-        debug!("ring init for with ticks {:?}", ring.ticks);
         Ok(ring)
     }
 
@@ -61,6 +60,8 @@ impl<T: Hasher + Default> HashRing<T> {
     }
 
     fn init(&mut self) {
+        self.ticks.clear();
+
         let ptr_per_hash = 4;
         let servern = self.nodes.len() as f64;
 
@@ -82,9 +83,9 @@ impl<T: Hasher + Default> HashRing<T> {
             }
         }
         self.ticks.sort();
+        debug!("ring init for with ticks {:?}", self.ticks);
     }
 
-    #[allow(unused)]
     pub fn add_node(&mut self, node: String, spot: usize) {
         let mut tmp_nodes = self.nodes.clone();
         let mut tmp_spots = self.spots.clone();
@@ -99,8 +100,8 @@ impl<T: Hasher + Default> HashRing<T> {
         self.init();
     }
 
-    pub fn del_node(&mut self, node: String) {
-        if let Some(pos) = self.nodes.iter().position(|x| x == &node) {
+    pub fn del_node(&mut self, node: &str) {
+        if let Some(pos) = self.nodes.iter().position(|x| x == node) {
             self.nodes.remove(pos);
             self.spots.remove(pos);
             self.init();
