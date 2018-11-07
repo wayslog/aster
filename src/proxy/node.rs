@@ -50,12 +50,12 @@ where
         close: Sender<bool>,
     ) -> NodeDown<T, I, O> {
         Self {
+            input,
+            output,
+            buf,
             closed: false,
             close_chan: Some(close),
-            input: input,
-            output: output,
             store: VecDeque::new(),
-            buf: buf,
             count: 0,
         }
     }
@@ -175,7 +175,7 @@ where
         Self {
             closed: false,
             recv: stream,
-            buf: buf,
+            buf,
             close_chan: close,
         }
     }

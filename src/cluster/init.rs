@@ -32,7 +32,7 @@ impl ClusterInitilizer {
         ClusterInitilizer {
             cluster: Rc::new(cluster),
             listen: Some(listen),
-            servers: servers,
+            servers,
             cursor: 0,
             info_cmd: new_cluster_nodes_cmd(),
             state: InitState::Ready,

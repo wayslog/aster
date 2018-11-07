@@ -38,7 +38,7 @@ pub struct Cluster {
 impl Cluster {
     pub fn new(cc: ClusterConfig) -> Cluster {
         Cluster {
-            cc: cc,
+            cc,
             slots: RefCell::new(SlotsMap::default()),
             tx: RefCell::new(None),
         }
@@ -106,7 +106,7 @@ impl Cluster {
 
         current_thread::spawn(Redirection {
             recv: rx,
-            cluster: cluster,
+            cluster,
             store: None,
         });
 
@@ -154,33 +154,29 @@ impl Cluster {
 
     fn try_dispatch(sender: &mut Sender<Cmd>, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
         match sender.start_send(cmd) {
-            Ok(AsyncSink::NotReady(v)) => {
-                return Ok(AsyncSink::NotReady(v));
-            }
-            Ok(AsyncSink::Ready) => {
-                return sender
-                    .poll_complete()
-                    .map_err(|err| {
-                        error!("fail to complete send cmd to node conn due {:?}", err);
-                        Error::Critical
-                    })
-                    .map(|_| AsyncSink::Ready)
-            }
+            Ok(AsyncSink::NotReady(v)) => Ok(AsyncSink::NotReady(v)),
+            Ok(AsyncSink::Ready) => sender
+                .poll_complete()
+                .map_err(|err| {
+                    error!("fail to complete send cmd to node conn due {:?}", err);
+                    Error::Critical
+                })
+                .map(|_| AsyncSink::Ready),
             Err(err) => {
                 error!("send fail with send error: {:?}", err);
-                return Err(Error::Critical);
+                Err(Error::Critical)
             }
         }
     }
 
-    pub fn execute(&self, node: &String, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
+    pub fn execute(&self, node: &str, cmd: Cmd) -> Result<AsyncSink<Cmd>, Error> {
         loop {
             let mut slots_map = self.slots.borrow_mut();
             if let Some(sender) = slots_map.get_sender_by_addr(node) {
                 return Cluster::try_dispatch(sender, cmd);
             }
             let tx = self.create_node_conn(node)?;
-            slots_map.add_node(node.clone(), tx);
+            slots_map.add_node(node.to_string(), tx);
         }
     }
 
@@ -257,10 +253,9 @@ pub fn start_cluster(cluster: Cluster) {
         .and_then(|(addr, cluster)| {
             let listen = create_reuse_port_listener(&addr).expect("bind never fail");
             // cluster.init_node_conn().unwrap();
-            let initilizer = ClusterInitilizer::new(cluster, listen).map_err(|err| {
+            ClusterInitilizer::new(cluster, listen).map_err(|err| {
                 error!("fail to init cluster with given server due {:?}", err);
-            });
-            initilizer
+            })
         })
         .and_then(|(cluster, listen)| {
             // TODO: how to spawn timer func with current_thread

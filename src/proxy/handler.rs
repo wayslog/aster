@@ -2,8 +2,8 @@ use com::*;
 use proxy::{Proxy, Request};
 
 use futures::task;
+use futures::unsync::oneshot::{Receiver, Sender};
 use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
-use futures::unsync::oneshot::{Sender, Receiver};
 
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -32,9 +32,9 @@ where
 {
     pub fn new(stream: T, sink: U, close: Receiver<()>) -> HandleInput<T, U, D> {
         Self {
-            close: close,
-            sink: sink,
-            stream: stream,
+            close,
+            sink,
+            stream,
             buffered: None,
             count: 0,
         }
@@ -143,12 +143,12 @@ where
         Handle {
             closed: false,
             close: Some(close),
-            proxy: proxy,
-            input: input,
-            output: output,
+            proxy,
+            input,
+            output,
             cmds: VecDeque::new(),
-            count: 0,
             waitq: VecDeque::new(),
+            count: 0,
         }
     }
 
@@ -252,7 +252,6 @@ where
         if self.closed {
             info!("closed but not ready");
         }
-
 
         loop {
             if !(can_read && can_send && can_write) {

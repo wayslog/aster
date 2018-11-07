@@ -41,8 +41,8 @@ impl<T: Hasher + Default> HashRing<T> {
         }
 
         let mut ring = HashRing {
-            nodes: nodes,
-            spots: spots,
+            nodes,
+            spots,
             ticks: Vec::new(),
             _hash: PhantomData,
         };
@@ -52,11 +52,10 @@ impl<T: Hasher + Default> HashRing<T> {
 
     fn node_hash(key: &str, align: usize) -> u64 {
         let md5::Digest(bs) = md5::compute(key.as_bytes());
-        let v = (((bs[3 + align * 4] as u64) & 0xFF) << 24)
-            | (((bs[2 + align * 4] as u64) & 0xFF) << 16)
-            | (((bs[1 + align * 4] as u64) & 0xFF) << 8)
-            | (((bs[0 + align * 4] as u64) & 0xFF) << 0);
-        v
+        (u64::from(bs[3 + align * 4]) & 0xFF << 24)
+            | ((u64::from(bs[2 + align * 4]) & 0xFF) << 16)
+            | ((u64::from(bs[1 + align * 4]) & 0xFF) << 8)
+            | (u64::from(bs[align * 4]) & 0xFF)
     }
 
     fn init(&mut self) {
@@ -69,7 +68,7 @@ impl<T: Hasher + Default> HashRing<T> {
         for (i, node) in self.nodes.iter().enumerate() {
             let percent = (self.spots[i] as f64) / totalw;
             let per_servern =
-                ((percent * POINTER_PER_SERVER / 4.0 * servern + 0.0000000001) * 4.0) as u64;
+                ((percent * POINTER_PER_SERVER / 4.0 * servern + 0.000_000_000_1) * 4.0) as u64;
             for pidx in 1..=(per_servern / ptr_per_hash) {
                 let host = format!("{}-{}", node, pidx - 1);
                 for x in 0..ptr_per_hash {

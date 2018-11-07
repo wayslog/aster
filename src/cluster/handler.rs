@@ -33,16 +33,16 @@ where
 {
     pub fn new(cluster: Rc<Cluster>, input: I, output: O) -> Handle<I, O> {
         Handle {
-            cluster: cluster,
-            input: input,
-            output: output,
+            cluster,
+            input,
+            output,
             cmds: VecDeque::new(),
             count: 0,
             waitq: VecDeque::new(),
         }
     }
 
-    fn deal_ctrl(&mut self, cmd: Cmd) {
+    fn deal_ctrl(&mut self, cmd: &Cmd) {
         let req = cmd.rc_req();
         let cmd_bytes = req.cmd_bytes();
         if cmd_bytes == b"PING" {
@@ -80,7 +80,7 @@ where
                                 continue;
                             }
                             CmdType::Ctrl => {
-                                self.deal_ctrl(rc_cmd);
+                                self.deal_ctrl(&rc_cmd);
                                 continue;
                             }
                             _ => {}

@@ -210,11 +210,11 @@ impl Command {
             is_ask: false,
             is_inline: false,
 
-            is_complex: is_complex,
-            cmd_type: cmd_type,
+            is_complex,
+            cmd_type,
 
-            crc: crc,
-            notify: notify,
+            crc,
+            notify,
             req: Rc::new(resp),
             sub_reqs: None,
             reply: None,
@@ -302,7 +302,7 @@ impl Command {
     }
 
     pub fn crc(&self) -> u16 {
-        return self.crc;
+        self.crc
     }
 
     pub fn get_cmd_type(&self) -> CmdType {
@@ -320,7 +320,7 @@ impl Command {
         } else if self.req.cmd_bytes() == b"EVAL" {
             return self.mk_eval();
         }
-        return self.mk_by_keys();
+        self.mk_by_keys()
     }
 
     fn mk_eval(&mut self) {
@@ -718,7 +718,7 @@ pub fn new_asking_cmd() -> Cmd {
         cmd_type: CmdType::IngnoreReply,
 
         crc: 0u16,
-        notify: notify,
+        notify,
 
         req: Rc::new(req),
         sub_reqs: None,
@@ -743,7 +743,7 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
         cmd_type: CmdType::Ctrl,
 
         crc: 0u16,
-        notify: notify,
+        notify,
 
         req: Rc::new(req),
         sub_reqs: None,
@@ -892,7 +892,7 @@ fn new_ping_request() -> Cmd {
         cmd_type: CmdType::Read,
 
         crc: 0u16,
-        notify: notify,
+        notify,
 
         req: Rc::new(req),
         sub_reqs: None,

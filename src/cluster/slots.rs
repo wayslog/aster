@@ -18,11 +18,11 @@ impl Slots {
         let mut slots = Vec::with_capacity(SLOTS_COUNT);
         slots.resize(SLOTS_COUNT, "".to_owned());
         let mapper = content.split(LF_STR).filter_map(|line| {
-            if line.len() == 0 {
+            if line.is_empty() {
                 return None;
             }
 
-            let items: Vec<_> = line.split(" ").collect();
+            let items: Vec<_> = line.split(' ').collect();
             if !items[2].contains("master") {
                 return None;
             }
@@ -33,7 +33,7 @@ impl Slots {
                 .flatten()
                 .collect();
 
-            let addr = items[1].split("@").next().expect("must contains addr");
+            let addr = items[1].split('@').next().expect("must contains addr");
 
             Some((addr.to_owned(), sub_slots))
         });
@@ -45,7 +45,7 @@ impl Slots {
             }
         }
         if count != SLOTS_COUNT {
-            return Err(Error::BadSlotsMap);
+            Err(Error::BadSlotsMap)
         } else {
             Ok(Slots(slots))
         }
@@ -53,7 +53,7 @@ impl Slots {
 
     fn parse_item(item: &str) -> Vec<usize> {
         let mut slots = Vec::new();
-        if item.len() == 0 {
+        if item.is_empty() {
             return slots;
         }
 
@@ -67,7 +67,7 @@ impl Slots {
                 .collect();
         }
 
-        let mut iter = item.split("-");
+        let mut iter = item.split('-');
         let begin_str = iter.next().expect("must have integer");
         let begin = begin_str.parse::<usize>().expect("must parse integer done");
         if let Some(end_str) = iter.next() {
@@ -127,7 +127,7 @@ impl SlotsMap {
         self.nodes.insert(node, sender);
     }
 
-    pub fn get_sender_by_addr(&mut self, node: &String) -> Option<&mut Sender<Cmd>> {
+    pub fn get_sender_by_addr(&mut self, node: &str) -> Option<&mut Sender<Cmd>> {
         self.nodes.get_mut(node)
     }
 

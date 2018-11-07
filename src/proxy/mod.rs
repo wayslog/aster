@@ -92,12 +92,11 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
                 let interval = proxy
                     .cc
                     .ping_interval
-                    .clone()
                     .map(|x| x as u64)
                     .unwrap_or(500u64);
 
-                let addrs = proxy.spots.keys().map(|x| x.clone());
-                for addr in addrs.into_iter() {
+                let addrs = proxy.spots.keys().cloned();
+                for addr in addrs {
                     let ping = Ping::new(proxy.clone(), addr, limit, interval);
                     current_thread::spawn(ping);
                 }
@@ -122,14 +121,14 @@ impl ServerLine {
         // e.g.: 192.168.1.2:1074:10 redis-20
         let mut sl = Vec::with_capacity(servers.len());
         for server in servers {
-            let mut iter = server.split(" ");
+            let mut iter = server.split(' ');
             let first_part = iter.next().expect("first partation must exists");
             if first_part.chars().filter(|x| *x == ':').count() == 1 {
                 let alias = iter.next().map(|x| x.to_string());
                 sl.push(ServerLine {
                     addr: first_part.to_string(),
                     weight: 1,
-                    alias: alias,
+                    alias,
                 });
             }
 
@@ -142,9 +141,9 @@ impl ServerLine {
             drop(fp_sp);
             let alias = iter.next().map(|x| x.to_string());
             sl.push(ServerLine {
-                addr: addr,
-                weight: weight,
-                alias: alias,
+                addr,
+                weight,
+                alias,
             });
         }
         Ok(sl)
@@ -215,13 +214,13 @@ impl<T: Request + 'static> Proxy<T> {
             .to_vec();
 
         Ok(Proxy {
-            cc: cc,
-            spots: spots,
+            cc,
+            spots,
+            hash_tag,
             ring: RefCell::new(ring),
             conns: RefCell::new(HashMap::new()),
             is_alias: !alias_map.is_empty(),
             alias: RefCell::new(alias_map),
-            hash_tag: hash_tag,
         })
     }
 
@@ -297,7 +296,7 @@ impl<T: Request + 'static> Proxy<T> {
                 return addr.to_string();
             }
         }
-        return who.to_string();
+        who.to_string()
     }
 
     fn execute(&self, who: &str, req: T) -> Result<AsyncSink<T>, Error> {
@@ -318,24 +317,22 @@ impl<T: Request + 'static> Proxy<T> {
                 .expect("complte conn must be exists")
                 .poll_complete()
             {
-                Ok(_) => {
-                    return Ok(AsyncSink::Ready);
-                }
+                Ok(_) => Ok(AsyncSink::Ready),
                 Err(err) => {
                     self.reconnect(node)?;
                     error!("execute fail to poll_complete due to {:?}", err);
                     let req = err.into_inner();
                     req.done_with_error(Error::ClusterDown);
-                    return Err(Error::Critical);
+                    Err(Error::Critical)
                 }
             },
-            Ok(AsyncSink::NotReady(r)) => return Ok(AsyncSink::NotReady(r)),
+            Ok(AsyncSink::NotReady(r)) => Ok(AsyncSink::NotReady(r)),
             Err(err) => {
                 self.reconnect(node)?;
                 error!("fail to execute to backend due to {:?}", err);
                 let req = err.into_inner();
                 req.done_with_error(Error::ClusterDown);
-                return Err(Error::ClusterDown);
+                Err(Error::ClusterDown)
             }
         }
     }

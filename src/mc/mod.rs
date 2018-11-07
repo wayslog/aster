@@ -12,41 +12,41 @@ use tokio_codec::{Decoder, Encoder};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-const BYTE_LF: u8 = '\n' as u8;
-const BYTE_CR: u8 = '\r' as u8;
-const BYTE_SPACE: u8 = ' ' as u8;
+const BYTE_LF: u8 = b'\n';
+const BYTE_CR: u8 = b'\r';
+const BYTE_SPACE: u8 = b' ';
 
-const BYTES_CRLF: &'static [u8] = b"\r\n";
-const BYTES_SPACE: &'static [u8] = b" ";
-const BYTES_END: &'static [u8] = b"END\r\n";
-const BYTES_VALUE: &'static [u8] = b"VALUE";
-const BYTES_NOREPLY: &'static [u8] = b"noreply";
+const BYTES_CRLF: &[u8] = b"\r\n";
+const BYTES_SPACE: &[u8] = b" ";
+const BYTES_END: &[u8] = b"END\r\n";
+const BYTES_VALUE: &[u8] = b"VALUE";
+const BYTES_NOREPLY: &[u8] = b"noreply";
 
 // storage commands
-pub const REQ_SET_BYTES: &'static [u8] = b"set";
-pub const REQ_ADD_BYTES: &'static [u8] = b"add";
-pub const REQ_REPLACE_BYTES: &'static [u8] = b"replace";
-pub const REQ_APPEND_BYTES: &'static [u8] = b"append";
-pub const REQ_PREPEND_BYTES: &'static [u8] = b"prepend";
-pub const REQ_CAS_BYTES: &'static [u8] = b"cas";
+pub const REQ_SET_BYTES: &[u8] = b"set";
+pub const REQ_ADD_BYTES: &[u8] = b"add";
+pub const REQ_REPLACE_BYTES: &[u8] = b"replace";
+pub const REQ_APPEND_BYTES: &[u8] = b"append";
+pub const REQ_PREPEND_BYTES: &[u8] = b"prepend";
+pub const REQ_CAS_BYTES: &[u8] = b"cas";
 
 // retrieval commands
-pub const REQ_GET_BYTES: &'static [u8] = b"get";
-pub const REQ_GETS_BYTES: &'static [u8] = b"gets";
+pub const REQ_GET_BYTES: &[u8] = b"get";
+pub const REQ_GETS_BYTES: &[u8] = b"gets";
 
 // delete commands
-pub const REQ_DELETE_BYTES: &'static [u8] = b"delete";
+pub const REQ_DELETE_BYTES: &[u8] = b"delete";
 
 // Incr/Decr
-pub const REQ_INCR_BYTES: &'static [u8] = b"incr";
-pub const REQ_DECR_BYTES: &'static [u8] = b"decr";
+pub const REQ_INCR_BYTES: &[u8] = b"incr";
+pub const REQ_DECR_BYTES: &[u8] = b"decr";
 
 // Touch
-pub const REQ_TOUCH_BYTES: &'static [u8] = b"touch";
+pub const REQ_TOUCH_BYTES: &[u8] = b"touch";
 
 // get and touch
-pub const REQ_GAT_BYTES: &'static [u8] = b"gat";
-pub const REQ_GATS_BYTES: &'static [u8] = b"gats";
+pub const REQ_GAT_BYTES: &[u8] = b"gat";
+pub const REQ_GATS_BYTES: &[u8] = b"gats";
 
 #[derive(Clone, Copy, Debug)]
 pub enum ReqType {
@@ -73,7 +73,7 @@ pub enum ReqType {
 }
 
 impl ReqType {
-    fn len(&self) -> usize {
+    fn len(self) -> usize {
         match self {
             ReqType::Set | ReqType::Get | ReqType::Add | ReqType::Cas | ReqType::Gat => 3,
             ReqType::Gats | ReqType::Gets | ReqType::Incr | ReqType::Decr => 4,
@@ -83,7 +83,7 @@ impl ReqType {
         }
     }
 
-    fn is_complex(&self) -> bool {
+    fn is_complex(self) -> bool {
         match self {
             ReqType::Get | ReqType::Gets | ReqType::Gats | ReqType::Gat => true,
             _ => false,
@@ -99,10 +99,7 @@ pub struct Range {
 
 impl Range {
     fn new(start: usize, end: usize) -> Self {
-        Range {
-            start: start,
-            end: end,
-        }
+        Range { start, end }
     }
 }
 
@@ -124,7 +121,7 @@ impl Request for Req {
 
     fn reregister(&self, task: Task) {
         // self.req.borrow_mut().notify.reregister();
-        self.req.borrow_mut().reregister(task);
+        self.req.borrow_mut().reregister(&task);
     }
 
     fn key(&self) -> Vec<u8> {
@@ -199,7 +196,7 @@ impl MCReq {
         self.data[start..end].to_vec()
     }
 
-    fn reregister(&mut self, task: Task) {
+    fn reregister(&mut self, task: &Task) {
         if self.subs.is_some() {
             self.subs
                 .as_mut()
@@ -276,7 +273,6 @@ impl HandleCodec {
         let notify = Notify::empty();
 
         let subs = (0..count)
-            .into_iter()
             .map(|i| {
                 let idx = 2 + i;
                 let key_len = fields[idx].len();
@@ -291,7 +287,7 @@ impl HandleCodec {
                 buf.extend_from_slice(BYTES_CRLF);
                 Req {
                     req: Rc::new(RefCell::new(MCReq {
-                        rtype: rtype,
+                        rtype,
                         data: buf,
                         key: Range::new(cmd_size + 1, cmd_size + 1 + key_len),
 
@@ -305,7 +301,7 @@ impl HandleCodec {
             })
             .collect();
         let mcreq = MCReq {
-            rtype: rtype,
+            rtype,
             data: BytesMut::with_capacity(0),
             key: Range::new(0, 0),
             is_done: false,
@@ -349,11 +345,11 @@ impl HandleCodec {
         notify.add(1);
         Ok(Req {
             req: Rc::new(RefCell::new(MCReq {
-                rtype: rtype,
-                data: data,
+                rtype,
+                data,
+                notify,
                 key: range,
                 is_done: false,
-                notify: notify,
                 subs: None,
                 reply: None,
             })),
@@ -372,7 +368,6 @@ impl HandleCodec {
         let notify = Notify::empty();
 
         let subs = (0..count)
-            .into_iter()
             .map(|i| {
                 let idx = 1 + i;
                 let key_len = fields[idx].len();
@@ -384,7 +379,7 @@ impl HandleCodec {
                 buf.extend_from_slice(BYTES_CRLF);
                 Req {
                     req: Rc::new(RefCell::new(MCReq {
-                        rtype: rtype,
+                        rtype,
                         data: buf,
                         key: Range::new(cmd_size + 1, cmd_size + 1 + key_len),
 
@@ -398,7 +393,7 @@ impl HandleCodec {
             })
             .collect();
         let mcreq = MCReq {
-            rtype: rtype,
+            rtype,
             data: BytesMut::with_capacity(0),
             key: Range::new(0, 0),
             is_done: false,
@@ -419,7 +414,7 @@ impl HandleCodec {
                 .split(|x| *x == BYTE_SPACE)
                 .filter(|v| !v.is_empty() && *v != BYTES_NOREPLY);
 
-            let size_bytes = fields.skip(4).next().ok_or(Error::BadMsg)?;
+            let size_bytes = fields.nth(5).ok_or(Error::BadMsg)?;
             btoi::btoi::<usize>(size_bytes)?
         };
         let range = Self::parse_key_range(&src, 0);
@@ -433,11 +428,11 @@ impl HandleCodec {
         notify.add(1);
         let req = Req {
             req: Rc::new(RefCell::new(MCReq {
-                rtype: rtype,
-                data: data,
+                rtype,
+                data,
+                notify,
                 key: range,
                 is_done: false,
-                notify: notify,
                 subs: None,
                 reply: None,
             })),
@@ -451,7 +446,7 @@ impl Decoder for HandleCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let opt_value = Self::parse(src).map(|x| Some(x)).or_else(|err| match err {
+        let opt_value = Self::parse(src).map(Some).or_else(|err| match err {
             Error::MoreData => Ok(None),
             ev => Err(ev),
         })?;
@@ -484,7 +479,8 @@ impl Encoder for HandleCodec {
                         trace!("skip merge complex bytes as {:?}", subreply);
                     }
                 });
-            return Ok(dst.extend(BYTES_END));
+            dst.extend(BYTES_END);
+            return Ok(());
         }
 
         let req = item.req.borrow();
@@ -492,7 +488,8 @@ impl Encoder for HandleCodec {
             .reply
             .as_ref()
             .expect("HandleCodec encode reply is never be empty");
-        Ok(dst.extend(&*buf))
+        dst.extend(&*buf);
+        Ok(())
     }
 }
 
@@ -521,8 +518,7 @@ impl Decoder for NodeCodec {
             let size = {
                 let mut iter = src[..le - 2].split(|x| *x == BYTE_SPACE);
                 let lbs = iter
-                    .skip(3)
-                    .next()
+                    .nth(4)
                     .expect("NodeCodec decode body length never be empty");
                 btoi::btoi::<usize>(lbs)?
             };
@@ -545,7 +541,8 @@ impl Encoder for NodeCodec {
 
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let req = item.req.borrow();
-        Ok(dst.extend(&req.data))
+        dst.extend(&req.data);
+        Ok(())
     }
 }
 

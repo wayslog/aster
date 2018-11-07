@@ -2,7 +2,7 @@
 
 use std::hash::Hasher;
 
-const FNV_64_PRIME: u32 = (1099511628211u64 & 0x0000ffff) as u32;
+const FNV_64_PRIME: u32 = (1_099_511_628_211u64 & 0x0000_ffff) as u32;
 
 pub struct Fnv1a64(u64);
 
@@ -10,10 +10,10 @@ impl Hasher for Fnv1a64 {
     fn write(&mut self, data: &[u8]) {
         let mut val = self.0 as u32;
         for b in data {
-            val ^= *b as u32;
+            val ^= u32::from(*b);
             val = val.wrapping_mul(FNV_64_PRIME);
         }
-        self.0 = val as u64;
+        self.0 = u64::from(val );
     }
 
     fn finish(&self) -> u64 {
@@ -23,7 +23,7 @@ impl Hasher for Fnv1a64 {
 
 impl Default for Fnv1a64 {
     fn default() -> Fnv1a64 {
-        Fnv1a64(14695981039346656037)
+        Fnv1a64(14_695_981_039_346_656_037)
     }
 }
 

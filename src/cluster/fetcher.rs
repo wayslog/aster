@@ -32,9 +32,9 @@ impl Fetcher {
         let servers = cluster.cc.servers.clone();
         let duration = Duration::from_secs(cluster.cc.fetch.as_ref().cloned().unwrap_or(30 * 60));
         Fetcher {
-            cluster: cluster,
+            cluster,
+            servers,
             cursor: 0,
-            servers: servers,
             state: FetchState::Pending,
             info_cmd: new_cluster_nodes_cmd(),
             internal: Interval::new(Instant::now(), duration),
@@ -47,7 +47,6 @@ impl Stream for Fetcher {
     type Error = Error;
 
     fn poll(&mut self) -> Result<Async<Option<Self::Item>>, Self::Error> {
-
         loop {
             // debug!("fetch status cursor={} cmd={:?}", self.cursor, self.info_cmd);
             match self.state {
@@ -59,10 +58,12 @@ impl Stream for Fetcher {
                     self.state = FetchState::Ready;
                 }
                 FetchState::Ready => {
-                    if let None = try_ready!(self.internal.poll().map_err(|err| {
+                    let rslt = try_ready!(self.internal.poll().map_err(|err| {
                         error!("fetch by internal fail due {:?}", err);
                         Error::Critical
-                    })) {
+                    }));
+
+                    if rslt.is_none() {
                         return Ok(Async::Ready(None));
                     }
 

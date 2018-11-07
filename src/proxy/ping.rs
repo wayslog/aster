@@ -22,9 +22,9 @@ where
 impl<T: Request> Ping<T> {
     pub fn new(proxy: Rc<Proxy<T>>, addr: String, max_retry: usize, interval: u64) -> Ping<T> {
         Ping {
-            proxy: proxy,
-            addr: addr,
-            max_retry: max_retry,
+            proxy,
+            addr,
+            max_retry,
             retry: 0,
             req: None,
             interval: Interval::new_interval(Duration::from_millis(interval)),
@@ -44,9 +44,10 @@ impl<T: Request> Future for Ping<T> {
             }
 
             if self.req.is_none() {
-                if let None = try_ready!(self.interval.poll().map_err(|err| {
+                let rslt = try_ready!(self.interval.poll().map_err(|err| {
                     error!("fetch by internal fail due {:?}", err);
-                })) {
+                }));
+                if rslt.is_none() {
                     return Ok(Async::Ready(()));
                 }
                 // debug!("");

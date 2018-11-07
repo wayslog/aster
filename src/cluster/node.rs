@@ -1,12 +1,15 @@
-use redis::cmd::{Cmd, new_asking_cmd};
-use redis::resp::{Resp, RESP_ERROR};
 use com::*;
+use redis::cmd::{new_asking_cmd, Cmd};
+use redis::resp::{Resp, RESP_ERROR};
 
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+
+const REDIRECT_MOVED_DATA: &[u8] = b"MOVED ";
+const REDIRECT_ASK_DATA: &[u8] = b"ASK";
 
 pub struct NodeDown<I, O>
 where
@@ -28,11 +31,11 @@ where
 {
     pub fn new(input: I, output: O, buf: Rc<RefCell<VecDeque<Cmd>>>) -> NodeDown<I, O> {
         NodeDown {
-            input: input,
-            output: output,
+            input,
+            output,
+            buf,
             closed: false,
             store: VecDeque::new(),
-            buf: buf,
             count: 0,
         }
     }
@@ -120,9 +123,6 @@ where
     buf: Rc<RefCell<VecDeque<Cmd>>>,
 }
 
-const REDIRECT_MOVED_DATA: &'static [u8] = b"MOVED ";
-const REDIRECT_ASK_DATA: &'static [u8] = b"ASK";
-
 impl<S, R> NodeRecv<S, R>
 where
     S: Stream<Item = Resp, Error = Error>,
@@ -131,10 +131,10 @@ where
     pub fn new(recv: S, buf: Rc<RefCell<VecDeque<Cmd>>>, redirect: R) -> NodeRecv<S, R> {
         NodeRecv {
             closed: false,
-            recv: recv,
-            buf: buf,
+            recv,
+            buf,
             rstore: None,
-            redirect: redirect,
+            redirect,
         }
     }
 
@@ -166,9 +166,9 @@ where
         })? {
             AsyncSink::NotReady((addr, cmd)) => {
                 self.rstore = Some((addr, cmd));
-                return Ok(Async::NotReady);
+                Ok(Async::NotReady)
             }
-            AsyncSink::Ready => return Ok(Async::Ready(())),
+            AsyncSink::Ready => Ok(Async::Ready(())),
         }
     }
 }
@@ -219,7 +219,7 @@ where
     }
 }
 
-const SPC_BYTE: u8 = ' ' as u8;
+const SPC_BYTE: u8 = b' ';
 
 fn read_redirect_addr(data: &[u8]) -> String {
     let mut iter = data.rsplit(|x| *x == SPC_BYTE);

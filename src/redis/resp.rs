@@ -21,8 +21,8 @@ pub const RESP_ARRAY: RespType = '*' as u8;
 pub const BYTE_CR: u8 = '\r' as u8;
 pub const BYTE_LF: u8 = '\n' as u8;
 
-pub const BYTES_CRLF: &'static [u8] = b"\r\n";
-pub const BYTES_NULL_RESP: &'static [u8] = b"-1\r\n";
+pub const BYTES_CRLF: &[u8] = b"\r\n";
+pub const BYTES_NULL_RESP: &[u8] = b"-1\r\n";
 
 #[test]
 fn test_resp_parse_plain() {
@@ -82,8 +82,8 @@ pub struct Resp {
 impl Resp {
     pub fn new_plain(rtype: RespType, data: Option<Vec<u8>>) -> Resp {
         Resp {
-            rtype: rtype,
-            data: data,
+            rtype,
+            data,
             array: None,
         }
     }
@@ -98,17 +98,17 @@ impl Resp {
 
         Resp {
             rtype: RESP_ARRAY,
-            data: data,
-            array: array,
+            data,
+            array,
         }
     }
 
     fn parse_inline(line: &[u8]) -> AsResult<Self> {
         let mut line_size = line.len();
-        if line[line_size -1 ] == BYTE_CR {
+        if line[line_size - 1] == BYTE_CR {
             line_size -= 1;
         }
-        Ok(Resp{
+        Ok(Resp {
             rtype: RESP_INLINE,
             data: Some(line[..line_size].to_vec()),
             array: None,
@@ -146,7 +146,7 @@ impl Resp {
         match rtype {
             RESP_STRING | RESP_INT | RESP_ERROR => {
                 let resp = Resp {
-                    rtype: rtype,
+                    rtype,
                     data: Some(line[1..line_size - 2].to_vec()),
                     array: None,
                 };
@@ -157,7 +157,7 @@ impl Resp {
                 let count = btoi::btoi::<isize>(&line[1..line_size - 2])?;
                 if count == -1 {
                     return Ok(Resp {
-                        rtype: rtype,
+                        rtype,
                         data: None,
                         array: None,
                     });
@@ -171,7 +171,7 @@ impl Resp {
                 let data = &src[line_size..line_size + size];
 
                 let resp = Resp {
-                    rtype: rtype,
+                    rtype,
                     data: Some(data[..size - 2].to_vec()),
                     array: None,
                 };
@@ -184,7 +184,7 @@ impl Resp {
                 let count = btoi::btoi::<isize>(count_bs)?;
                 if count == -1 {
                     return Ok(Resp {
-                        rtype: rtype,
+                        rtype,
                         data: None,
                         array: None,
                     });
@@ -203,7 +203,7 @@ impl Resp {
                 }
 
                 let resp = Resp {
-                    rtype: rtype,
+                    rtype,
                     data: Some(count_bs.to_vec()),
                     array: Some(items),
                 };
@@ -265,7 +265,11 @@ impl Resp {
                 dst.extend_from_slice(data);
                 dst.extend_from_slice(BYTES_CRLF);
                 let mut size = 1 + data.len() + 2;
-                for item in self.array.as_ref().expect("non-null array item never empty") {
+                for item in self
+                    .array
+                    .as_ref()
+                    .expect("non-null array item never empty")
+                {
                     size += item.write(dst)?;
                 }
                 Ok(size)
@@ -337,9 +341,7 @@ impl Resp {
                 }
                 size
             }
-            RESP_INLINE => {
-                self.data.as_ref().expect("inline always have data").len() + 2
-            }
+            RESP_INLINE => self.data.as_ref().expect("inline always have data").len() + 2,
             _ => unreachable!(),
         }
     }
@@ -363,7 +365,11 @@ impl Resp {
     }
 
     pub fn unwrap_data(self) -> Option<Vec<u8>> {
-        let Resp {rtype: _rtype, data: d, array: _array} = self;
+        let Resp {
+            rtype: _rtype,
+            data: d,
+            array: _array,
+        } = self;
         d
     }
 }
