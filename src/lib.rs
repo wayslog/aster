@@ -1,5 +1,7 @@
 #![deny(warnings)]
 #![feature(test)]
+#![feature(tool_lints)]
+#![allow(clippy::string_lit_as_bytes)]
 
 extern crate test;
 extern crate tokio;
@@ -57,7 +59,7 @@ pub fn run() -> Result<(), std::io::Error> {
 
 fn load_config() -> Config {
     use std::env;
-    let path = env::var("AS_CFG").unwrap_or("as.toml".to_string());
+    let path = env::var("AS_CFG").unwrap_or_else(|_| "as.toml".to_string());
     use std::fs;
     use std::io::{BufReader, Read};
 
@@ -77,7 +79,6 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
         &cc.name, &cc.listen_addr, count
     );
     (0..count)
-        .into_iter()
         .map(|i| {
             let cc = cc.clone();
             let name = cc.name.clone();

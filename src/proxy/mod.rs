@@ -89,11 +89,7 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
             if let Some(limit) = proxy.cc.ping_fail_limit {
                 info!("setup ping for cluster {}", proxy.cc.name);
                 // default ping interval 500
-                let interval = proxy
-                    .cc
-                    .ping_interval
-                    .map(|x| x as u64)
-                    .unwrap_or(500u64);
+                let interval = proxy.cc.ping_interval.map(|x| x as u64).unwrap_or(500u64);
 
                 let addrs = proxy.spots.keys().cloned();
                 for addr in addrs {
@@ -149,7 +145,7 @@ impl ServerLine {
         Ok(sl)
     }
 
-    fn unwrap_spot(sls: &Vec<ServerLine>) -> (Vec<String>, Vec<String>, Vec<usize>) {
+    fn unwrap_spot(sls: &[ServerLine]) -> (Vec<String>, Vec<String>, Vec<usize>) {
         let mut nodes = Vec::new();
         let mut alias = Vec::new();
         let mut weights = Vec::new();
@@ -202,14 +198,14 @@ impl<T: Request + 'static> Proxy<T> {
             alias.iter()
         }
         .zip(weights.iter())
-        .map(|(x, y)| (x.clone(), y.clone()))
+        .map(|(x, y)| (x.clone(), *y))
         .collect();
 
         let hash_tag = cc
             .hash_tag
             .as_ref()
             .cloned()
-            .unwrap_or("".to_string())
+            .unwrap_or_else(|| "".to_string())
             .as_bytes()
             .to_vec();
 
@@ -225,7 +221,7 @@ impl<T: Request + 'static> Proxy<T> {
     }
 
     fn reconnect(&self, node: String) -> AsResult<()> {
-        let conn = Self::create_conn(node.clone())?;
+        let conn = Self::create_conn(&node)?;
         if let Some(mut old) = self.conns.borrow_mut().insert(node, conn) {
             old.close().map_err(|err| {
                 error!("force done for replaced data");
@@ -243,14 +239,14 @@ impl<T: Request + 'static> Proxy<T> {
 
     fn init_conns(&self) -> AsResult<()> {
         for server in self.alias.borrow().values().map(|x| x.to_string()) {
-            let conn = Self::create_conn(server.clone())?;
+            let conn = Self::create_conn(&server)?;
             self.conns.borrow_mut().insert(server.clone(), conn);
         }
         Ok(())
     }
 
-    fn create_conn(node: String) -> AsResult<Sender<T>> {
-        let node_addr = node.clone();
+    fn create_conn(node: &str) -> AsResult<Sender<T>> {
+        let node_addr = node.to_string();
         let (tx, rx) = channel(10234 * 8);
         let ret_tx = tx.clone();
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })

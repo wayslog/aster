@@ -12,14 +12,14 @@ use com::*;
 
 pub type RespType = u8;
 pub const RESP_INLINE: RespType = 0u8;
-pub const RESP_STRING: RespType = '+' as u8;
-pub const RESP_INT: RespType = ':' as u8;
-pub const RESP_ERROR: RespType = '-' as u8;
-pub const RESP_BULK: RespType = '$' as u8;
-pub const RESP_ARRAY: RespType = '*' as u8;
+pub const RESP_STRING: RespType = b'+';
+pub const RESP_INT: RespType = b':';
+pub const RESP_ERROR: RespType = b'-';
+pub const RESP_BULK: RespType = b'$';
+pub const RESP_ARRAY: RespType = b'*';
 
-pub const BYTE_CR: u8 = '\r' as u8;
-pub const BYTE_LF: u8 = '\n' as u8;
+pub const BYTE_CR: u8 = b'\r';
+pub const BYTE_LF: u8 = b'\n';
 
 pub const BYTES_CRLF: &[u8] = b"\r\n";
 pub const BYTES_NULL_RESP: &[u8] = b"-1\r\n";
@@ -116,7 +116,7 @@ impl Resp {
     }
 
     pub fn parse(src: &[u8]) -> AsResult<Self> {
-        if src.len() == 0 {
+        if src.is_empty() {
             return Err(Error::MoreData);
         }
 
@@ -382,7 +382,7 @@ impl Decoder for RespCodec {
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let item = Resp::parse(&src)
-            .map(|x| Some(x))
+            .map(Some)
             .or_else(|err| match err {
                 Error::MoreData => Ok(None),
                 ev => Err(ev),

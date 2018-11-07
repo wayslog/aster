@@ -225,7 +225,7 @@ impl Command {
         if resp.is_inline() {
             let data = resp.unwrap_data().expect("inline resp data is never empty");
             let dstring = String::from_utf8_lossy(&data);
-            let args = dstring.split(" ").map(|x| x.to_string()).collect();
+            let args = dstring.split(' ').map(|x| x.to_string()).collect();
             let mut cmd = new_cmd(args);
             cmd.is_inline = true;
             return cmd;
@@ -276,7 +276,7 @@ impl Command {
 impl Command {
     pub fn key(&self) -> Vec<u8> {
         let req = self.req.as_ref();
-        let key_pos = if req
+        let is_not_eval = req
             .get(0)
             .map(|y| {
                 y.data
@@ -284,12 +284,8 @@ impl Command {
                     .map(|x| x != b"EVAL")
                     .expect("command inner is never be empty for Command::key")
             })
-            .expect("command is never be empty for Command::key")
-        {
-            1
-        } else {
-            3
-        };
+            .expect("command is never be empty for Command::key");
+        let key_pos = if is_not_eval { 1 } else { 3 };
 
         if let Some(key_req) = req.get(key_pos) {
             return key_req
@@ -628,8 +624,9 @@ impl CmdCodec {
         Ok(())
     }
 
-    fn merge_encode_ok(&mut self, _subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
-        Ok(dst.extend_from_slice(&b"+OK\r\n"[..]))
+    fn merge_encode_ok(&mut self, _subs: &[Cmd], dst: &mut BytesMut) -> AsResult<()> {
+        dst.extend_from_slice(&b"+OK\r\n"[..]);
+        Ok(())
     }
 
     fn merge_encode_join(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
@@ -667,10 +664,8 @@ impl Encoder for CmdCodec {
             if let Some(subreqs) = item.sub_reqs() {
                 let cmd_bytes = item.rc_req().cmd_bytes().to_vec();
                 if &cmd_bytes[..] == b"MSET" {
-                    return self.merge_encode_ok(subreqs, dst);
-                } else if &cmd_bytes[..] == b"EXISTS" {
-                    return self.merge_encode_count(subreqs, dst);
-                } else if &cmd_bytes[..] == b"DEL" {
+                    return self.merge_encode_ok(&subreqs, dst);
+                } else if &cmd_bytes[..] == b"DEL" || &cmd_bytes[..] == b"EXISTS" {
                     return self.merge_encode_count(subreqs, dst);
                 } else if &cmd_bytes[..] == b"MGET" {
                     return self.merge_encode_join(subreqs, dst);
@@ -782,8 +777,9 @@ impl HandleCodec {
         Ok(())
     }
 
-    fn merge_encode_ok(&mut self, _subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
-        Ok(dst.extend_from_slice(&b"+OK\r\n"[..]))
+    fn merge_encode_ok(&mut self, _subs: &[Cmd], dst: &mut BytesMut) -> AsResult<()> {
+        dst.extend_from_slice(&b"+OK\r\n"[..]);
+        Ok(())
     }
 
     fn merge_encode_join(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
@@ -821,10 +817,8 @@ impl Encoder for HandleCodec {
             if let Some(subreqs) = item.sub_reqs() {
                 let cmd_bytes = item.rc_req().cmd_bytes().to_vec();
                 if &cmd_bytes[..] == b"MSET" {
-                    return self.merge_encode_ok(subreqs, dst);
-                } else if &cmd_bytes[..] == b"EXISTS" {
-                    return self.merge_encode_count(subreqs, dst);
-                } else if &cmd_bytes[..] == b"DEL" {
+                    return self.merge_encode_ok(&subreqs, dst);
+                } else if &cmd_bytes[..] == b"DEL" || &cmd_bytes[..] == b"EXISTS" {
                     return self.merge_encode_count(subreqs, dst);
                 } else if &cmd_bytes[..] == b"MGET" {
                     return self.merge_encode_join(subreqs, dst);
