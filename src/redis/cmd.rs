@@ -416,142 +416,142 @@ lazy_static!{
         let mut hmap = HashMap::new();
 
         // special commands
-        hmap.insert("DEL".as_bytes(), CmdType::Write);
-        hmap.insert("DUMP".as_bytes(), CmdType::Read);
-        hmap.insert("EXISTS".as_bytes(), CmdType::Read);
-        hmap.insert("EXPIRE".as_bytes(), CmdType::Write);
-        hmap.insert("EXPIREAT".as_bytes(), CmdType::Write);
-        hmap.insert("KEYS".as_bytes(), CmdType::NotSupport);
-        hmap.insert("MIGRATE".as_bytes(), CmdType::NotSupport);
-        hmap.insert("MOVE".as_bytes(), CmdType::NotSupport);
-        hmap.insert("OBJECT".as_bytes(), CmdType::NotSupport);
-        hmap.insert("PERSIST".as_bytes(), CmdType::Write);
-        hmap.insert("PEXPIRE".as_bytes(), CmdType::Write);
-        hmap.insert("PEXPIREAT".as_bytes(), CmdType::Write);
-        hmap.insert("PTTL".as_bytes(), CmdType::Read);
-        hmap.insert("RANDOMKEY".as_bytes(), CmdType::NotSupport);
-        hmap.insert("RENAME".as_bytes(), CmdType::NotSupport);
-        hmap.insert("RENAMENX".as_bytes(), CmdType::NotSupport);
-        hmap.insert("RESTORE".as_bytes(), CmdType::Write);
-        hmap.insert("SCAN".as_bytes(), CmdType::NotSupport);
-        hmap.insert("SORT".as_bytes(), CmdType::Write);
-        hmap.insert("TTL".as_bytes(), CmdType::Read);
-        hmap.insert("TYPE".as_bytes(), CmdType::Read);
-        hmap.insert("WAIT".as_bytes(), CmdType::NotSupport);
+        hmap.insert(&b"DEL"[..], CmdType::Write);
+        hmap.insert(&b"DUMP"[..], CmdType::Read);
+        hmap.insert(&b"EXISTS"[..], CmdType::Read);
+        hmap.insert(&b"EXPIRE"[..], CmdType::Write);
+        hmap.insert(&b"EXPIREAT"[..], CmdType::Write);
+        hmap.insert(&b"KEYS"[..], CmdType::NotSupport);
+        hmap.insert(&b"MIGRATE"[..], CmdType::NotSupport);
+        hmap.insert(&b"MOVE"[..], CmdType::NotSupport);
+        hmap.insert(&b"OBJECT"[..], CmdType::NotSupport);
+        hmap.insert(&b"PERSIST"[..], CmdType::Write);
+        hmap.insert(&b"PEXPIRE"[..], CmdType::Write);
+        hmap.insert(&b"PEXPIREAT"[..], CmdType::Write);
+        hmap.insert(&b"PTTL"[..], CmdType::Read);
+        hmap.insert(&b"RANDOMKEY"[..], CmdType::NotSupport);
+        hmap.insert(&b"RENAME"[..], CmdType::NotSupport);
+        hmap.insert(&b"RENAMENX"[..], CmdType::NotSupport);
+        hmap.insert(&b"RESTORE"[..], CmdType::Write);
+        hmap.insert(&b"SCAN"[..], CmdType::NotSupport);
+        hmap.insert(&b"SORT"[..], CmdType::Write);
+        hmap.insert(&b"TTL"[..], CmdType::Read);
+        hmap.insert(&b"TYPE"[..], CmdType::Read);
+        hmap.insert(&b"WAIT"[..], CmdType::NotSupport);
         // string key
-        hmap.insert("APPEND".as_bytes(), CmdType::Write);
-        hmap.insert("BITCOUNT".as_bytes(), CmdType::Read);
-        hmap.insert("BITOP".as_bytes(), CmdType::NotSupport);
-        hmap.insert("BITPOS".as_bytes(), CmdType::Read);
-        hmap.insert("DECR".as_bytes(), CmdType::Write);
-        hmap.insert("DECRBY".as_bytes(), CmdType::Write);
-        hmap.insert("GET".as_bytes(), CmdType::Read);
-        hmap.insert("GETBIT".as_bytes(), CmdType::Read);
-        hmap.insert("GETRANGE".as_bytes(), CmdType::Read);
-        hmap.insert("GETSET".as_bytes(), CmdType::Write);
-        hmap.insert("INCR".as_bytes(), CmdType::Write);
-        hmap.insert("INCRBY".as_bytes(), CmdType::Write);
-        hmap.insert("INCRBYFLOAT".as_bytes(), CmdType::Write);
-        hmap.insert("MGET".as_bytes(), CmdType::Read);
-        hmap.insert("MSET".as_bytes(), CmdType::Write);
-        hmap.insert("MSETNX".as_bytes(), CmdType::NotSupport);
-        hmap.insert("PSETEX".as_bytes(), CmdType::Write);
-        hmap.insert("SET".as_bytes(), CmdType::Write);
-        hmap.insert("SETBIT".as_bytes(), CmdType::Write);
-        hmap.insert("SETEX".as_bytes(), CmdType::Write);
-        hmap.insert("SETNX".as_bytes(), CmdType::Write);
-        hmap.insert("SETRANGE".as_bytes(), CmdType::Write);
-        hmap.insert("STRLEN".as_bytes(), CmdType::Read);
+        hmap.insert(&b"APPEND"[..], CmdType::Write);
+        hmap.insert(&b"BITCOUNT"[..], CmdType::Read);
+        hmap.insert(&b"BITOP"[..], CmdType::NotSupport);
+        hmap.insert(&b"BITPOS"[..], CmdType::Read);
+        hmap.insert(&b"DECR"[..], CmdType::Write);
+        hmap.insert(&b"DECRBY"[..], CmdType::Write);
+        hmap.insert(&b"GET"[..], CmdType::Read);
+        hmap.insert(&b"GETBIT"[..], CmdType::Read);
+        hmap.insert(&b"GETRANGE"[..], CmdType::Read);
+        hmap.insert(&b"GETSET"[..], CmdType::Write);
+        hmap.insert(&b"INCR"[..], CmdType::Write);
+        hmap.insert(&b"INCRBY"[..], CmdType::Write);
+        hmap.insert(&b"INCRBYFLOAT"[..], CmdType::Write);
+        hmap.insert(&b"MGET"[..], CmdType::Read);
+        hmap.insert(&b"MSET"[..], CmdType::Write);
+        hmap.insert(&b"MSETNX"[..], CmdType::NotSupport);
+        hmap.insert(&b"PSETEX"[..], CmdType::Write);
+        hmap.insert(&b"SET"[..], CmdType::Write);
+        hmap.insert(&b"SETBIT"[..], CmdType::Write);
+        hmap.insert(&b"SETEX"[..], CmdType::Write);
+        hmap.insert(&b"SETNX"[..], CmdType::Write);
+        hmap.insert(&b"SETRANGE"[..], CmdType::Write);
+        hmap.insert(&b"STRLEN"[..], CmdType::Read);
         // hash type
-        hmap.insert("HDEL".as_bytes(), CmdType::Write);
-        hmap.insert("HEXISTS".as_bytes(), CmdType::Read);
-        hmap.insert("HGET".as_bytes(), CmdType::Read);
-        hmap.insert("HGETALL".as_bytes(), CmdType::Read);
-        hmap.insert("HINCRBY".as_bytes(), CmdType::Write);
-        hmap.insert("HINCRBYFLOAT".as_bytes(), CmdType::Write);
-        hmap.insert("HKEYS".as_bytes(), CmdType::Read);
-        hmap.insert("HLEN".as_bytes(), CmdType::Read);
-        hmap.insert("HMGET".as_bytes(), CmdType::Read);
-        hmap.insert("HMSET".as_bytes(), CmdType::Write);
-        hmap.insert("HSET".as_bytes(), CmdType::Write);
-        hmap.insert("HSETNX".as_bytes(), CmdType::Write);
-        hmap.insert("HSTRLEN".as_bytes(), CmdType::Read);
-        hmap.insert("HVALS".as_bytes(), CmdType::Read);
-        hmap.insert("HSCAN".as_bytes(), CmdType::Read);
+        hmap.insert(&b"HDEL"[..], CmdType::Write);
+        hmap.insert(&b"HEXISTS"[..], CmdType::Read);
+        hmap.insert(&b"HGET"[..], CmdType::Read);
+        hmap.insert(&b"HGETALL"[..], CmdType::Read);
+        hmap.insert(&b"HINCRBY"[..], CmdType::Write);
+        hmap.insert(&b"HINCRBYFLOAT"[..], CmdType::Write);
+        hmap.insert(&b"HKEYS"[..], CmdType::Read);
+        hmap.insert(&b"HLEN"[..], CmdType::Read);
+        hmap.insert(&b"HMGET"[..], CmdType::Read);
+        hmap.insert(&b"HMSET"[..], CmdType::Write);
+        hmap.insert(&b"HSET"[..], CmdType::Write);
+        hmap.insert(&b"HSETNX"[..], CmdType::Write);
+        hmap.insert(&b"HSTRLEN"[..], CmdType::Read);
+        hmap.insert(&b"HVALS"[..], CmdType::Read);
+        hmap.insert(&b"HSCAN"[..], CmdType::Read);
         // list type
-        hmap.insert("BLPOP".as_bytes(), CmdType::NotSupport);
-        hmap.insert("BRPOP".as_bytes(), CmdType::NotSupport);
-        hmap.insert("BRPOPLPUSH".as_bytes(), CmdType::NotSupport);
-        hmap.insert("LINDEX".as_bytes(), CmdType::Read);
-        hmap.insert("LINSERT".as_bytes(), CmdType::Write);
-        hmap.insert("LLEN".as_bytes(), CmdType::Read);
-        hmap.insert("LPOP".as_bytes(), CmdType::Write);
-        hmap.insert("LPUSH".as_bytes(), CmdType::Write);
-        hmap.insert("LPUSHX".as_bytes(), CmdType::Write);
-        hmap.insert("LRANGE".as_bytes(), CmdType::Read);
-        hmap.insert("LREM".as_bytes(), CmdType::Write);
-        hmap.insert("LSET".as_bytes(), CmdType::Write);
-        hmap.insert("LTRIM".as_bytes(), CmdType::Write);
-        hmap.insert("RPOP".as_bytes(), CmdType::Write);
-        hmap.insert("RPOPLPUSH".as_bytes(), CmdType::Write);
-        hmap.insert("RPUSH".as_bytes(), CmdType::Write);
-        hmap.insert("RPUSHX".as_bytes(), CmdType::Write);
+        hmap.insert(&b"BLPOP"[..], CmdType::NotSupport);
+        hmap.insert(&b"BRPOP"[..], CmdType::NotSupport);
+        hmap.insert(&b"BRPOPLPUSH"[..], CmdType::NotSupport);
+        hmap.insert(&b"LINDEX"[..], CmdType::Read);
+        hmap.insert(&b"LINSERT"[..], CmdType::Write);
+        hmap.insert(&b"LLEN"[..], CmdType::Read);
+        hmap.insert(&b"LPOP"[..], CmdType::Write);
+        hmap.insert(&b"LPUSH"[..], CmdType::Write);
+        hmap.insert(&b"LPUSHX"[..], CmdType::Write);
+        hmap.insert(&b"LRANGE"[..], CmdType::Read);
+        hmap.insert(&b"LREM"[..], CmdType::Write);
+        hmap.insert(&b"LSET"[..], CmdType::Write);
+        hmap.insert(&b"LTRIM"[..], CmdType::Write);
+        hmap.insert(&b"RPOP"[..], CmdType::Write);
+        hmap.insert(&b"RPOPLPUSH"[..], CmdType::Write);
+        hmap.insert(&b"RPUSH"[..], CmdType::Write);
+        hmap.insert(&b"RPUSHX"[..], CmdType::Write);
         // set type
-        hmap.insert("SADD".as_bytes(), CmdType::Write);
-        hmap.insert("SCARD".as_bytes(), CmdType::Read);
-        hmap.insert("SDIFF".as_bytes(), CmdType::Read);
-        hmap.insert("SDIFFSTORE".as_bytes(), CmdType::Write);
-        hmap.insert("SINTER".as_bytes(), CmdType::Read);
-        hmap.insert("SINTERSTORE".as_bytes(), CmdType::Write);
-        hmap.insert("SISMEMBER".as_bytes(), CmdType::Read);
-        hmap.insert("SMEMBERS".as_bytes(), CmdType::Read);
-        hmap.insert("SMOVE".as_bytes(), CmdType::Write);
-        hmap.insert("SPOP".as_bytes(), CmdType::Write);
-        hmap.insert("SRANDMEMBER".as_bytes(), CmdType::Read);
-        hmap.insert("SREM".as_bytes(), CmdType::Write);
-        hmap.insert("SUNION".as_bytes(), CmdType::Read);
-        hmap.insert("SUNIONSTORE".as_bytes(), CmdType::Write);
-        hmap.insert("SSCAN".as_bytes(), CmdType::Read);
+        hmap.insert(&b"SADD"[..], CmdType::Write);
+        hmap.insert(&b"SCARD"[..], CmdType::Read);
+        hmap.insert(&b"SDIFF"[..], CmdType::Read);
+        hmap.insert(&b"SDIFFSTORE"[..], CmdType::Write);
+        hmap.insert(&b"SINTER"[..], CmdType::Read);
+        hmap.insert(&b"SINTERSTORE"[..], CmdType::Write);
+        hmap.insert(&b"SISMEMBER"[..], CmdType::Read);
+        hmap.insert(&b"SMEMBERS"[..], CmdType::Read);
+        hmap.insert(&b"SMOVE"[..], CmdType::Write);
+        hmap.insert(&b"SPOP"[..], CmdType::Write);
+        hmap.insert(&b"SRANDMEMBER"[..], CmdType::Read);
+        hmap.insert(&b"SREM"[..], CmdType::Write);
+        hmap.insert(&b"SUNION"[..], CmdType::Read);
+        hmap.insert(&b"SUNIONSTORE"[..], CmdType::Write);
+        hmap.insert(&b"SSCAN"[..], CmdType::Read);
         // zset type
-        hmap.insert("ZADD".as_bytes(), CmdType::Write);
-        hmap.insert("ZCARD".as_bytes(), CmdType::Read);
-        hmap.insert("ZCOUNT".as_bytes(), CmdType::Read);
-        hmap.insert("ZINCRBY".as_bytes(), CmdType::Write);
-        hmap.insert("ZINTERSTORE".as_bytes(), CmdType::Write);
-        hmap.insert("ZLEXCOUNT".as_bytes(), CmdType::Read);
-        hmap.insert("ZRANGE".as_bytes(), CmdType::Read);
-        hmap.insert("ZRANGEBYLEX".as_bytes(), CmdType::Read);
-        hmap.insert("ZRANGEBYSCORE".as_bytes(), CmdType::Read);
-        hmap.insert("ZRANK".as_bytes(), CmdType::Read);
-        hmap.insert("ZREM".as_bytes(), CmdType::Write);
-        hmap.insert("ZREMRANGEBYLEX".as_bytes(), CmdType::Write);
-        hmap.insert("ZREMRANGEBYRANK".as_bytes(), CmdType::Write);
-        hmap.insert("ZREMRANGEBYSCORE".as_bytes(), CmdType::Write);
-        hmap.insert("ZREVRANGE".as_bytes(), CmdType::Read);
-        hmap.insert("ZREVRANGEBYLEX".as_bytes(), CmdType::Read);
-        hmap.insert("ZREVRANGEBYSCORE".as_bytes(), CmdType::Read);
-        hmap.insert("ZREVRANK".as_bytes(), CmdType::Read);
-        hmap.insert("ZSCORE".as_bytes(), CmdType::Read);
-        hmap.insert("ZUNIONSTORE".as_bytes(), CmdType::Write);
-        hmap.insert("ZSCAN".as_bytes(), CmdType::Read);
+        hmap.insert(&b"ZADD"[..], CmdType::Write);
+        hmap.insert(&b"ZCARD"[..], CmdType::Read);
+        hmap.insert(&b"ZCOUNT"[..], CmdType::Read);
+        hmap.insert(&b"ZINCRBY"[..], CmdType::Write);
+        hmap.insert(&b"ZINTERSTORE"[..], CmdType::Write);
+        hmap.insert(&b"ZLEXCOUNT"[..], CmdType::Read);
+        hmap.insert(&b"ZRANGE"[..], CmdType::Read);
+        hmap.insert(&b"ZRANGEBYLEX"[..], CmdType::Read);
+        hmap.insert(&b"ZRANGEBYSCORE"[..], CmdType::Read);
+        hmap.insert(&b"ZRANK"[..], CmdType::Read);
+        hmap.insert(&b"ZREM"[..], CmdType::Write);
+        hmap.insert(&b"ZREMRANGEBYLEX"[..], CmdType::Write);
+        hmap.insert(&b"ZREMRANGEBYRANK"[..], CmdType::Write);
+        hmap.insert(&b"ZREMRANGEBYSCORE"[..], CmdType::Write);
+        hmap.insert(&b"ZREVRANGE"[..], CmdType::Read);
+        hmap.insert(&b"ZREVRANGEBYLEX"[..], CmdType::Read);
+        hmap.insert(&b"ZREVRANGEBYSCORE"[..], CmdType::Read);
+        hmap.insert(&b"ZREVRANK"[..], CmdType::Read);
+        hmap.insert(&b"ZSCORE"[..], CmdType::Read);
+        hmap.insert(&b"ZUNIONSTORE"[..], CmdType::Write);
+        hmap.insert(&b"ZSCAN"[..], CmdType::Read);
         // hyper log type
-        hmap.insert("PFADD".as_bytes(), CmdType::Write);
-        hmap.insert("PFCOUNT".as_bytes(), CmdType::Read);
-        hmap.insert("PFMERGE".as_bytes(), CmdType::Write);
+        hmap.insert(&b"PFADD"[..], CmdType::Write);
+        hmap.insert(&b"PFCOUNT"[..], CmdType::Read);
+        hmap.insert(&b"PFMERGE"[..], CmdType::Write);
         // eval type
-        hmap.insert("EVAL".as_bytes(), CmdType::Write);
-        hmap.insert("EVALSHA".as_bytes(), CmdType::NotSupport);
+        hmap.insert(&b"EVAL"[..], CmdType::Write);
+        hmap.insert(&b"EVALSHA"[..], CmdType::NotSupport);
         // ctrl type
-        hmap.insert("AUTH".as_bytes(), CmdType::NotSupport);
-        hmap.insert("ECHO".as_bytes(), CmdType::Ctrl);
-        hmap.insert("PING".as_bytes(), CmdType::Ctrl);
-        hmap.insert("INFO".as_bytes(), CmdType::Ctrl);
-        hmap.insert("PROXY".as_bytes(), CmdType::NotSupport);
-        hmap.insert("SLOWLOG".as_bytes(), CmdType::NotSupport);
-        hmap.insert("QUIT".as_bytes(), CmdType::NotSupport);
-        hmap.insert("SELECT".as_bytes(), CmdType::NotSupport);
-        hmap.insert("TIME".as_bytes(), CmdType::NotSupport);
-        hmap.insert("CONFIG".as_bytes(), CmdType::NotSupport);
+        hmap.insert(&b"AUTH"[..], CmdType::NotSupport);
+        hmap.insert(&b"ECHO"[..], CmdType::Ctrl);
+        hmap.insert(&b"PING"[..], CmdType::Ctrl);
+        hmap.insert(&b"INFO"[..], CmdType::Ctrl);
+        hmap.insert(&b"PROXY"[..], CmdType::NotSupport);
+        hmap.insert(&b"SLOWLOG"[..], CmdType::NotSupport);
+        hmap.insert(&b"QUIT"[..], CmdType::NotSupport);
+        hmap.insert(&b"SELECT"[..], CmdType::NotSupport);
+        hmap.insert(&b"TIME"[..], CmdType::NotSupport);
+        hmap.insert(&b"CONFIG"[..], CmdType::NotSupport);
 
         hmap
     };
@@ -559,23 +559,23 @@ lazy_static!{
     pub static ref RESP_OBJ_ERROR_NOT_SUPPORT: Resp =
     {
 
-        Resp::new_plain(RESP_ERROR, Some("unsupported command".as_bytes().to_vec())) };
+        Resp::new_plain(RESP_ERROR, Some((&b"unsupported command"[..]).to_vec())) };
 
     pub static ref RESP_OBJ_BULK_GET: Resp =
     {
 
-        Resp::new_plain(RESP_BULK, Some("GET".as_bytes().to_vec())) };
+        Resp::new_plain(RESP_BULK, Some((&b"GET"[..]).to_vec())) };
     pub static ref RESP_OBJ_BULK_SET: Resp =
     {
 
-        Resp::new_plain(RESP_BULK, Some("SET".as_bytes().to_vec())) };
+        Resp::new_plain(RESP_BULK, Some((&b"SET"[..]).to_vec())) };
     pub static ref RESP_OBJ_ERROR_BAD_CMD: Resp =
     {
-        Resp::new_plain(RESP_ERROR, Some("command format wrong".as_bytes().to_vec())) };
+        Resp::new_plain(RESP_ERROR, Some((&b"command format wrong"[..]).to_vec())) };
 
     pub static ref RESP_OBJ_STRING_PONG: Resp =
     {
-        Resp::new_plain(RESP_STRING, Some("PONG".as_bytes().to_vec())) };
+        Resp::new_plain(RESP_STRING, Some((&b"PONG"[..]).to_vec())) };
 
     pub static ref CMD_COMPLEX: BTreeSet<&'static [u8]> = {
         let cmds = vec!["MSET", "MGET", "DEL", "EXISTS", "EVAL"];

@@ -1,7 +1,5 @@
 #![deny(warnings)]
 #![feature(test)]
-#![feature(tool_lints)]
-#![allow(clippy::string_lit_as_bytes)]
 
 extern crate test;
 extern crate tokio;
