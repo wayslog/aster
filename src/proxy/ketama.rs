@@ -189,7 +189,7 @@ mod test_ketama {
         )
         .expect("create new hash ring success");
         let node = ring.get_node("a");
-        assert_eq!(&node, "mc-1");
-        assert_eq!(&ring.get_node("memtier-102"), "mc-x")
+        assert_eq!(&node, "mc-4");
+        assert_eq!(&ring.get_node("memtier-102"), "mc-4")
     }
 }
