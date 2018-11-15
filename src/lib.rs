@@ -13,7 +13,6 @@ extern crate num_cpus;
 #[macro_use]
 extern crate lazy_static;
 extern crate btoi;
-extern crate crc16;
 extern crate itoa;
 extern crate net2;
 extern crate tokio_codec;
@@ -32,6 +31,7 @@ mod mc;
 mod notify;
 mod proxy;
 mod redis;
+mod crc;
 
 use cluster::{start_cluster, Cluster};
 pub use com::*;

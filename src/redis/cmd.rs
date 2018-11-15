@@ -5,9 +5,9 @@ use notify::Notify;
 use proxy::Request;
 use redis::resp::{Resp, RespCodec};
 use redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
+use crc::crc16 as crc;
 
 use bytes::{BufMut, BytesMut};
-use crc16;
 use futures::task::Task;
 use hashbrown::HashMap;
 use tokio_codec::{Decoder, Encoder};
@@ -264,10 +264,8 @@ impl Command {
 
     fn crc16(resp: &Resp) -> u16 {
         if let Some(cmd) = resp.get(1) {
-            let mut state = crc16::State::<crc16::XMODEM>::new();
             let data = &cmd.data.as_ref().expect("never null")[..];
-            state.update(data);
-            return state.get() & MUSK;
+            return crc(data) & MUSK;
         }
         ::std::u16::MAX
     }
@@ -589,9 +587,7 @@ lazy_static!{
 }
 
 fn calc_crc16(data: &[u8]) -> u16 {
-    let mut state = crc16::State::<crc16::XMODEM>::new();
-    state.update(data);
-    state.get()
+    crc(data)
 }
 
 pub struct CmdCodec {
