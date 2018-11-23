@@ -2,6 +2,20 @@
 name = "aster"
 version = "0.1.1"
 authors = ["wayslog"]
+keywords = ["redis", "database"]
+description = "A light, fast and powerful cache proxy in Rust."
+homepage = "https://github.com/wayslog/aster"
+repository = "https://github.com/wayslog/aster"
+documentation = "https://docs.rs/aster"
+license = "MIT"
+readme = "README.md"
+categories = ["asynchronous", "network-programming", "caching", "database"]
+keywords = [
+  "io", "async", "non-blocking",
+  "futures", "cache", "redis",
+  "memcache", "proxy", "db",
+  "database", "tokio", "twemproxy",
+  "corvus", "cluster", "hash"]
 
 [lib]
 name="libaster"
