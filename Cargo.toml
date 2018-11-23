@@ -9,12 +9,7 @@ documentation = "https://docs.rs/aster"
 license = "MIT"
 readme = "README.md"
 categories = ["asynchronous", "network-programming", "caching", "database"]
-keywords = [
-  "io", "async", "non-blocking",
-  "futures", "cache", "redis",
-  "memcache", "proxy", "db",
-  "database", "tokio", "twemproxy",
-  "corvus", "cluster", "hash"]
+keywords = [ "cache", "redis", "memcache", "twemproxy"]
 
 [lib]
 name="libaster"
