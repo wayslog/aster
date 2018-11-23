@@ -9,16 +9,12 @@ extern crate env_logger;
 #[macro_use]
 extern crate log;
 extern crate bytes;
-extern crate num_cpus;
 #[macro_use]
 extern crate lazy_static;
 extern crate btoi;
 extern crate itoa;
 extern crate net2;
 extern crate tokio_codec;
-extern crate tokio_executor;
-extern crate tokio_io;
-extern crate tokio_timer;
 #[macro_use]
 extern crate serde_derive;
 extern crate hashbrown;
