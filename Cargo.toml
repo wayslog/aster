@@ -1,11 +1,11 @@
 [package]
-name = "aster"
+name = "aster-proxy"
 version = "0.1.1"
 authors = ["wayslog"]
 description = "A light, fast and powerful cache proxy in Rust."
 homepage = "https://github.com/wayslog/aster"
 repository = "https://github.com/wayslog/aster"
-documentation = "https://docs.rs/aster"
+documentation = "https://docs.rs/aster-proxy"
 license = "MIT"
 readme = "README.md"
 categories = ["asynchronous", "network-programming", "caching", "database"]
