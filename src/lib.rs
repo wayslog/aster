@@ -41,7 +41,7 @@ use std::thread;
 pub fn run() -> Result<(), std::io::Error> {
     env_logger::init();
     let config = load_config();
-    info!("asswecan has been lunched with config={:?}", config);
+    info!("aster has shined with config={:?}", config);
     let ths: Vec<_> = config
         .clusters
         .iter()

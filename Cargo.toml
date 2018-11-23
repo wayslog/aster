@@ -1,14 +1,14 @@
 [package]
-name = "asswecan"
+name = "aster"
 version = "0.1.1"
 authors = ["wayslog"]
 
 [lib]
-name="libass"
+name="libaster"
 path="src/lib.rs"
 
 [[bin]]
-name="asswecan"
+name="aster"
 path="bin/main.rs"
 
 [dependencies]

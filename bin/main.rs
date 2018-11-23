@@ -1,5 +1,5 @@
-extern crate libass;
+extern crate libaster;
 
 fn main() {
-    libass::run().unwrap();
+    libaster::run().unwrap();
 }

@@ -1,10 +1,10 @@
 debug:
 	cargo build
-	RUST_LOG=libass=debug RUST_BACKTRACE=full ./target/debug/asswecan
+	RUST_LOG=libaster=debug RUST_BACKTRACE=full ./target/debug/aster
 
 release:
 	cargo build --release
-	RUST_LOG=libass=info RUST_BACKTRACE=full ./target/release/asswecan
+	RUST_LOG=libaster=info RUST_BACKTRACE=full ./target/release/aster
 
 clean:
 	cargo clean
