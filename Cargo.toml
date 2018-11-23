@@ -1,6 +1,6 @@
 [package]
 name = "aster-proxy"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["wayslog"]
 description = "A light, fast and powerful cache proxy in Rust."
 homepage = "https://github.com/wayslog/aster"
