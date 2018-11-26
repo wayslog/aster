@@ -19,15 +19,15 @@ cargo build --release && AS_CFG=as.toml RUST_LOG=libaster=info RUST_BACKTRACE=1 
 ```
 [[clusters]]
 # name of the cluster. Each cluster means one front-end port.
-#
+
 name="test-redis-cluster"
 
 # listen_addr means the cluster font end serve address.
-#
+
 listen_addr="0.0.0.0:9001"
 
 # cache_type only support memcache|redis|redis_cluster
-#
+
 cache_type="redis_cluster"
 
 # servers means cache backend. support two format:
@@ -47,26 +47,27 @@ cache_type="redis_cluster"
 # servers = ["127.0.0.1:7000", "127.0.0.1:7001"]
 #
 # which means the seed nodes to connect to redis cluster.
-#
+
 servers = ["127.0.0.1:7000", "127.0.0.1:7001"]
 
 # Work thread number, it's suggested as the number of your cpu(hyper-thread) number.
-#
+
 thread = 1
 
 ############################# Cluster Mode Special #######################################################
 # fetch means fetch interval for backend cluster to keep cluster info become newer.
 # default 10 * 60 seconds
-#
+
 fetch = 600
 
 ############################# Proxy Mode Special #######################################################
 # ping_fail_limit means when ping fail reach the limit number, the node will be ejected from the cluster
 # until the ping is ok in future.
 # if ping_fali_limit == 0, means that close the ping eject feature.
-#
+
 ping_fail_limit=3
 
 # ping_interval means the interval of each ping was send into backend node in millisecond.
+
 ping_interval=10000
 ```
