@@ -1,4 +1,4 @@
-Aster [![Build Status](https://travis-ci.org/wayslog/aster.svg?branch=master)](https://travis-ci.org/wayslog/aster)
+Aster [![Build Status](https://travis-ci.org/wayslog/aster.svg?branch=master)](https://travis-ci.org/wayslog/aster) [![LOC](https://tokei.rs/b1/github/wayslog/aster)](https://github.com/wayslog/aster)
 ======================
 
 Aster is a light, fast and powerful cache proxy written by rust.
