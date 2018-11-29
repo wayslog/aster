@@ -1,11 +1,11 @@
 use futures::task::Task;
+use std::cell::Cell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Debug, Clone)]
 pub struct Notify {
     task: Option<Task>,
-    count: Rc<AtomicUsize>,
+    count: Rc<Cell<usize>>,
 }
 
 impl Notify {
@@ -13,14 +13,14 @@ impl Notify {
     pub fn new(task: Task) -> Self {
         Notify {
             task: Some(task),
-            count: Rc::new(AtomicUsize::new(0)),
+            count: Rc::new(Cell::new(0)),
         }
     }
 
     pub fn empty() -> Self {
         Notify {
             task: None,
-            count: Rc::new(AtomicUsize::new(0)),
+            count: Rc::new(Cell::new(0)),
         }
     }
     pub fn notify(&self) {
@@ -28,8 +28,10 @@ impl Notify {
     }
 
     fn done(&self) {
-        let pv = self.count.fetch_sub(1, Ordering::Relaxed);
-        if pv == 1 {
+        let mut count = self.count.get();
+        count = count.wrapping_sub(1);
+        self.count.set(count);
+        if count == 0 {
             if let Some(task) = self.task.as_ref() {
                 task.notify();
             }
@@ -38,11 +40,13 @@ impl Notify {
 
     #[allow(unused)]
     pub fn sub(&self, val: usize) {
-        self.count.fetch_sub(val, Ordering::Relaxed);
+        let count = self.count.get();
+        self.count.set(count.wrapping_sub(val));
     }
 
     pub fn add(&self, val: usize) {
-        self.count.fetch_add(val, Ordering::Relaxed);
+        let count = self.count.get();
+        self.count.set(count.wrapping_add(val));
     }
 
     pub fn reregister(&mut self, task: Task) {
