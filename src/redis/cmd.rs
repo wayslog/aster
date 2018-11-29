@@ -1,11 +1,11 @@
 // use bytes::BufMut;
 use btoi;
 use com::*;
+use crc::crc16 as crc;
 use notify::Notify;
 use proxy::Request;
 use redis::resp::{Resp, RespCodec};
 use redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
-use crc::crc16 as crc;
 
 use bytes::{BufMut, BytesMut};
 use futures::task::Task;
@@ -83,9 +83,24 @@ impl Request for Cmd {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
+}
+
+impl Clone for Cmd {
+    fn clone(&self) -> Cmd {
+        self.cmd.borrow().notify.add(1);
+        Cmd {
+            cmd: self.cmd.clone(),
+        }
+    }
+}
+
+impl Drop for Cmd {
+    fn drop(&mut self) {
+        self.cmd.borrow().notify.notify();
+    }
 }
 
 impl From<Resp> for Cmd {
@@ -304,7 +319,6 @@ impl Command {
     }
 
     fn mksubs(&mut self) {
-        self.notify.add(1);
         if !self.is_complex {
             return;
         }
@@ -327,7 +341,7 @@ impl Command {
         if arr_len < 3 || arr_len % 2 == 0 {
             return self.done_with_error(&RESP_OBJ_ERROR_BAD_CMD);
         }
-        self.notify.done_without_notify();
+        // self.notify.done_without_notify();
 
         let is_complex = self.is_complex;
         let resps = self.req.array.as_ref().expect("cmd must be array");
@@ -353,7 +367,7 @@ impl Command {
         if arr_len < 2 {
             return self.done_with_error(&RESP_OBJ_ERROR_BAD_CMD);
         }
-        self.notify.done_without_notify();
+        // self.notify.done_without_notify();
 
         let resps = self.req.array.as_ref().expect("cmd must be array").clone();
         let mut iter = resps.into_iter();
@@ -399,13 +413,11 @@ impl Command {
     pub fn done(&mut self, reply: Resp) {
         self.reply = Some(reply);
         self.is_done = true;
-        self.notify.done();
     }
 
     pub fn done_with_error(&mut self, err: &Resp) {
         self.reply = Some(err.clone());
         self.is_done = true;
-        self.notify.done();
     }
 }
 
@@ -699,7 +711,6 @@ pub fn new_asking_cmd() -> Cmd {
         Some(b"ASKING".to_vec()),
     )]));
     let notify = Notify::empty();
-    notify.add(1);
     let cmd = Command {
         is_done: false,
         is_ask: false,
@@ -724,7 +735,6 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
         Resp::new_plain(RESP_BULK, Some(b"NODES".to_vec())),
     ]));
     let notify = Notify::empty();
-    notify.add(1);
     let cmd = Command {
         is_done: false,
         is_ask: false,
@@ -872,7 +882,6 @@ fn new_ping_request() -> Cmd {
         Some(b"PING".to_vec()),
     )]));
     let notify = Notify::empty();
-    notify.add(1);
     let cmd = Command {
         is_done: false,
         is_ask: false,

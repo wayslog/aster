@@ -148,20 +148,33 @@ impl Request for Req {
         let mut refreq = self.req.borrow_mut();
         refreq.is_done = true;
         refreq.reply = Some(data);
-        refreq.notify.done();
     }
     fn done_with_error(&self, err: Error) {
         let data = format!("{:?}", err);
         let buf = BytesMut::from(data.as_bytes().to_vec());
         let mut refreq = self.req.borrow_mut();
         refreq.reply = Some(buf);
-        refreq.notify.done();
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Req {
     req: Rc<RefCell<MCReq>>,
+}
+
+impl Clone for Req {
+    fn clone(&self) -> Req {
+        self.req.borrow().notify.add(1);
+        Req {
+            req: self.req.clone(),
+        }
+    }
+}
+
+impl Drop for Req {
+    fn drop(&mut self) {
+        self.req.borrow().notify.notify();
+    }
 }
 
 impl Req {
@@ -309,7 +322,6 @@ impl HandleCodec {
             subs: Some(subs),
             reply: None,
         };
-        mcreq.notify.done();
         Ok(Req {
             req: Rc::new(RefCell::new(mcreq)),
         })
@@ -342,7 +354,6 @@ impl HandleCodec {
         let range = Self::parse_key_range(&data, 0);
 
         let notify = Notify::empty();
-        notify.add(1);
         Ok(Req {
             req: Rc::new(RefCell::new(MCReq {
                 rtype,
@@ -401,7 +412,6 @@ impl HandleCodec {
             subs: Some(subs),
             reply: None,
         };
-        mcreq.notify.done();
         Ok(Req {
             req: Rc::new(RefCell::new(mcreq)),
         })
@@ -409,12 +419,13 @@ impl HandleCodec {
 
     fn parse_storage(src: &mut BytesMut, rtype: ReqType, le: usize) -> AsResult<Req> {
         let body_size = {
+            info!("body is {:?}", &src[..]);
             // FIXME: set no reply flag and ignore reply for NodeDown
             let mut fields = (&src[..le - 2])
                 .split(|x| *x == BYTE_SPACE)
                 .filter(|v| !v.is_empty() && *v != BYTES_NOREPLY);
 
-            let size_bytes = fields.nth(5).ok_or(Error::BadMsg)?;
+            let size_bytes = fields.nth(4).ok_or(Error::BadMsg)?;
             btoi::btoi::<usize>(size_bytes)?
         };
         let range = Self::parse_key_range(&src, 0);
@@ -425,7 +436,6 @@ impl HandleCodec {
 
         let data = src.split_to(tsize);
         let notify = Notify::empty();
-        notify.add(1);
         let req = Req {
             req: Rc::new(RefCell::new(MCReq {
                 rtype,
@@ -518,7 +528,7 @@ impl Decoder for NodeCodec {
             let size = {
                 let mut iter = src[..le - 2].split(|x| *x == BYTE_SPACE);
                 let lbs = iter
-                    .nth(4)
+                    .nth(3)
                     .expect("NodeCodec decode body length never be empty");
                 btoi::btoi::<usize>(lbs)?
             };
@@ -562,7 +572,6 @@ fn new_ping_request() -> Req {
         subs: None,
         reply: None,
     };
-    mcreq.notify.add(1);
     Req {
         req: Rc::new(RefCell::new(mcreq)),
     }
