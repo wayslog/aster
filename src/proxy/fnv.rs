@@ -2,7 +2,7 @@
 
 use std::hash::Hasher;
 
-const FNV_64_PRIME: u32 = (1_099_511_628_211u64 & 0x0000_ffff) as u32;
+const FNV_64_PRIME: u32 = (1_099_511_628_211u64 & 0x0000_ffffu64) as u32;
 
 pub struct Fnv1a64(u64);
 
@@ -13,7 +13,7 @@ impl Hasher for Fnv1a64 {
             val ^= u32::from(*b);
             val = val.wrapping_mul(FNV_64_PRIME);
         }
-        self.0 = u64::from(val );
+        self.0 = u64::from(val);
     }
 
     fn finish(&self) -> u64 {

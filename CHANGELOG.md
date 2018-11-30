@@ -1,3 +1,9 @@
+## 0.1.3
+
+* support auto drop/clone counter for notify.
+* change atomic usize as Cell<usize>
+* fixed ketama hash bugs.
+
 ## 0.1.2
 * support memcache/redis singleton protocol
 * replace all hash map with `hashbrown` and make the qps upper to 167w 

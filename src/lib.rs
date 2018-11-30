@@ -23,11 +23,11 @@ extern crate toml;
 
 mod cluster;
 mod com;
+mod crc;
 mod mc;
 mod notify;
 mod proxy;
 mod redis;
-mod crc;
 
 use cluster::{start_cluster, Cluster};
 pub use com::*;

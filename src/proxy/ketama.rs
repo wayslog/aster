@@ -52,7 +52,7 @@ impl<T: Hasher + Default> HashRing<T> {
 
     fn node_hash(key: &str, align: usize) -> u64 {
         let md5::Digest(bs) = md5::compute(key.as_bytes());
-        (u64::from(bs[3 + align * 4]) & 0xFF << 24)
+        ((u64::from(bs[3 + align * 4]) & 0xFF) << 24)
             | ((u64::from(bs[2 + align * 4]) & 0xFF) << 16)
             | ((u64::from(bs[1 + align * 4]) & 0xFF) << 8)
             | (u64::from(bs[align * 4]) & 0xFF)
@@ -189,7 +189,7 @@ mod test_ketama {
         )
         .expect("create new hash ring success");
         let node = ring.get_node("a");
-        assert_eq!(&node, "mc-4");
-        assert_eq!(&ring.get_node("memtier-102"), "mc-4")
+        assert_eq!(&node, "mc-1");
+        assert_eq!(&ring.get_node("memtier-102"), "mc-x")
     }
 }
