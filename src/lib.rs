@@ -14,6 +14,7 @@ extern crate lazy_static;
 extern crate btoi;
 extern crate itoa;
 extern crate net2;
+extern crate num_cpus;
 extern crate tokio_codec;
 #[macro_use]
 extern crate serde_derive;
@@ -67,7 +68,11 @@ fn load_config() -> Config {
 }
 
 pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
-    let count = usize::max(cc.thread, 1);
+    let count = if let Some(&thread) = cc.thread.as_ref() {
+        usize::max(thread, 1)
+    } else {
+        num_cpus::get()
+    };
     info!(
         "asswecan start {} listen at {} with {} thread",
         &cc.name, &cc.listen_addr, count
@@ -124,7 +129,7 @@ pub struct ClusterConfig {
     pub ping_fail_limit: Option<usize>,
     pub ping_interval: Option<usize>,
 
-    pub thread: usize,
+    pub thread: Option<usize>,
     pub cache_type: CacheType,
     pub servers: Vec<String>,
     pub fetch: Option<u64>,
@@ -138,5 +143,5 @@ pub struct ClusterConfig {
     // dead option: not support other proto
     pub listen_proto: Option<String>,
     // dead option: always 1
-    pub node_connections: Option<String>,
+    pub node_connections: Option<usize>,
 }
