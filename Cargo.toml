@@ -38,4 +38,4 @@ hashbrown = "0.1"
 
 [profile.release]
 debug = true
-lto = false
+lto = true

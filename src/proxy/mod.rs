@@ -247,7 +247,7 @@ impl<T: Request + 'static> Proxy<T> {
 
     fn create_conn(node: &str) -> AsResult<Sender<T>> {
         let node_addr = node.to_string();
-        let (tx, rx) = channel(10234 * 8);
+        let (tx, rx) = channel(1024 * 8);
         let ret_tx = tx.clone();
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
             .and_then(move |_| {
