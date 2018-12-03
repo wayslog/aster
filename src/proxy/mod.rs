@@ -55,6 +55,13 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
             let amt = listen
                 .incoming()
                 .for_each(move |sock| {
+                    let sock = set_read_write_timeout(
+                        sock,
+                        rc_proxy.cc.read_timeout,
+                        rc_proxy.cc.write_timeout,
+                    )
+                    .expect("set read/write timeout in proxy frontend must be ok");
+
                     sock.set_nodelay(true).expect("set nodelay must ok");
                     let codec = T::handle_codec();
                     let (req_tx, req_rx) = codec.framed(sock).split();
@@ -221,7 +228,7 @@ impl<T: Request + 'static> Proxy<T> {
     }
 
     fn reconnect(&self, node: String) -> AsResult<()> {
-        let conn = Self::create_conn(&node)?;
+        let conn = Self::create_conn(&node, self.cc.read_timeout, self.cc.write_timeout)?;
         if let Some(mut old) = self.conns.borrow_mut().insert(node, conn) {
             old.close().map_err(|err| {
                 error!("force done for replaced data");
@@ -239,13 +246,13 @@ impl<T: Request + 'static> Proxy<T> {
 
     fn init_conns(&self) -> AsResult<()> {
         for server in self.alias.borrow().values().map(|x| x.to_string()) {
-            let conn = Self::create_conn(&server)?;
+            let conn = Self::create_conn(&server, self.cc.read_timeout, self.cc.write_timeout)?;
             self.conns.borrow_mut().insert(server.clone(), conn);
         }
         Ok(())
     }
 
-    fn create_conn(node: &str) -> AsResult<Sender<T>> {
+    fn create_conn(node: &str, rt: Option<u64>, wt: Option<u64>) -> AsResult<Sender<T>> {
         let node_addr = node.to_string();
         let (tx, rx) = channel(1024 * 8);
         let ret_tx = tx.clone();
@@ -259,7 +266,9 @@ impl<T: Request + 'static> Proxy<T> {
             .and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
             })
-            .and_then(|sock| {
+            .and_then(move |sock| {
+                let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
+
                 sock.set_nodelay(true).expect("set nodelay must ok");
                 let codec = <T as Request>::node_codec();
                 let (sink, stream) = codec.framed(sock).split();

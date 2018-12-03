@@ -90,11 +90,11 @@ impl Cluster {
                         }
                     }
 
-                    if let Some((addr, cmd)) = try_ready!(
-                        self.recv
-                            .poll()
-                            .map_err(|err| error!("fail to redirect the command due to {:?}", err))
-                    ) {
+                    if let Some((addr, cmd)) = try_ready!(self
+                        .recv
+                        .poll()
+                        .map_err(|err| error!("fail to redirect the command due to {:?}", err)))
+                    {
                         self.store = Some((addr, cmd));
                     } else {
                         warn!("redirect future is dropped");
@@ -123,6 +123,8 @@ impl Cluster {
             .as_ref()
             .cloned()
             .expect("redirect channel is never be empty");
+        let rt = self.cc.read_timeout.clone();
+        let wt = self.cc.write_timeout.clone();
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
             .and_then(move |_| {
                 addr_string
@@ -133,7 +135,9 @@ impl Cluster {
             .and_then(|addr| {
                 TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
             })
-            .and_then(|sock| {
+            .and_then(move |sock| {
+                let sock = set_read_write_timeout(sock, rt, wt)
+                    .expect("set read/write timeout in cluster must be ok");
                 sock.set_nodelay(true).expect("set nodelay must ok");
                 let codec = RespCodec {};
                 let (sink, stream) = codec.framed(sock).split();
@@ -275,6 +279,12 @@ pub fn start_cluster(cluster: Cluster) {
             let amt = listen
                 .incoming()
                 .for_each(move |sock| {
+                    let sock = set_read_write_timeout(
+                        sock,
+                        cluster.cc.read_timeout,
+                        cluster.cc.write_timeout,
+                    )
+                    .expect("set read/write timeout in cluster frontend must be ok");
                     sock.set_nodelay(true).expect("set nodelay must ok");
                     let codec = CmdCodec::default();
                     let (cmd_tx, resp_rx) = codec.framed(sock).split();
