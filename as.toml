@@ -8,6 +8,7 @@ thread = 1
 fetch = 600
 read_timeout = 2000
 write_timeout = 2000
+read_from_slave = true
 
 
 [[clusters]]

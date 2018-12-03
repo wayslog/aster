@@ -68,6 +68,10 @@ write_timeout = 2000
 
 fetch = 600
 
+
+# read_from_slave is the feature make slave balanced readed by client and ignore side effects.
+read_from_slave = true
+
 ############################# Proxy Mode Special #######################################################
 # ping_fail_limit means when ping fail reach the limit number, the node will be ejected from the cluster
 # until the ping is ok in future.

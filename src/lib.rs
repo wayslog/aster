@@ -136,6 +136,7 @@ pub struct ClusterConfig {
 
     // cluster special
     pub fetch: Option<u64>,
+    pub read_from_slave: Option<bool>,
 
     // proxy special
     pub ping_fail_limit: Option<usize>,
