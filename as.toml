@@ -6,6 +6,8 @@ servers = ["127.0.0.1:7000", "127.0.0.1:7001"]
 thread = 1
 # default 10 * 60 seconds
 fetch = 600
+read_timeout = 2000
+write_timeout = 2000
 
 
 [[clusters]]

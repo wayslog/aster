@@ -126,22 +126,28 @@ pub struct ClusterConfig {
     pub listen_addr: String,
     pub hash_tag: Option<String>,
 
-    pub ping_fail_limit: Option<usize>,
-    pub ping_interval: Option<usize>,
-
     pub thread: Option<usize>,
     pub cache_type: CacheType,
+
+    pub read_timeout: Option<u64>,
+    pub write_timeout: Option<u64>,
+
     pub servers: Vec<String>,
+
+    // cluster special
     pub fetch: Option<u64>,
+
+    // proxy special
+    pub ping_fail_limit: Option<usize>,
+    pub ping_interval: Option<usize>,
 
     // dead codes
 
     // command not support now
     pub dial_timeout: Option<u64>,
-    pub read_timeout: Option<u64>,
-    pub write_timeout: Option<u64>,
     // dead option: not support other proto
     pub listen_proto: Option<String>,
+
     // dead option: always 1
     pub node_connections: Option<usize>,
 }

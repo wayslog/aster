@@ -54,6 +54,14 @@ servers = ["127.0.0.1:7000", "127.0.0.1:7001"]
 
 thread = 1
 
+# ReadTimeout is the socket read timeout which effects all in the socket in millisecond
+
+read_timeout = 2000
+
+# WriteTimeout is the socket write timeout which effects all in the socket in millisecond
+
+write_timeout = 2000
+
 ############################# Cluster Mode Special #######################################################
 # fetch means fetch interval for backend cluster to keep cluster info become newer.
 # default 10 * 60 seconds
