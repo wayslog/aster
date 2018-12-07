@@ -606,6 +606,48 @@ pub struct CmdCodec {
     rc: RespCodec,
 }
 
+impl Decoder for CmdCodec {
+    type Item = Resp;
+    type Error = Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        self.rc.decode(src)
+    }
+}
+
+impl Encoder for CmdCodec {
+    type Item = Cmd;
+    type Error = Error;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        if item.is_complex() {
+            if let Some(subreqs) = item.sub_reqs() {
+                let cmd_bytes = item.rc_req().cmd_bytes().to_vec();
+                if &cmd_bytes[..] == b"MSET" {
+                    return self.merge_encode_ok(&subreqs, dst);
+                } else if &cmd_bytes[..] == b"DEL" || &cmd_bytes[..] == b"EXISTS" {
+                    return self.merge_encode_count(subreqs, dst);
+                } else if &cmd_bytes[..] == b"MGET" {
+                    return self.merge_encode_join(subreqs, dst);
+                } else if &cmd_bytes[..] == b"EVAL" {
+                    // return self.merge_encode_join(subreqs, dst);
+                } else {
+                    unreachable!();
+                }
+            }
+        }
+
+        let reply = item.swap_reply().expect("encode simple reply never empty");
+        self.rc.encode(Rc::new(reply), dst)
+    }
+}
+
+impl Default for CmdCodec {
+    fn default() -> Self {
+        CmdCodec { rc: RespCodec {} }
+    }
+}
+
 impl CmdCodec {
     fn merge_encode_count(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
         let mut sum = 0;
@@ -654,47 +696,6 @@ impl CmdCodec {
     }
 }
 
-impl Decoder for CmdCodec {
-    type Item = Resp;
-    type Error = Error;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        self.rc.decode(src)
-    }
-}
-
-impl Encoder for CmdCodec {
-    type Item = Cmd;
-    type Error = Error;
-
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        if item.is_complex() {
-            if let Some(subreqs) = item.sub_reqs() {
-                let cmd_bytes = item.rc_req().cmd_bytes().to_vec();
-                if &cmd_bytes[..] == b"MSET" {
-                    return self.merge_encode_ok(&subreqs, dst);
-                } else if &cmd_bytes[..] == b"DEL" || &cmd_bytes[..] == b"EXISTS" {
-                    return self.merge_encode_count(subreqs, dst);
-                } else if &cmd_bytes[..] == b"MGET" {
-                    return self.merge_encode_join(subreqs, dst);
-                } else if &cmd_bytes[..] == b"EVAL" {
-                    // return self.merge_encode_join(subreqs, dst);
-                } else {
-                    unreachable!();
-                }
-            }
-        }
-
-        let reply = item.swap_reply().expect("encode simple reply never empty");
-        self.rc.encode(Rc::new(reply), dst)
-    }
-}
-
-impl Default for CmdCodec {
-    fn default() -> Self {
-        CmdCodec { rc: RespCodec {} }
-    }
-}
 
 pub fn new_cmd(args: Vec<String>) -> Command {
     let resps: Vec<_> = args

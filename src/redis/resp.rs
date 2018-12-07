@@ -24,6 +24,36 @@ pub const BYTE_LF: u8 = b'\n';
 pub const BYTES_CRLF: &[u8] = b"\r\n";
 pub const BYTES_NULL_RESP: &[u8] = b"-1\r\n";
 
+#[cfg(test)]
+mod resp_test {
+    use self::super::*;
+    use test::Bencher;
+
+    #[bench]
+    fn bench_parse_plain(b:&mut Bencher) {
+        let sdata = "+baka for you\r\n".as_bytes();
+        b.iter(||{
+            Resp::parse(sdata).unwrap()
+        });
+    }
+
+    #[bench]
+    fn bench_parse_bulk(b:&mut Bencher) {
+        let data = "$5\r\nojbK\n\r\n".as_bytes();
+        b.iter(||{
+            Resp::parse(data).unwrap()
+        });
+    }
+
+    #[bench]
+    fn bench_parse_array(b:&mut Bencher) {
+        let data = "*2\r\n$1\r\na\r\n$5\r\nojbK\n\r\n".as_bytes();
+        b.iter(||{
+            Resp::parse(data).unwrap()
+        });
+    }
+}
+
 #[test]
 fn test_resp_parse_plain() {
     let sdata = "+baka for you\r\n";
@@ -103,6 +133,7 @@ impl Resp {
         }
     }
 
+    #[inline]
     fn parse_inline(line: &[u8]) -> AsResult<Self> {
         let mut line_size = line.len();
         if line[line_size - 1] == BYTE_CR {
