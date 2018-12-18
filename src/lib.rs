@@ -74,7 +74,7 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
         num_cpus::get()
     };
     info!(
-        "asswecan start {} listen at {} with {} thread",
+        "aster start {} listen at {} with {} thread",
         &cc.name, &cc.listen_addr, count
     );
     (0..count)
