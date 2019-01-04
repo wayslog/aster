@@ -1,8 +1,8 @@
 //! proxy is the mod which contains genneral proxy
 
-mod fnv;
+pub mod fnv;
 mod handler;
-mod ketama;
+pub mod ketama;
 mod node;
 mod ping;
 

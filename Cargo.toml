@@ -20,6 +20,13 @@ path="src/lib.rs"
 name="aster"
 path="bin/main.rs"
 
+[[bench]]
+name="aster_bench"
+harness = false
+
+[dev-dependencies]
+criterion = "0.2"
+
 [dependencies]
 tokio = "0.1"
 tokio-codec="0.1"

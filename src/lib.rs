@@ -1,5 +1,4 @@
 #![deny(warnings)]
-#![feature(test)]
 
 #[macro_use(try_ready)]
 extern crate futures;
@@ -15,8 +14,8 @@ mod com;
 mod crc;
 mod mc;
 mod notify;
-mod proxy;
-mod redis;
+pub mod proxy;
+pub mod redis;
 
 use crate::cluster::{start_cluster, Cluster};
 pub use crate::com::*;
