@@ -6,7 +6,7 @@ use tokio_codec::{Decoder, Encoder};
 
 use std::rc::Rc;
 
-use com::*;
+use crate::com::*;
 // pub const SLOTS_COUNT: usize = 16384;
 // pub static LF_STR: &'static str = "\n";
 

@@ -10,6 +10,7 @@ license = "MIT"
 readme = "README.md"
 categories = ["asynchronous", "network-programming", "caching", "database"]
 keywords = [ "cache", "redis", "memcache", "twemproxy"]
+edition="2018"
 
 [lib]
 name="libaster"

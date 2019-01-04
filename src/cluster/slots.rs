@@ -1,5 +1,5 @@
-use com::*;
-use redis::cmd::Cmd;
+use crate::com::*;
+use crate::redis::cmd::Cmd;
 
 use futures::unsync::mpsc::Sender;
 

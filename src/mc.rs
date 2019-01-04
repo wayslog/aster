@@ -1,6 +1,6 @@
-use com::*;
-use notify::Notify;
-use proxy::Request;
+use crate::com::*;
+use crate::notify::Notify;
+use crate::proxy::Request;
 
 use btoi;
 // use bytes::{BufMut, BytesMut};

@@ -1,4 +1,4 @@
-use redis::resp;
+use crate::redis::resp;
 
 use btoi;
 use futures::unsync::mpsc::SendError;

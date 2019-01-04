@@ -12,8 +12,8 @@ use self::ketama::HashRing;
 use self::node::spawn_node;
 use self::ping::Ping;
 
-use com::*;
-use ClusterConfig;
+use crate::com::*;
+use crate::ClusterConfig;
 
 use futures::lazy;
 use futures::task::Task;
