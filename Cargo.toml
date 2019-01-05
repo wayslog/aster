@@ -20,6 +20,7 @@ name="aster"
 path="bin/main.rs"
 
 [dependencies]
+byteorder = "1.*"
 tokio = "0.1"
 tokio-codec="0.1"
 log="0.4"

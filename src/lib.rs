@@ -1,6 +1,7 @@
 #![deny(warnings)]
 #![feature(test)]
 
+extern crate byteorder;
 extern crate test;
 extern crate tokio;
 #[macro_use(try_ready)]
@@ -26,6 +27,7 @@ mod cluster;
 mod com;
 mod crc;
 mod mc;
+mod mcbin;
 mod notify;
 mod proxy;
 mod redis;
