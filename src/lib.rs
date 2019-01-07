@@ -1,7 +1,4 @@
 #![deny(warnings)]
-
-extern crate byteorder;
-extern crate tokio;
 #[macro_use(try_ready)]
 extern crate futures;
 #[macro_use]
