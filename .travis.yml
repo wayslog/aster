@@ -1,3 +1,5 @@
+sudo: required
+
 language: rust
 
 rust:
@@ -20,7 +22,12 @@ matrix:
   #   - rust: stable
   fast_finish: true
 
-cache: cargo
+cache:
+  - cargo
+  - apt: true
+  - directories:
+      - target/debug/deps
+      - target/debug/build
 
 script:
   - cargo test --verbose --all
