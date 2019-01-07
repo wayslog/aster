@@ -61,11 +61,10 @@ where
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
         if let Ok(Async::Ready(_)) = self.close.poll() {
             info!("exsits by notify");
-            try_ready!(
-                self.sink
-                    .close()
-                    .map_err(|_err| error!("fail to close handle tx"))
-            );
+            try_ready!(self
+                .sink
+                .close()
+                .map_err(|_err| error!("fail to close handle tx")));
             return Ok(Async::Ready(()));
         }
 
@@ -92,11 +91,10 @@ where
                     self.buffered = Some(item);
                 }
                 Async::Ready(None) => {
-                    try_ready!(
-                        self.sink
-                            .close()
-                            .map_err(|_err| error!("fail to close handle tx"))
-                    );
+                    try_ready!(self
+                        .sink
+                        .close()
+                        .map_err(|_err| error!("fail to close handle tx")));
                     return Ok(Async::Ready(()));
                 }
                 Async::NotReady => {

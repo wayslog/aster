@@ -1,5 +1,4 @@
 #![deny(warnings)]
-
 #[macro_use(try_ready)]
 extern crate futures;
 #[macro_use]
@@ -13,6 +12,7 @@ mod cluster;
 mod com;
 mod crc;
 mod mc;
+mod mcbin;
 mod notify;
 pub mod proxy;
 pub mod redis;
@@ -82,8 +82,9 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
                     let p = proxy::Proxy::new(cc).unwrap();
                     proxy::start_proxy::<redis::cmd::Cmd>(p);
                 }
-                _ => {
-                    warn!("cache type is not supported");
+                CacheType::MemcacheBinary => {
+                    let p = proxy::Proxy::new(cc).unwrap();
+                    proxy::start_proxy::<mcbin::Req>(p);
                 }
             })
             .unwrap()
