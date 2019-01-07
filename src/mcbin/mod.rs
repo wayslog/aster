@@ -59,7 +59,7 @@ impl Decoder for McBinCodec {
         if src.len() < 24 {
             return Err(Error::MoreData);
         }
-        let mut header = vec![];
+        let mut header = [0; 24];
         header.copy_from_slice(&src[..24]);
         let mut req = match parse_header(&header, true) {
             Ok(req) => req,
@@ -75,7 +75,23 @@ impl Decoder for McBinCodec {
             }
             _ => println!("todo"),
         }
+
         Ok(Some(req))
+    }
+}
+fn parse(src: &mut BytesMut, req: bool) -> Result<Option<MCBinReq>, Error> {
+    if src.len() < 24 {
+        return Err(Error::MoreData);
+    }
+    let mut header = [0; 24];
+    header.copy_from_slice(&src[..24]);
+    let mut req = match parse_header(&header, req) {
+        Ok(req) => req,
+        Err(err) => return Err(err),
+    };
+    match parse_body(&mut req, src) {
+        Ok(()) => Ok(Some(req)),
+        Err(err) => Err(err),
     }
 }
 impl Encoder for McBinCodec {
@@ -104,9 +120,22 @@ pub struct MCBinReq {
     notify: Notify,
     reply: Option<BytesMut>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Req {
     req: Rc<RefCell<MCBinReq>>,
+}
+impl Drop for Req {
+    fn drop(&mut self) {
+        self.req.borrow().notify.notify();
+    }
+}
+impl Clone for Req {
+    fn clone(&self) -> Req {
+        self.req.borrow().notify.add(1);
+        Req {
+            req: self.req.clone(),
+        }
+    }
 }
 impl Request for Req {
     type Reply = BytesMut;
@@ -122,7 +151,7 @@ impl Request for Req {
         new_ping_request()
     }
     fn reregister(&self, task: Task) {
-        self.req.borrow_mut().notify.reregister(task);
+        self.req.borrow_mut().notify.reregister(task.clone());
     }
     fn key(&self) -> Vec<u8> {
         let req = self.req.borrow();
@@ -254,26 +283,25 @@ impl Encoder for HandleCodec {
     type Error = Error;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let req = item.req.borrow();
-        let buf = req.reply.as_ref().expect("encode neverbe nul");
+        let buf = req.reply.as_ref().expect("reply never be null");
         dst.extend(buf);
         Ok(())
     }
 }
 
-pub struct NodeCodec {
-    mc: McBinCodec,
-}
+pub struct NodeCodec {}
 impl Default for NodeCodec {
     fn default() -> Self {
-        NodeCodec { mc: McBinCodec {} }
+        NodeCodec {}
     }
 }
 impl Decoder for NodeCodec {
     type Item = BytesMut;
     type Error = Error;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match self.mc.decode(src) {
-            Ok(Some(resp)) => Ok(resp.reply),
+        match parse(src, false) {
+            Ok(Some(resp)) => Ok(Some(resp.data)),
+            Err(Error::MoreData) => Ok(None),
             Err(err) => Err(err),
             Ok(None) => Ok(None),
         }
