@@ -24,7 +24,7 @@ cache: cargo
 
 script:
   - cargo test --verbose --all
-  - cargo bench --verbose --all
+  # - cargo bench --verbose --all
 
 after_success: |
     [ $TRAVIS_RUST_VERSION = stable ] &&
