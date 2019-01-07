@@ -27,58 +27,44 @@ enum ReqType {
     Delete = 0x04,
     Incr = 0x05,
     Decr = 0x06,
+    Quit = 0x07,
     GetQ = 0x09,
     Noop = 0x0a,
+    Version = 0x0b,
     GetK = 0x0c,
     GetKQ = 0x0d,
     Append = 0x0e,
     Prepend = 0x0f,
+    Stat = 0x10,
+    SetQ = 0x11,
+    AddQ = 0x12,
+    ReplaceQ = 0x13,
+    DeleteQ = 0x14,
+    IncrementQ = 0x15,
+    DecrementQ = 0x16,
+    QuitQ = 0x17,
+    FlushQ = 0x18,
+    AppendQ = 0x19,
+    PrependQ = 0x1a,
+    Verbosity = 0x1b,
+    Touch = 0x1c,
+    GAT = 0x1d,
+    GATQ = 0x1e,
+    RGet = 0x30,
+    RSet = 0x31,
+    RSetQ = 0x32,
+    RAppend = 0x33,
+    RAppendQ = 0x34,
+    RPrepend = 0x35,
+    RPrependQ = 0x36,
+    RDelete = 0x37,
+    RDeleteQ = 0x38,
+    RIncr = 0x39,
+    RIncrQ = 0x3a,
+    RDecr = 0x3b,
+    RDecrQ = 0x3c,
 }
 
-// enum RespStatus {
-//     NoErr = 0x0000,
-//     KeyNotFound = 0x0001,
-//     KeyExists = 0x0002,
-//     ValueTooLarge = 0x0003,
-//     InvalidArg = 0x0004,
-//     ItemNotStored = 0x0005,
-//     NonNumeric = 0x0006,
-//     UnknownCmd = 0x0081,
-//     OutOfMem = 0x0082,
-//     NotSupported = 0x0083,
-//     InternalErr = 0x0084,
-//     Busy = 0x0085,
-//     Temporary = 0x0086,
-// }
-pub struct McBinCodec {}
-impl Decoder for McBinCodec {
-    type Item = MCBinReq;
-    type Error = Error;
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        use self::ReqType::*;
-        if src.len() < 24 {
-            return Err(Error::MoreData);
-        }
-        let mut header = [0; 24];
-        header.copy_from_slice(&src[..24]);
-        let mut req = match parse_header(&header, true) {
-            Ok(req) => req,
-            Err(err) => return Err(err),
-        };
-        match req.req_type {
-            Get | Set | Add | Replace | Delete | Incr | Decr | Noop | GetK | Append | Prepend => {
-                let r = match parse_body(&mut req, src) {
-                    Ok(()) => Ok(Some(req)),
-                    Err(err) => Err(err),
-                };
-                return r;
-            }
-            _ => println!("todo"),
-        }
-
-        Ok(Some(req))
-    }
-}
 fn parse(src: &mut BytesMut, req: bool) -> Result<Option<MCBinReq>, Error> {
     if src.len() < 24 {
         return Err(Error::MoreData);
@@ -94,15 +80,7 @@ fn parse(src: &mut BytesMut, req: bool) -> Result<Option<MCBinReq>, Error> {
         Err(err) => Err(err),
     }
 }
-impl Encoder for McBinCodec {
-    type Item = MCBinReq;
-    type Error = Error;
-    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let buf = item.reply.as_ref().expect("encode neverbe nul");
-        dst.extend(&*buf);
-        Ok(())
-    }
-}
+
 #[derive(Clone, Debug)]
 pub struct MCBinReq {
     magic: Magic,
@@ -221,12 +199,42 @@ fn parse_header(src: &[u8], decode: bool) -> Result<MCBinReq, Error> {
             0x04 => Delete,
             0x05 => Incr,
             0x06 => Decr,
+            0x07 => Quit,
             0x09 => GetQ,
             0x0a => Noop,
+            0x0b => Version,
             0x0c => GetK,
             0x0d => GetKQ,
             0x0e => Append,
             0x0f => Prepend,
+            0x10 => Stat,
+            0x11 => SetQ,
+            0x12 => AddQ,
+            0x13 => ReplaceQ,
+            0x14 => DeleteQ,
+            0x15 => IncrementQ,
+            0x16 => DecrementQ,
+            0x17 => QuitQ,
+            0x18 => FlushQ,
+            0x19 => AppendQ,
+            0x1a => PrependQ,
+            0x1b => Verbosity,
+            0x1c => Touch,
+            0x1d => GAT,
+            0x1e => GATQ,
+            0x30 => RGet,
+            0x31 => RSet,
+            0x32 => RSetQ,
+            0x33 => RAppend,
+            0x34 => RAppendQ,
+            0x35 => RPrepend,
+            0x36 => RPrependQ,
+            0x37 => RDelete,
+            0x38 => RDeleteQ,
+            0x39 => RIncr,
+            0x3a => RIncrQ,
+            0x3b => RDecr,
+            0x3c => RDecrQ,
             _ => return Err(Error::BadCmd),
         }
     }
@@ -256,19 +264,17 @@ fn parse_body(req: &mut MCBinReq, src: &mut BytesMut) -> Result<(), Error> {
     Ok(())
 }
 
-pub struct HandleCodec {
-    mc: McBinCodec,
-}
+pub struct HandleCodec {}
 impl Default for HandleCodec {
     fn default() -> Self {
-        HandleCodec { mc: McBinCodec {} }
+        HandleCodec {}
     }
 }
 impl Decoder for HandleCodec {
     type Item = Req;
     type Error = Error;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match self.mc.decode(src) {
+        match parse(src, true) {
             Ok(Some(req)) => Ok(Some(Req {
                 req: Rc::new(RefCell::new(req)),
             })),
@@ -318,8 +324,9 @@ impl Encoder for NodeCodec {
 }
 
 fn new_ping_request() -> Req {
-    //todo mock ping req.
+    let mut req = MCBinReq::default();
+    req.req_type = ReqType::Noop;
     Req {
-        req: Rc::new(RefCell::new(MCBinReq::default())),
+        req: Rc::new(RefCell::new(req)),
     }
 }
