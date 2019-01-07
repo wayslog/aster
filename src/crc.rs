@@ -30,7 +30,7 @@ const CRC16TAB: [u16; 256] = [
 pub fn crc16(data: &[u8]) -> u16 {
     let mut crc = 0u16;
     for c in data {
-        crc = (crc << 8) ^ CRC16TAB[(0x00ff & (((crc >> 8) as u8) ^ c)) as usize];
+        crc = (crc << 8) ^ CRC16TAB[0x00ff & (((crc >> 8) as u8) ^ c) as usize];
     }
     crc
 }

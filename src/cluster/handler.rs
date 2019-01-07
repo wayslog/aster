@@ -1,7 +1,7 @@
-use cluster::Cluster;
-use com::*;
-use redis::cmd::{Cmd, CmdType, RESP_OBJ_ERROR_NOT_SUPPORT, RESP_OBJ_STRING_PONG};
-use redis::resp::Resp;
+use crate::cluster::Cluster;
+use crate::com::*;
+use crate::redis::cmd::{Cmd, CmdType, RESP_OBJ_ERROR_NOT_SUPPORT, RESP_OBJ_STRING_PONG};
+use crate::redis::resp::Resp;
 
 use futures::task;
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};

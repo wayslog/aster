@@ -1,6 +1,6 @@
-use com::*;
-use redis::cmd::{new_asking_cmd, Cmd};
-use redis::resp::{Resp, RESP_ERROR};
+use crate::com::*;
+use crate::redis::cmd::{new_asking_cmd, Cmd};
+use crate::redis::resp::{Resp, RESP_ERROR};
 
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
 

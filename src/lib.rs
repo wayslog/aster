@@ -1,27 +1,15 @@
 #![deny(warnings)]
-#![feature(test)]
 
 extern crate byteorder;
-extern crate test;
 extern crate tokio;
 #[macro_use(try_ready)]
 extern crate futures;
-extern crate env_logger;
 #[macro_use]
 extern crate log;
-extern crate bytes;
 #[macro_use]
 extern crate lazy_static;
-extern crate btoi;
-extern crate itoa;
-extern crate net2;
-extern crate num_cpus;
-extern crate tokio_codec;
 #[macro_use]
 extern crate serde_derive;
-extern crate hashbrown;
-extern crate md5;
-extern crate toml;
 
 mod cluster;
 mod com;
@@ -29,11 +17,11 @@ mod crc;
 mod mc;
 mod mcbin;
 mod notify;
-mod proxy;
-mod redis;
+pub mod proxy;
+pub mod redis;
 
-use cluster::{start_cluster, Cluster};
-pub use com::*;
+use crate::cluster::{start_cluster, Cluster};
+pub use crate::com::*;
 // use futures::task::current;
 use std::thread;
 
@@ -76,7 +64,7 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
         num_cpus::get()
     };
     info!(
-        "asswecan start {} listen at {} with {} thread",
+        "aster start {} listen at {} with {} thread",
         &cc.name, &cc.listen_addr, count
     );
     (0..count)

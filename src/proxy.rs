@@ -1,8 +1,8 @@
 //! proxy is the mod which contains genneral proxy
 
-mod fnv;
+pub mod fnv;
 mod handler;
-mod ketama;
+pub mod ketama;
 mod node;
 mod ping;
 
@@ -12,8 +12,8 @@ use self::ketama::HashRing;
 use self::node::spawn_node;
 use self::ping::Ping;
 
-use com::*;
-use ClusterConfig;
+use crate::com::*;
+use crate::ClusterConfig;
 
 use futures::lazy;
 use futures::task::Task;

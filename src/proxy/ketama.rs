@@ -1,6 +1,8 @@
-use com::*;
+use crate::com::*;
+
 use log::Level;
 use md5;
+
 use std::cmp::Ordering;
 use std::hash::Hasher;
 use std::marker::PhantomData;
@@ -129,46 +131,8 @@ impl<T: Hasher + Default> HashRing<T> {
 
 #[cfg(test)]
 mod test_ketama {
-    use self::super::*;
-    use proxy::fnv::Fnv1a64;
-    use test::Bencher;
-
-    #[bench]
-    fn ketma_dist_get_node(b: &mut Bencher) {
-        let ring = HashRing::<Fnv1a64>::new(
-            vec![
-                "redis-1".to_owned(),
-                "redis-2".to_owned(),
-                "redis-3".to_owned(),
-            ],
-            vec![10, 10, 10],
-        )
-        .expect("create new hash ring success");
-        let keys = vec![b"a".to_vec(), b"b".to_vec(), b"val-a".to_vec()];
-
-        b.iter(|| {
-            for key in &*keys {
-                let _ = ring.get_node(key);
-            }
-        });
-    }
-
-    #[bench]
-    fn ketma_dist_add_node(b: &mut Bencher) {
-        let mut ring = HashRing::<Fnv1a64>::new(
-            vec![
-                "redis-1".to_owned(),
-                "redis-2".to_owned(),
-                "redis-3".to_owned(),
-            ],
-            vec![10, 10, 10],
-        )
-        .expect("create new hash ring success");
-
-        b.iter(|| {
-            ring.add_node("redis-4".to_owned(), 10);
-        });
-    }
+    use crate::proxy::fnv::Fnv1a64;
+    use crate::proxy::*;
 
     #[test]
     fn ketama_dist() {

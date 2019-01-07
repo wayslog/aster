@@ -10,6 +10,7 @@ license = "MIT"
 readme = "README.md"
 categories = ["asynchronous", "network-programming", "caching", "database"]
 keywords = [ "cache", "redis", "memcache", "twemproxy"]
+edition="2018"
 
 [lib]
 name="libaster"
@@ -18,6 +19,13 @@ path="src/lib.rs"
 [[bin]]
 name="aster"
 path="bin/main.rs"
+
+[[bench]]
+name="aster_bench"
+harness = false
+
+[dev-dependencies]
+criterion = "0.2"
 
 [dependencies]
 byteorder = "1.*"

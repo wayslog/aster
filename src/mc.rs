@@ -1,6 +1,6 @@
-use com::*;
-use notify::Notify;
-use proxy::Request;
+use crate::com::*;
+use crate::notify::Notify;
+use crate::proxy::Request;
 
 use btoi;
 // use bytes::{BufMut, BytesMut};
@@ -564,7 +564,7 @@ impl Default for NodeCodec {
 fn new_ping_request() -> Req {
     let mcreq = MCReq {
         rtype: ReqType::Set,
-        data: BytesMut::from(b"set ass-we-can-ping-value 0 0 1\r\n1\r\n".to_vec()),
+        data: BytesMut::from(b"set aster-ping-value 0 0 1\r\n1\r\n".to_vec()),
         key: Range::new(4, 4 + 21),
         is_done: false,
         notify: Notify::empty(),

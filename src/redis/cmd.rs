@@ -1,12 +1,12 @@
 // use bytes::BufMut;
-use btoi;
-use com::*;
-use crc::crc16 as crc;
-use notify::Notify;
-use proxy::Request;
-use redis::resp::{Resp, RespCodec};
-use redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
+use crate::com::*;
+use crate::crc::crc16 as crc;
+use crate::notify::Notify;
+use crate::proxy::Request;
+use crate::redis::resp::{Resp, RespCodec};
+use crate::redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
 
+use btoi;
 use bytes::{BufMut, BytesMut};
 use futures::task::Task;
 use hashbrown::HashMap;
@@ -652,7 +652,7 @@ impl CmdCodec {
     fn merge_encode_count(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
         let mut sum = 0;
         for subcmd in subs {
-            let mut reply = &mut subcmd.cmd.borrow_mut().reply;
+            let reply = &mut subcmd.cmd.borrow_mut().reply;
             let subresp = reply.as_mut().expect("subreply must be some resp but None");
             if subresp.rtype == RESP_ERROR {
                 // should swallow the error and convert as 0 count of key.
@@ -762,7 +762,7 @@ impl HandleCodec {
     fn merge_encode_count(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
         let mut sum = 0;
         for subcmd in subs {
-            let mut reply = &mut subcmd.cmd.borrow_mut().reply;
+            let reply = &mut subcmd.cmd.borrow_mut().reply;
             let subresp = reply.as_mut().expect("subreply must be some resp but None");
             if subresp.rtype == RESP_ERROR {
                 // should swallow the error and convert as 0 count of key.

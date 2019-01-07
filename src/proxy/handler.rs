@@ -1,5 +1,5 @@
-use com::*;
-use proxy::{Proxy, Request};
+use crate::com::*;
+use crate::proxy::{Proxy, Request};
 
 use futures::task;
 use futures::unsync::oneshot::{Receiver, Sender};

@@ -1,9 +1,10 @@
+use crate::com::*;
+use crate::notify::Notify;
+use crate::proxy::Request;
+
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::BytesMut;
-use com::*;
 use futures::task::Task;
-use notify::Notify;
-use proxy::Request;
 use std::cell::RefCell;
 use std::io::Cursor;
 use std::rc::Rc;

@@ -1,5 +1,5 @@
 // use com::*;
-use proxy::*;
+use crate::proxy::*;
 
 use futures::{task, Async, AsyncSink, Future};
 use std::time::Duration;

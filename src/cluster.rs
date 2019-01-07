@@ -4,16 +4,16 @@ mod init;
 mod node;
 mod slots;
 
-use self::super::ClusterConfig;
+use crate::com::*;
+use crate::redis::cmd::{Cmd, CmdCodec};
+use crate::redis::resp::RespCodec;
+use crate::ClusterConfig;
+use crate::cluster::fetcher::Fetcher;
+use crate::cluster::handler::Handle;
+
+use self::init::ClusterInitilizer;
 use self::node::{NodeDown, NodeRecv};
 use self::slots::SlotsMap;
-use com::*;
-use redis::cmd::{Cmd, CmdCodec};
-use redis::resp::RespCodec;
-
-use self::fetcher::Fetcher;
-use self::handler::Handle;
-use self::init::ClusterInitilizer;
 
 use futures::lazy;
 use futures::unsync::mpsc::{channel, Receiver, Sender};
@@ -123,8 +123,8 @@ impl Cluster {
             .as_ref()
             .cloned()
             .expect("redirect channel is never be empty");
-        let rt = self.cc.read_timeout.clone();
-        let wt = self.cc.write_timeout.clone();
+        let rt = self.cc.read_timeout;
+        let wt = self.cc.write_timeout;
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
             .and_then(move |_| {
                 addr_string
