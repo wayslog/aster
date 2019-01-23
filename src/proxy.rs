@@ -7,7 +7,7 @@ mod node;
 mod ping;
 
 use self::fnv::Fnv1a64;
-use self::handler::{Handle, HandleInput};
+use self::handler::Handle;
 use self::ketama::HashRing;
 use self::node::spawn_node;
 use self::ping::Ping;
@@ -18,9 +18,8 @@ use crate::ClusterConfig;
 use futures::lazy;
 use futures::task::Task;
 use futures::unsync::mpsc::{channel, Sender};
-use futures::unsync::oneshot;
 use futures::{AsyncSink, Future, Sink, Stream};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::current_thread;
 use tokio_codec::{Decoder, Encoder};
 
@@ -30,6 +29,62 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::net::SocketAddr;
 use std::rc::Rc;
+
+fn spawn_ping<T: Request + 'static>(proxy: Rc<Proxy<T>>) -> Result<(), ()> {
+    if let Some(limit) = proxy.cc.ping_fail_limit {
+        info!("setup ping for cluster {}", proxy.cc.name);
+        // default ping interval 500
+        let interval = proxy.cc.ping_interval.map(|x| x as u64).unwrap_or(500u64);
+
+        let addrs = proxy.spots.keys().cloned();
+        for addr in addrs {
+            let ping = Ping::new(proxy.clone(), addr, limit, interval);
+            current_thread::spawn(ping);
+        }
+    } else {
+        debug!("skip proxy ping feature for cluster {}", proxy.cc.name);
+    }
+    Ok(())
+}
+
+fn start_listen<T: Request + 'static>(p: (Rc<Proxy<T>>, TcpListener)) -> Result<Rc<Proxy<T>>, ()> {
+    let (proxy, listen) = p;
+    let rc_proxy = proxy.clone();
+    let amt = listen
+        .incoming()
+        .for_each(move |sock| {
+            accept_conn(rc_proxy.clone(), sock);
+            Ok(())
+        })
+        .map_err(|err| {
+            error!("fail to start_cluster due {:?}", err);
+        });
+    current_thread::spawn(amt);
+    Ok(proxy.clone())
+}
+
+fn accept_conn<T: Request + 'static>(proxy: Rc<Proxy<T>>, sock: TcpStream) {
+    let sock = set_read_write_timeout(sock, proxy.cc.read_timeout, proxy.cc.write_timeout)
+        .expect("set read/write timeout in proxy frontend must be ok");
+
+    sock.set_nodelay(true).expect("set nodelay must ok");
+    let codec = T::handle_codec();
+    let (req_tx, req_rx) = codec.framed(sock).split();
+
+    let proxy = proxy.clone();
+    let handle = Handle::new(
+        proxy,
+        req_rx.map_err(|_err| {
+            error!("fail to recv from upstream handle rx");
+            Error::Critical
+        }),
+        req_tx,
+    )
+    .map_err(|err| {
+        error!("get handle error due {:?}", err);
+    });
+    current_thread::spawn(handle);
+}
 
 pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
     let addr = proxy
@@ -50,64 +105,8 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
             })?;
             Ok((proxy, listen))
         })
-        .and_then(|(proxy, listen)| {
-            let rc_proxy = proxy.clone();
-            let amt = listen
-                .incoming()
-                .for_each(move |sock| {
-                    let sock = set_read_write_timeout(
-                        sock,
-                        rc_proxy.cc.read_timeout,
-                        rc_proxy.cc.write_timeout,
-                    )
-                    .expect("set read/write timeout in proxy frontend must be ok");
-
-                    sock.set_nodelay(true).expect("set nodelay must ok");
-                    let codec = T::handle_codec();
-                    let (req_tx, req_rx) = codec.framed(sock).split();
-                    let (handle_tx, handle_rx) = channel(2048);
-                    let (close_tx, close_rx) = oneshot::channel();
-                    let input = HandleInput::new(req_rx, handle_tx, close_rx);
-                    current_thread::spawn(input);
-
-                    let proxy = rc_proxy.clone();
-                    let handle = Handle::new(
-                        proxy,
-                        handle_rx.map_err(|_err| {
-                            error!("fail to recv from upstream handle rx");
-                            Error::Critical
-                        }),
-                        req_tx,
-                        close_tx,
-                    )
-                    .map_err(|err| {
-                        error!("get handle error due {:?}", err);
-                    });
-                    current_thread::spawn(handle);
-                    Ok(())
-                })
-                .map_err(|err| {
-                    error!("fail to start_cluster due {:?}", err);
-                });
-            current_thread::spawn(amt);
-            Ok(proxy.clone())
-        })
-        .and_then(|proxy| {
-            if let Some(limit) = proxy.cc.ping_fail_limit {
-                info!("setup ping for cluster {}", proxy.cc.name);
-                // default ping interval 500
-                let interval = proxy.cc.ping_interval.map(|x| x as u64).unwrap_or(500u64);
-
-                let addrs = proxy.spots.keys().cloned();
-                for addr in addrs {
-                    let ping = Ping::new(proxy.clone(), addr, limit, interval);
-                    current_thread::spawn(ping);
-                }
-            } else {
-                debug!("skip proxy ping feature for cluster {}", proxy.cc.name);
-            }
-            Ok(())
-        });
+        .and_then(start_listen)
+        .and_then(spawn_ping);
 
     current_thread::block_on_all(fut).unwrap();
 }

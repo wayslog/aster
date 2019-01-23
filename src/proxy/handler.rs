@@ -2,117 +2,12 @@ use crate::com::*;
 use crate::proxy::{Proxy, Request};
 
 use futures::task;
-use futures::unsync::oneshot::{Receiver, Sender};
-use futures::{Async, AsyncSink, Future, Poll, Sink, Stream};
+use futures::{Async, AsyncSink, Future, Sink, Stream};
 
 use std::collections::VecDeque;
-use std::fmt::Debug;
 use std::rc::Rc;
 
 const MAX_CONCURRENCY: usize = 1024;
-
-pub struct HandleInput<T, U, D>
-where
-    T: Stream<Error = D>,
-    U: Sink<SinkItem = T::Item>,
-    D: Debug,
-{
-    sink: U,
-    stream: T,
-    buffered: Option<T::Item>,
-    count: usize,
-    close: Receiver<()>,
-}
-
-impl<T, U, D> HandleInput<T, U, D>
-where
-    T: Stream<Error = D>,
-    U: Sink<SinkItem = T::Item>,
-    D: Debug,
-{
-    pub fn new(stream: T, sink: U, close: Receiver<()>) -> HandleInput<T, U, D> {
-        Self {
-            close,
-            sink,
-            stream,
-            buffered: None,
-            count: 0,
-        }
-    }
-    fn try_start_send(&mut self, item: T::Item) -> Poll<(), U::SinkError> {
-        debug_assert!(self.buffered.is_none());
-        if let AsyncSink::NotReady(item) = self.sink.start_send(item)? {
-            self.buffered = Some(item);
-            return Ok(Async::NotReady);
-        }
-        Ok(Async::Ready(()))
-    }
-}
-
-impl<T, U, D> Future for HandleInput<T, U, D>
-where
-    T: Stream<Error = D>,
-    U: Sink<SinkItem = T::Item>,
-    D: Debug,
-{
-    type Item = ();
-    type Error = ();
-
-    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        if let Ok(Async::Ready(_)) = self.close.poll() {
-            info!("exsits by notify");
-            try_ready!(self
-                .sink
-                .close()
-                .map_err(|_err| error!("fail to close handle tx")));
-            return Ok(Async::Ready(()));
-        }
-
-        loop {
-            if let Some(item) = self.buffered.take() {
-                match self
-                    .try_start_send(item)
-                    .map_err(|_err| error!("fail to send to back end"))?
-                {
-                    Async::NotReady => break,
-                    Async::Ready(_) => {
-                        self.count += 1;
-                        continue;
-                    }
-                }
-            }
-
-            match self
-                .stream
-                .poll()
-                .map_err(|err| error!("fail to poll from upstream {:?}", err))?
-            {
-                Async::Ready(Some(item)) => {
-                    self.buffered = Some(item);
-                }
-                Async::Ready(None) => {
-                    try_ready!(self
-                        .sink
-                        .close()
-                        .map_err(|_err| error!("fail to close handle tx")));
-                    return Ok(Async::Ready(()));
-                }
-                Async::NotReady => {
-                    break;
-                }
-            }
-        }
-
-        if self.count > 0 {
-            try_ready!(self.sink.poll_complete().map_err(|_err| {
-                error!("fail to poll_complete to back end");
-            }));
-            self.count = 0;
-        }
-        Ok(Async::NotReady)
-    }
-}
-
 pub struct Handle<T, I, O, D>
 where
     I: Stream<Item = D, Error = Error>,
@@ -121,7 +16,6 @@ where
     D: Into<T>,
 {
     closed: bool,
-    close: Option<Sender<()>>,
     proxy: Rc<Proxy<T>>,
     input: I,
     output: O,
@@ -138,10 +32,9 @@ where
     T: Request + 'static,
     D: Into<T>,
 {
-    pub fn new(proxy: Rc<Proxy<T>>, input: I, output: O, close: Sender<()>) -> Handle<T, I, O, D> {
+    pub fn new(proxy: Rc<Proxy<T>>, input: I, output: O) -> Handle<T, I, O, D> {
         Handle {
             closed: false,
-            close: Some(close),
             proxy,
             input,
             output,
@@ -302,14 +195,13 @@ where
             if can_write {
                 if self.closed && self.cmds.is_empty() {
                     match self.output.close() {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            return Ok(Async::Ready(()));
+                        }
                         Err(err) => {
                             error!("close fail due to {:?}", err);
                         }
                     }
-                    let close = self.close.take().expect("send back is never be empty");
-                    close.send(()).expect("close channel is never be canceled");
-                    return Ok(Async::Ready(()));
                 }
 
                 // step 4: poll send back to client.
