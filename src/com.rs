@@ -115,7 +115,7 @@ pub fn set_read_write_timeout(
     let mut nsock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
     nsock.set_read_timeout(nrt)?;
     nsock.set_write_timeout(nwt)?;
-    let hd = tokio::reactor::Handle::current();
+    let hd = tokio::reactor::Handle::default();
     let stream = TcpStream::from_std(nsock, &hd)?;
     return Ok(stream);
 }
@@ -144,6 +144,6 @@ pub fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std:
         .expect("os not support SO_REUSEPORT")
         .bind(addr)?
         .listen(std::i32::MAX)?;
-    let hd = tokio::reactor::Handle::current();
+    let hd = tokio::reactor::Handle::default();
     TcpListener::from_std(std_listener, &hd)
 }

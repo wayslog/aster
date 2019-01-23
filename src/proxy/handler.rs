@@ -128,6 +128,7 @@ where
     cmds: VecDeque<T>,
     count: usize,
     waitq: VecDeque<T>,
+    ltask: Option<task::Task>,
 }
 
 impl<T, I, O, D> Handle<T, I, O, D>
@@ -147,6 +148,7 @@ where
             cmds: VecDeque::new(),
             waitq: VecDeque::new(),
             count: 0,
+            ltask: None,
         }
     }
 
@@ -210,7 +212,7 @@ where
             match try_ready!(self.input.poll()) {
                 Some(val) => {
                     let req: T = Into::into(val);
-                    req.reregister(task::current());
+                    req.reregister(self.ltask.as_ref().cloned().unwrap());
                     self.cmds.push_back(req.clone());
                     if !req.valid() {
                         continue;
@@ -246,6 +248,10 @@ where
         let mut can_read = true;
         let mut can_send = true;
         let mut can_write = true;
+
+        if self.ltask.is_none() {
+            self.ltask = Some(task::current());
+        }
 
         if self.closed {
             info!("closed but not ready");

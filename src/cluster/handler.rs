@@ -7,8 +7,7 @@ use futures::task;
 use tokio::prelude::{Async, AsyncSink, Future, Sink, Stream};
 
 const MAX_CONCURRENCY: usize = 1024 * 8;
-// use aho_corasick::{AcAutomaton, Automaton, Match};
-// use std::cell::RefCell;
+
 use std::collections::VecDeque;
 use std::rc::Rc;
 
@@ -24,6 +23,7 @@ where
     cmds: VecDeque<Cmd>,
     count: usize,
     waitq: VecDeque<Cmd>,
+    ltask: Option<task::Task>,
 }
 
 impl<I, O> Handle<I, O>
@@ -39,6 +39,7 @@ where
             cmds: VecDeque::new(),
             count: 0,
             waitq: VecDeque::new(),
+            ltask: None,
         }
     }
 
@@ -61,9 +62,9 @@ where
             match try_ready!(self.input.poll()) {
                 Some(val) => {
                     let rc_cmd = Cmd::from(val);
-                    let local_task = task::current();
-                    rc_cmd.cmd_reregister(local_task);
+                    rc_cmd.cmd_reregister(self.ltask.as_ref().cloned().unwrap());
                     let is_complex = rc_cmd.is_complex();
+
                     self.cmds.push_back(rc_cmd.clone());
                     if is_complex {
                         for sub in rc_cmd
@@ -148,6 +149,10 @@ where
     type Error = Error;
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        if self.ltask.is_none() {
+            self.ltask = Some(task::current());
+        }
+
         let mut can_read = true;
         let mut can_send = true;
         let mut can_write = true;
