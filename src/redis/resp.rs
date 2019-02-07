@@ -382,12 +382,10 @@ impl Decoder for RespCodec {
     type Error = Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let item = Resp::parse(&src)
-            .map(Some)
-            .or_else(|err| match err {
-                Error::MoreData => Ok(None),
-                ev => Err(ev),
-            })?;
+        let item = Resp::parse(&src).map(Some).or_else(|err| match err {
+            Error::MoreData => Ok(None),
+            ev => Err(ev),
+        })?;
         if let Some(resp) = item {
             let bsize = resp.binary_size();
             if bsize > src.len() {

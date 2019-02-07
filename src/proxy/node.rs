@@ -1,5 +1,5 @@
-use crate::proxy::Request;
 use crate::com::*;
+use crate::proxy::Request;
 
 use futures::unsync::oneshot::{channel, Receiver, Sender};
 use futures::{Async, AsyncSink, Future, Sink, Stream};
