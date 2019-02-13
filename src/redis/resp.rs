@@ -1,3 +1,4 @@
+use bitflags::bitflags;
 use btoi;
 use bytes::BufMut;
 use bytes::BytesMut;
@@ -372,6 +373,269 @@ impl Resp {
             array: _array,
         } = self;
         d
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RespObj {
+    pub rtype: RespType,
+    pub data: Option<BytesMut>,
+    pub array: Option<Vec<RespObj>>,
+}
+
+#[allow(unused)]
+impl RespObj {
+    fn empty(rtype: RespType) -> RespObj {
+        RespObj {
+            data: None,
+            array: None,
+            rtype,
+        }
+    }
+
+    fn get_mut(&mut self, cursor: usize) -> Option<&mut RespObj> {
+        if let Some(arr) = self.array.as_mut() {
+            return arr.get_mut(cursor);
+        }
+        None
+    }
+
+    fn set_data(&mut self, data: BytesMut) {
+        self.data.replace(data);
+    }
+
+    fn push(&mut self, resp: RespObj) {
+        if self.array.is_none() {
+            self.array = Some(Vec::new());
+        }
+        let vec = self.array.as_mut().expect("never be empty");
+        vec.push(resp);
+    }
+}
+
+bitflags! {
+    struct Flag: u32 {
+        const KIND          = 0b0000000000000001;
+
+        const PLAIN_BODY     = 0b0000000000000010;
+        // const PLAIN_CRLF     = 0b0000000000000100;
+
+        const BULK_SIZE      = 0b0000000000001000;
+        // CONST BULK_SIZE_CRLF  = 0b0000000000010000;
+        const BULK_BODY      = 0b0000000000100000;
+        // const BULK_BODY_CRLF  = 0b0000000001000000;
+
+        const ARRAY_SIZE     = 0b0000000010000100;
+        // const ARRAY_SIZE_CRLF = 0b0000000100000100;
+
+        // const IN_ARRAY       = 0b1000000000000000;
+    }
+}
+
+#[test]
+fn test_fsm_palin() {
+    let sdata = b"+baka for you\r\n";
+    let mut codec = RespFSMCodec::default();
+    let resp = codec
+        .parse(&mut BytesMut::from(&sdata[..]))
+        .unwrap()
+        .unwrap();
+    assert_eq!(RESP_STRING, resp.rtype);
+    assert_eq!(Some(BytesMut::from(&b"baka for you"[..])), resp.data);
+
+    // let edata = "-boy next door\r\n";
+    // let resp = Resp::parse(edata.as_bytes()).unwrap();
+    // assert_eq!(RESP_ERROR, resp.rtype);
+    // assert_eq!(Some(b"boy next door".to_vec()), resp.data);
+
+    // let idata = ":1024\r\n";
+    // let resp = Resp::parse(idata.as_bytes()).unwrap();
+    // assert_eq!(RESP_INT, resp.rtype);
+    // assert_eq!(Some(b"1024".to_vec()), resp.data);
+}
+
+#[allow(unused)]
+pub struct RespFSMCodec {
+    buf: BytesMut,
+
+    stack: Vec<RespObj>,
+    cstack: Vec<isize>,
+    count: isize,
+
+    current: Option<RespObj>,
+    size: isize,
+
+    flags: Flag,
+}
+
+impl Default for RespFSMCodec {
+    fn default() -> RespFSMCodec {
+        RespFSMCodec {
+            buf: BytesMut::new(),
+            stack: Vec::with_capacity(2),
+            cstack: Vec::new(),
+            count: 0,
+            size: 0,
+            current: None,
+            flags: Flag::KIND,
+        }
+    }
+}
+
+#[allow(unused)]
+impl RespFSMCodec {
+    pub fn parse(&mut self, src: &mut BytesMut) -> Result<Option<RespObj>, Error> {
+        loop {
+            if self.flags == Flag::KIND {
+                if src.is_empty() {
+                    return Ok(None);
+                }
+                let rtype = src[0];
+                src.advance(1);
+                match rtype {
+                    RESP_BULK => {
+                        self.current = Some(RespObj::empty(rtype));
+                        self.flags = Flag::BULK_SIZE;
+                    }
+                    RESP_INT | RESP_STRING | RESP_ERROR => {
+                        self.current = Some(RespObj::empty(rtype));
+                        self.flags = Flag::PLAIN_BODY;
+                    }
+                    RESP_ARRAY => {
+                        self.stack.push(RespObj::empty(rtype));
+                        self.cstack.push(self.count);
+                        self.count = 0;
+                    }
+                    _ => unreachable!(),
+                };
+            } else if self.flags == Flag::PLAIN_BODY {
+                if let Some(pos) = src.as_ref().iter().position(|&x| x == BYTE_LF) {
+                    self.buf
+                        .extend_from_slice(src.split_to(pos + 1 - 2).as_ref());
+                    src.advance(2);
+                } else {
+                    self.buf.extend_from_slice(src.take().as_ref());
+                    return Ok(None);
+                }
+
+                self.next_kind();
+                let ret = self.pop_array();
+                if ret.is_some() {
+                    return Ok(ret);
+                }
+            } else if self.flags == Flag::BULK_SIZE {
+                if let Some(pos) = src.as_ref().iter().position(|&x| x == BYTE_LF) {
+                    self.buf
+                        .extend_from_slice(src.split_to(pos + 1 - 2).as_ref());
+                    src.advance(2);
+                } else {
+                    self.buf.extend_from_slice(src.take().as_ref());
+                    return Ok(None);
+                }
+                self.flags = Flag::BULK_BODY;
+                let size = btoi::btoi::<isize>(self.buf.take().as_ref())?;
+                if size == -1 {
+                    self.flags = Flag::KIND;
+                    let ret = self.pop_array();
+                    if ret.is_some() {
+                        return Ok(ret);
+                    }
+                }
+                self.size = size;
+            } else if self.flags == Flag::BULK_BODY {
+                let left = self.size as usize - self.buf.len();
+                if src.len() >= left + 2 {
+                    self.buf.extend_from_slice(src.split_to(left).as_ref());
+                    src.advance(2);
+                } else {
+                    self.buf.extend_from_slice(src.take().as_ref());
+                    return Ok(None);
+                }
+                self.next_kind();
+                let ret = self.pop_array();
+                if ret.is_some() {
+                    return Ok(ret);
+                }
+            } else if self.flags == Flag::ARRAY_SIZE {
+                if let Some(pos) = src.as_ref().iter().position(|&x| x == BYTE_LF) {
+                    self.buf
+                        .extend_from_slice(src.split_to(pos + 1 - 2).as_ref());
+                    src.advance(2);
+                } else {
+                    self.buf.extend_from_slice(src.take().as_ref());
+                    return Ok(None);
+                }
+
+                let count = btoi::btoi::<isize>(self.buf.take().as_ref())?;
+                self.count = count;
+                if count == -1 {
+                    self.count -= 1;
+                    let poped = self.stack.pop();
+                    if self.stack.is_empty() {
+                        self.count = 0;
+                        return Ok(poped);
+                    }
+
+                    let top = self.stack.last_mut().expect("parse stack.last_mut");
+                    top.push(poped.expect("parse poped"));
+                    self.cstack_add(-1);
+                }
+            } else {
+                unreachable!();
+            }
+        }
+
+        // Ok(None)
+    }
+
+    fn next_kind(&mut self) {
+        self.flags = Flag::KIND;
+        let buf = self.buf.take();
+        let hd = self.current.as_mut().expect("parse current.as_mut");
+        hd.set_data(buf);
+    }
+
+    fn pop_array(&mut self) -> Option<RespObj> {
+        if self.count <= 0 {
+            return self.current.take();
+        }
+
+        let current_take = self.current.take().unwrap();
+        self.push_top(current_take);
+        if self.count == 1 {
+            // pop top and push it into next top level or return
+            let poped = self.stack.pop();
+            if self.stack.is_empty() {
+                return poped;
+            }
+            self.push_top(poped.unwrap());
+            self.count = self.cstack.pop().unwrap() - 1;
+        } else if self.count > 0 {
+            self.count -= 1;
+        }
+        None
+    }
+
+    fn push_top(&mut self, resp: RespObj) {
+        let top = self
+            .stack
+            .last_mut()
+            .expect("parse stack.last_mut plain_body");
+        top.push(resp);
+    }
+
+    fn cstack_add(&mut self, count: isize) {
+        let handle = self.cstack.last_mut().expect("cstack_add cstack.last_mut");
+        *handle += count;
+    }
+}
+
+impl Decoder for RespFSMCodec {
+    type Item = RespObj;
+    type Error = Error;
+
+    fn decode(&mut self, _src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        unimplemented!()
     }
 }
 

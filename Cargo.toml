@@ -45,6 +45,7 @@ net2="0.2"
 md5="0.6"
 hashbrown = "0.1"
 num_cpus = "1.8"
+bitflags = "1.0"
 
 [profile.release]
 debug = true
