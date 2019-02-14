@@ -651,6 +651,7 @@ impl RespFSMCodec {
         // Ok(None)
     }
 
+    #[inline]
     fn read_until_crlf(&mut self, src: &mut BytesMut) -> Option<()> {
         if let Some(pos) = src.as_ref().iter().position(|&x| x == BYTE_LF) {
             self.buf.extend_from_slice(src.split_to(pos + 1).as_ref());
