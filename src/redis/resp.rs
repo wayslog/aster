@@ -5,8 +5,8 @@ use bytes::BytesMut;
 use log::Level;
 use tokio_codec::{Decoder, Encoder};
 
-use std::rc::Rc;
 use std::collections::LinkedList;
+use std::rc::Rc;
 
 use crate::com::*;
 // pub const SLOTS_COUNT: usize = 16384;
@@ -432,7 +432,7 @@ fn test_fsm_palin_ok() {
         .unwrap()
         .unwrap();
     assert_eq!(RESP_ERROR, resp.rtype);
-    assert_eq!(Some(BytesMut::from(&sdata[1..sdata.len()-2])), resp.data);
+    assert_eq!(Some(BytesMut::from(&sdata[1..sdata.len() - 2])), resp.data);
 
     let sdata = b":-1024\r\n";
     let mut codec = RespFSMCodec::default();
@@ -441,9 +441,8 @@ fn test_fsm_palin_ok() {
         .unwrap()
         .unwrap();
     assert_eq!(RESP_INT, resp.rtype);
-    assert_eq!(Some(BytesMut::from(&sdata[1..sdata.len()-2])), resp.data);
+    assert_eq!(Some(BytesMut::from(&sdata[1..sdata.len() - 2])), resp.data);
 }
-
 
 #[test]
 fn test_fsm_bulk_ok() {
@@ -453,6 +452,19 @@ fn test_fsm_bulk_ok() {
         .parse(&mut BytesMut::from(&sdata[..]))
         .unwrap()
         .unwrap();
+    assert_eq!(RESP_BULK, resp.rtype);
+    assert_eq!(Some(BytesMut::from(&b"ojbK\n"[..])), resp.data);
+}
+
+#[test]
+fn test_fsm_ends_with_half_crlf() {
+    let sdata = "$5\r\nojbK\n\r";
+    let mut codec = RespFSMCodec::default();
+    let mut buf = BytesMut::from(&sdata[..]);
+
+    assert_eq!(codec.parse(&mut buf).unwrap(), None);
+    buf.put_u8(10u8); // write \n
+    let resp = codec.parse(&mut buf).unwrap().unwrap();
     assert_eq!(RESP_BULK, resp.rtype);
     assert_eq!(Some(BytesMut::from(&b"ojbK\n"[..])), resp.data);
 }
@@ -470,19 +482,21 @@ fn test_fsm_array_ok() {
     assert_eq!(RESP_ARRAY, resp.rtype);
     assert_eq!(Some(BytesMut::from(&b"2"[..])), resp.data);
     assert_eq!(2, resp.array.as_ref().unwrap().len());
-    assert_eq!(resp.array, Some(vec![
-        RespObj{
-            rtype: RESP_BULK,
-            data: Some(BytesMut::from(&b"a"[..])),
-            array: None,
-        },
-        RespObj {
-            rtype: RESP_BULK,
-            data: Some(BytesMut::from(&b"ojbK\n"[..])),
-            array: None,
-        }
-    ]));
-
+    assert_eq!(
+        resp.array,
+        Some(vec![
+            RespObj {
+                rtype: RESP_BULK,
+                data: Some(BytesMut::from(&b"a"[..])),
+                array: None,
+            },
+            RespObj {
+                rtype: RESP_BULK,
+                data: Some(BytesMut::from(&b"ojbK\n"[..])),
+                array: None,
+            }
+        ])
+    );
 }
 
 bitflags! {
@@ -550,13 +564,12 @@ impl RespFSMCodec {
                     _ => unreachable!(),
                 };
             } else if self.flags == Flag::PLAIN_BODY {
-                if let Some(pos) = src.as_ref().iter().position(|&x| x == BYTE_LF) {
-                    self.buf
-                        .extend_from_slice(src.split_to(pos + 1 - 2).as_ref());
-                    src.advance(2);
-                } else {
-                    self.buf.extend_from_slice(src.take().as_ref());
+                if let None = self.read_until_crlf(src) {
                     return Ok(None);
+                }
+                let len = self.buf.len();
+                unsafe {
+                    self.buf.set_len(len - 2);
                 }
 
                 self.next_kind();
@@ -565,14 +578,14 @@ impl RespFSMCodec {
                     return Ok(ret);
                 }
             } else if self.flags == Flag::BULK_SIZE {
-                if let Some(pos) = src.as_ref().iter().position(|&x| x == BYTE_LF) {
-                    self.buf
-                        .extend_from_slice(src.split_to(pos + 1 - 2).as_ref());
-                    src.advance(2);
-                } else {
-                    self.buf.extend_from_slice(src.take().as_ref());
+                if let None = self.read_until_crlf(src) {
                     return Ok(None);
                 }
+                let len = self.buf.len();
+                unsafe {
+                    self.buf.set_len(len - 2);
+                }
+
                 self.flags = Flag::BULK_BODY;
                 let size = btoi::btoi::<isize>(self.buf.take().as_ref())?;
                 if size == -1 {
@@ -582,30 +595,34 @@ impl RespFSMCodec {
                         return Ok(ret);
                     }
                 }
-                self.size = size;
+                self.size = size + 2;
             } else if self.flags == Flag::BULK_BODY {
                 let left = self.size as usize - self.buf.len();
-                if src.len() >= left + 2 {
+                if src.len() >= left {
                     self.buf.extend_from_slice(src.split_to(left).as_ref());
-                    src.advance(2);
                 } else {
                     self.buf.extend_from_slice(src.take().as_ref());
                     return Ok(None);
                 }
+                let len = self.buf.len();
+                unsafe {
+                    self.buf.set_len(len - 2);
+                }
+
                 self.next_kind();
                 let ret = self.pop_array();
                 if ret.is_some() {
                     return Ok(ret);
                 }
             } else if self.flags == Flag::ARRAY_SIZE {
-                if let Some(pos) = src.as_ref().iter().position(|&x| x == BYTE_LF) {
-                    self.buf
-                        .extend_from_slice(src.split_to(pos + 1 - 2).as_ref());
-                    src.advance(2);
-                } else {
-                    self.buf.extend_from_slice(src.take().as_ref());
+                if let None = self.read_until_crlf(src) {
                     return Ok(None);
                 }
+                let len = self.buf.len();
+                unsafe {
+                    self.buf.set_len(len - 2);
+                }
+
                 self.flags = Flag::KIND;
 
                 let count = btoi::btoi::<isize>(self.buf.as_ref())?;
@@ -632,6 +649,16 @@ impl RespFSMCodec {
         }
 
         // Ok(None)
+    }
+
+    fn read_until_crlf(&mut self, src: &mut BytesMut) -> Option<()> {
+        if let Some(pos) = src.as_ref().iter().position(|&x| x == BYTE_LF) {
+            self.buf.extend_from_slice(src.split_to(pos + 1).as_ref());
+            Some(())
+        } else {
+            self.buf.extend_from_slice(src.take().as_ref());
+            None
+        }
     }
 
     #[inline]
