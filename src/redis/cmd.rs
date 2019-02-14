@@ -664,9 +664,7 @@ impl CmdCodec {
             sum += count;
         }
 
-        if !dst.has_remaining_mut() {
-            dst.reserve(1);
-        }
+        dst.reserve(1);
         dst.put_u8(RESP_INT);
         let buf = format!("{}", sum);
         dst.extend_from_slice(buf.as_bytes());
@@ -680,9 +678,7 @@ impl CmdCodec {
     }
 
     fn merge_encode_join(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
-        if !dst.has_remaining_mut() {
-            dst.reserve(1);
-        }
+        dst.reserve(1);
         dst.put_u8(RESP_ARRAY);
 
         let count = subs.len();
@@ -773,9 +769,7 @@ impl HandleCodec {
             sum += count;
         }
 
-        if !dst.has_remaining_mut() {
-            dst.reserve(1);
-        }
+        dst.reserve(1);
         dst.put_u8(RESP_INT);
         let buf = format!("{}", sum);
         dst.extend_from_slice(buf.as_bytes());
@@ -789,9 +783,7 @@ impl HandleCodec {
     }
 
     fn merge_encode_join(&mut self, subs: Vec<Cmd>, dst: &mut BytesMut) -> AsResult<()> {
-        if !dst.has_remaining_mut() {
-            dst.reserve(1);
-        }
+        dst.reserve(1);
         dst.put_u8(RESP_ARRAY);
 
         let count = subs.len();

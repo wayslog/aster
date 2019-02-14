@@ -224,18 +224,14 @@ impl Resp {
             RESP_STRING | RESP_ERROR | RESP_INT => {
                 let data = self.data.as_ref().expect("never empty");
                 let my_len = 1 + 2 + data.len();
-                if dst.remaining_mut() < my_len {
-                    dst.reserve(my_len);
-                }
+                dst.reserve(my_len);
                 dst.put_u8(self.rtype);
                 dst.extend_from_slice(data);
                 dst.extend_from_slice(BYTES_CRLF);
                 Ok(1 + 2 + data.len())
             }
             RESP_BULK => {
-                if !dst.has_remaining_mut() {
-                    dst.reserve(1);
-                }
+                dst.reserve(1);
                 dst.put_u8(self.rtype);
                 if self.is_null() {
                     dst.extend_from_slice(BYTES_NULL_RESP);
@@ -252,9 +248,7 @@ impl Resp {
                 Ok(1 + len_len + 2 + data_len + 2)
             }
             RESP_ARRAY => {
-                if dst.remaining_mut() < 5 {
-                    dst.reserve(5);
-                }
+                dst.reserve(5);
 
                 dst.put_u8(self.rtype);
                 if self.is_null() {
