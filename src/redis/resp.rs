@@ -5,6 +5,7 @@ use bytes::BytesMut;
 use log::Level;
 use tokio_codec::{Decoder, Encoder};
 
+use std::char;
 use std::collections::LinkedList;
 use std::rc::Rc;
 
@@ -415,6 +416,20 @@ impl RespObj {
 }
 
 #[test]
+fn test_fsm_inline() {
+    let sdata = b"get baka\nget kaba qiu\r\n";
+    let mut codec = RespFSMCodec::default();
+    let mut buf = BytesMut::from(&sdata[..]);
+    let resp = codec.parse(&mut buf).unwrap().unwrap();
+    assert_eq!(resp.rtype, RESP_ARRAY);
+    assert_eq!(resp.array.as_ref().map(|x| x.len()), Some(2));
+
+    let resp = codec.parse(&mut buf).unwrap().unwrap();
+    assert_eq!(resp.array.as_ref().map(|x| x.len()), Some(3));
+}
+
+
+#[test]
 fn test_fsm_palin_ok() {
     let sdata = b"+baka for you\r\n";
     let mut codec = RespFSMCodec::default();
@@ -500,12 +515,13 @@ fn test_fsm_array_ok() {
 }
 
 bitflags! {
-    struct Flag: u32 {
-        const KIND       = 0b0000000000000001;
-        const PLAIN_BODY = 0b0000000000000010;
-        const BULK_SIZE  = 0b0000000000001000;
-        const BULK_BODY  = 0b0000000000100000;
-        const ARRAY_SIZE = 0b0000000010000000;
+    struct Flag: u8 {
+        const KIND         = 0b00000001;
+        const PLAIN_BODY   = 0b00000010;
+        const BULK_SIZE    = 0b00000100;
+        const BULK_BODY    = 0b00001000;
+        const ARRAY_SIZE   = 0b00010000;
+        const INLINE       = 0b00100000;
     }
 }
 
@@ -561,8 +577,41 @@ impl RespFSMCodec {
                         self.cstack.push_back(self.count);
                         self.count = 0;
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        self.flags = Flag::INLINE;
+                    }
                 };
+            } else if self.flags == Flag::INLINE {
+                if let None = self.read_until_crlf(src) {
+                    return Ok(None);
+                }
+                let len = self.buf.len();
+                if len < 1 {
+                    return Err(Error::BadCmd);
+                }
+                self.flags = Flag::KIND;
+
+                let mut trim = 1;
+                if self.buf[len - 1] == BYTE_CR {
+                    trim = 2;
+                }
+                let buf = self.buf.as_ref();
+                let line = String::from_utf8_lossy(&buf[..len - trim]);
+                let cmds: Vec<_> = line
+                    .split(char::is_whitespace)
+                    .filter(|x| x.len() != 0)
+                    .map(|x| RespObj {
+                        rtype: RESP_BULK,
+                        data: Some(BytesMut::from(x.as_bytes())),
+                        array: None,
+                    })
+                    .collect();
+                self.buf.take();
+                return Ok(Some(RespObj {
+                    rtype: RESP_ARRAY,
+                    data: Some(BytesMut::from(format!("{}", cmds.len()).as_bytes())),
+                    array: Some(cmds),
+                }));
             } else if self.flags == Flag::PLAIN_BODY {
                 if let None = self.read_until_crlf(src) {
                     return Ok(None);
