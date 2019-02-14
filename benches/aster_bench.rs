@@ -27,19 +27,19 @@ fn bench_resp(c: &mut Criterion) {
     });
 
     c.bench_function("resp parse array long tail", |b| {
-        let mut sdata = b"*10000\r\n".to_vec();
-        let ndata = b"$5\r\nojbK\n\r\n".repeat(5000);
-        sdata.extend(ndata.clone());
+        let sdata = b"*40000\r\n".to_vec();
+        let ndata = b"$5\r\nojbK\n\r\n".repeat(4000);
 
         let mut buf = BytesMut::new();
         b.iter(|| {
             buf.extend_from_slice(&sdata);
-            match Resp::parse(&buf) {
-                Ok(_) => {}
-                Err(_) => {}
-            };
-            buf.extend_from_slice(&ndata);
-            Resp::parse(&buf).unwrap();
+            for _ in 0..10 {
+                buf.extend_from_slice(&ndata);
+                match Resp::parse(&buf) {
+                    Ok(_) => {}
+                    Err(_) => {}
+                };
+            }
             buf.take();
         });
     });
@@ -122,20 +122,38 @@ fn bench_fsm_codec(c: &mut Criterion) {
     });
 
     c.bench_function("fsm resp parse long tail array", |b| {
-        let mut sdata = b"*10000\r\n".to_vec();
-        let ndata = b"$5\r\nojbK\n\r\n".repeat(5000);
-        sdata.extend(ndata.clone());
+        let sdata = b"*40000\r\n".to_vec();
+        let ndata = b"$5\r\nojbK\n\r\n".repeat(4000);
 
         let mut buf = BytesMut::new();
         let mut codec = RespFSMCodec::default();
 
         b.iter(|| {
             buf.extend_from_slice(&sdata);
-            let _ = codec.parse(&mut buf).unwrap();
-            buf.extend_from_slice(&ndata);
-            let _ = codec.parse(&mut buf).unwrap().unwrap();
+            for _ in 0..10 {
+                buf.extend_from_slice(&ndata);
+                let _ = codec.parse(&mut buf).unwrap();
+            }
+            // let _ = codec.parse(&mut buf).unwrap().unwrap();
         })
     });
+
+    c.bench_function("buf write long tail", |b| {
+        let sdata = b"*40000\r\n".to_vec();
+        let ndata = b"$5\r\nojbK\n\r\n".repeat(4000);
+
+        let mut buf = BytesMut::new();
+        b.iter(|| {
+            buf.extend_from_slice(&sdata);
+            for _ in 0..10 {
+                // let _ = codec.parse(&mut buf).unwrap();
+                buf.extend_from_slice(&ndata);
+            }
+            // let _ = codec.parse(&mut buf).unwrap().unwrap();
+            let _ = buf.take();
+        })
+    });
+
 }
 
 criterion_group!(benches, bench_ketama, bench_resp, bench_fsm_codec);

@@ -6,6 +6,7 @@ use log::Level;
 use tokio_codec::{Decoder, Encoder};
 
 use std::rc::Rc;
+use std::collections::LinkedList;
 
 use crate::com::*;
 // pub const SLOTS_COUNT: usize = 16384;
@@ -486,29 +487,19 @@ fn test_fsm_array_ok() {
 
 bitflags! {
     struct Flag: u32 {
-        const KIND          = 0b0000000000000001;
-
-        const PLAIN_BODY     = 0b0000000000000010;
-        // const PLAIN_CRLF     = 0b0000000000000100;
-
-        const BULK_SIZE      = 0b0000000000001000;
-        // CONST BULK_SIZE_CRLF  = 0b0000000000010000;
-        const BULK_BODY      = 0b0000000000100000;
-        // const BULK_BODY_CRLF  = 0b0000000001000000;
-
-        const ARRAY_SIZE     = 0b0000000010000100;
-        // const ARRAY_SIZE_CRLF = 0b0000000100000100;
-
-        // const IN_ARRAY       = 0b1000000000000000;
+        const KIND       = 0b0000000000000001;
+        const PLAIN_BODY = 0b0000000000000010;
+        const BULK_SIZE  = 0b0000000000001000;
+        const BULK_BODY  = 0b0000000000100000;
+        const ARRAY_SIZE = 0b0000000010000000;
     }
 }
 
-#[allow(unused)]
 pub struct RespFSMCodec {
     buf: BytesMut,
 
-    stack: Vec<RespObj>,
-    cstack: Vec<isize>,
+    stack: LinkedList<RespObj>,
+    cstack: LinkedList<isize>,
     count: isize,
 
     current: Option<RespObj>,
@@ -521,8 +512,8 @@ impl Default for RespFSMCodec {
     fn default() -> RespFSMCodec {
         RespFSMCodec {
             buf: BytesMut::new(),
-            stack: Vec::with_capacity(2),
-            cstack: Vec::new(),
+            stack: LinkedList::new(),
+            cstack: LinkedList::new(),
             count: 0,
             size: 0,
             current: None,
@@ -552,8 +543,8 @@ impl RespFSMCodec {
                     }
                     RESP_ARRAY => {
                         self.flags = Flag::ARRAY_SIZE;
-                        self.stack.push(RespObj::empty(rtype));
-                        self.cstack.push(self.count);
+                        self.stack.push_back(RespObj::empty(rtype));
+                        self.cstack.push_back(self.count);
                         self.count = 0;
                     }
                     _ => unreachable!(),
@@ -619,19 +610,19 @@ impl RespFSMCodec {
 
                 let count = btoi::btoi::<isize>(self.buf.as_ref())?;
                 // set buf into stack top resp data
-                let handle = self.stack.last_mut().unwrap();
+                let handle = self.stack.back_mut().unwrap();
                 handle.set_data(self.buf.take());
 
                 self.count = count;
                 if count == -1 {
                     self.count -= 1;
-                    let poped = self.stack.pop();
+                    let poped = self.stack.pop_back();
                     if self.stack.is_empty() {
                         self.count = 0;
                         return Ok(poped);
                     }
 
-                    let top = self.stack.last_mut().expect("parse stack.last_mut");
+                    let top = self.stack.back_mut().expect("parse stack.last_mut");
                     top.push(poped.expect("parse poped"));
                     self.cstack_add(-1);
                 }
@@ -643,6 +634,7 @@ impl RespFSMCodec {
         // Ok(None)
     }
 
+    #[inline]
     fn next_kind(&mut self) {
         self.flags = Flag::KIND;
         let buf = self.buf.take();
@@ -650,6 +642,7 @@ impl RespFSMCodec {
         hd.set_data(buf);
     }
 
+    #[inline]
     fn pop_array(&mut self) -> Option<RespObj> {
         if self.count <= 0 {
             return self.current.take();
@@ -659,28 +652,30 @@ impl RespFSMCodec {
         self.push_top(current_take);
         if self.count == 1 {
             // pop top and push it into next top level or return
-            let poped = self.stack.pop();
+            let poped = self.stack.pop_back();
             if self.stack.is_empty() {
                 return poped;
             }
             self.push_top(poped.unwrap());
-            self.count = self.cstack.pop().unwrap() - 1;
+            self.count = self.cstack.pop_back().unwrap() - 1;
         } else if self.count > 0 {
             self.count -= 1;
         }
         None
     }
 
+    #[inline]
     fn push_top(&mut self, resp: RespObj) {
         let top = self
             .stack
-            .last_mut()
+            .back_mut()
             .expect("parse stack.last_mut plain_body");
         top.push(resp);
     }
 
+    #[inline]
     fn cstack_add(&mut self, count: isize) {
-        let handle = self.cstack.last_mut().expect("cstack_add cstack.last_mut");
+        let handle = self.cstack.back_mut().expect("cstack_add cstack.last_mut");
         *handle += count;
     }
 }
