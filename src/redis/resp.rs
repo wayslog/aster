@@ -376,7 +376,7 @@ impl Resp {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RespObj {
     pub rtype: RespType,
     pub data: Option<BytesMut>,
@@ -413,6 +413,77 @@ impl RespObj {
     }
 }
 
+#[test]
+fn test_fsm_palin_ok() {
+    let sdata = b"+baka for you\r\n";
+    let mut codec = RespFSMCodec::default();
+    let resp = codec
+        .parse(&mut BytesMut::from(&sdata[..]))
+        .unwrap()
+        .unwrap();
+    assert_eq!(RESP_STRING, resp.rtype);
+    assert_eq!(Some(BytesMut::from(&b"baka for you"[..])), resp.data);
+
+    let sdata = b"-boy next door\r\n";
+    let mut codec = RespFSMCodec::default();
+    let resp = codec
+        .parse(&mut BytesMut::from(&sdata[..]))
+        .unwrap()
+        .unwrap();
+    assert_eq!(RESP_ERROR, resp.rtype);
+    assert_eq!(Some(BytesMut::from(&sdata[1..sdata.len()-2])), resp.data);
+
+    let sdata = b":-1024\r\n";
+    let mut codec = RespFSMCodec::default();
+    let resp = codec
+        .parse(&mut BytesMut::from(&sdata[..]))
+        .unwrap()
+        .unwrap();
+    assert_eq!(RESP_INT, resp.rtype);
+    assert_eq!(Some(BytesMut::from(&sdata[1..sdata.len()-2])), resp.data);
+}
+
+
+#[test]
+fn test_fsm_bulk_ok() {
+    let sdata = "$5\r\nojbK\n\r\n";
+    let mut codec = RespFSMCodec::default();
+    let resp = codec
+        .parse(&mut BytesMut::from(&sdata[..]))
+        .unwrap()
+        .unwrap();
+    assert_eq!(RESP_BULK, resp.rtype);
+    assert_eq!(Some(BytesMut::from(&b"ojbK\n"[..])), resp.data);
+}
+
+#[test]
+fn test_fsm_array_ok() {
+    let sdata = "*2\r\n$1\r\na\r\n$5\r\nojbK\n\r\n";
+
+    let mut codec = RespFSMCodec::default();
+    let resp = codec
+        .parse(&mut BytesMut::from(&sdata[..]))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(RESP_ARRAY, resp.rtype);
+    assert_eq!(Some(BytesMut::from(&b"2"[..])), resp.data);
+    assert_eq!(2, resp.array.as_ref().unwrap().len());
+    assert_eq!(resp.array, Some(vec![
+        RespObj{
+            rtype: RESP_BULK,
+            data: Some(BytesMut::from(&b"a"[..])),
+            array: None,
+        },
+        RespObj {
+            rtype: RESP_BULK,
+            data: Some(BytesMut::from(&b"ojbK\n"[..])),
+            array: None,
+        }
+    ]));
+
+}
+
 bitflags! {
     struct Flag: u32 {
         const KIND          = 0b0000000000000001;
@@ -430,28 +501,6 @@ bitflags! {
 
         // const IN_ARRAY       = 0b1000000000000000;
     }
-}
-
-#[test]
-fn test_fsm_palin() {
-    let sdata = b"+baka for you\r\n";
-    let mut codec = RespFSMCodec::default();
-    let resp = codec
-        .parse(&mut BytesMut::from(&sdata[..]))
-        .unwrap()
-        .unwrap();
-    assert_eq!(RESP_STRING, resp.rtype);
-    assert_eq!(Some(BytesMut::from(&b"baka for you"[..])), resp.data);
-
-    // let edata = "-boy next door\r\n";
-    // let resp = Resp::parse(edata.as_bytes()).unwrap();
-    // assert_eq!(RESP_ERROR, resp.rtype);
-    // assert_eq!(Some(b"boy next door".to_vec()), resp.data);
-
-    // let idata = ":1024\r\n";
-    // let resp = Resp::parse(idata.as_bytes()).unwrap();
-    // assert_eq!(RESP_INT, resp.rtype);
-    // assert_eq!(Some(b"1024".to_vec()), resp.data);
 }
 
 #[allow(unused)]
@@ -502,6 +551,7 @@ impl RespFSMCodec {
                         self.flags = Flag::PLAIN_BODY;
                     }
                     RESP_ARRAY => {
+                        self.flags = Flag::ARRAY_SIZE;
                         self.stack.push(RespObj::empty(rtype));
                         self.cstack.push(self.count);
                         self.count = 0;
@@ -565,8 +615,13 @@ impl RespFSMCodec {
                     self.buf.extend_from_slice(src.take().as_ref());
                     return Ok(None);
                 }
+                self.flags = Flag::KIND;
 
-                let count = btoi::btoi::<isize>(self.buf.take().as_ref())?;
+                let count = btoi::btoi::<isize>(self.buf.as_ref())?;
+                // set buf into stack top resp data
+                let handle = self.stack.last_mut().unwrap();
+                handle.set_data(self.buf.take());
+
                 self.count = count;
                 if count == -1 {
                     self.count -= 1;
