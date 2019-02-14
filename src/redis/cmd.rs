@@ -421,7 +421,7 @@ impl Command {
     }
 }
 
-lazy_static!{
+lazy_static! {
     pub static ref CMD_TYPE: HashMap<&'static [u8], CmdType> = {
         let mut hmap = HashMap::new();
 
@@ -695,7 +695,6 @@ impl CmdCodec {
         Ok(())
     }
 }
-
 
 pub fn new_cmd(args: Vec<String>) -> Command {
     let resps: Vec<_> = args

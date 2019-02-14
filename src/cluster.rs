@@ -4,12 +4,12 @@ mod init;
 mod node;
 mod slots;
 
+use crate::cluster::fetcher::Fetcher;
+use crate::cluster::handler::Handle;
 use crate::com::*;
 use crate::redis::cmd::{Cmd, CmdCodec};
 use crate::redis::resp::RespCodec;
 use crate::ClusterConfig;
-use crate::cluster::fetcher::Fetcher;
-use crate::cluster::handler::Handle;
 
 use self::init::ClusterInitilizer;
 use self::node::{NodeDown, NodeRecv};

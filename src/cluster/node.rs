@@ -188,10 +188,9 @@ where
 
         loop {
             if self.rstore.is_some() {
-                try_ready!(
-                    self.try_redirect()
-                        .map_err(|err| error!("fail to try_redirect due to {:?}", err))
-                );
+                try_ready!(self
+                    .try_redirect()
+                    .map_err(|err| error!("fail to try_redirect due to {:?}", err)));
             }
 
             if let Some(resp) = try_ready!(self.recv.poll().map_err(|err| {

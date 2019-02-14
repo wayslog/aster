@@ -104,11 +104,12 @@ impl SlotsMap {
         match Slots::parse(data) {
             Ok(slots) => {
                 let mut slots = slots;
-                if self.slots.is_empty() || self
-                    .slots
-                    .iter()
-                    .zip(slots.0.iter())
-                    .any(|(my, other)| my != other)
+                if self.slots.is_empty()
+                    || self
+                        .slots
+                        .iter()
+                        .zip(slots.0.iter())
+                        .any(|(my, other)| my != other)
                 {
                     mem::swap(&mut self.slots, &mut slots.0);
                     true

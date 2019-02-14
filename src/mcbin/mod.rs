@@ -13,9 +13,9 @@ const HEADER_LEN: usize = 24;
 //magic
 #[derive(Clone, Debug)]
 enum Magic {
-    MagicUnknow,
-    MagicReq = 0x80,
-    MagicResp = 0x81,
+    Unknow,
+    Req = 0x80,
+    Resp = 0x81,
 }
 
 // conmmand op
@@ -161,7 +161,7 @@ impl Request for Req {
 impl Default for MCBinReq {
     fn default() -> Self {
         MCBinReq {
-            magic: Magic::MagicUnknow,
+            magic: Magic::Unknow,
             req_type: ReqType::Get,
             key_len: 0,
             extra_len: 0,
@@ -186,8 +186,8 @@ pub struct Range {
 fn parse_header(src: &[u8], decode: bool) -> Result<MCBinReq, Error> {
     let mut req = MCBinReq::default();
     match src[0] {
-        0x80 => req.magic = Magic::MagicReq,
-        0x81 => req.magic = Magic::MagicResp,
+        0x80 => req.magic = Magic::Req,
+        0x81 => req.magic = Magic::Resp,
         _ => return Err(Error::BadCmd),
     }
     if decode {
