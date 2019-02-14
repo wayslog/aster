@@ -8,7 +8,7 @@ use crate::cluster::fetcher::Fetcher;
 use crate::cluster::handler::Handle;
 use crate::com::*;
 use crate::redis::cmd::{Cmd, CmdCodec};
-use crate::redis::resp::RespCodec;
+use crate::redis::resp::RespFSMCodec;
 use crate::ClusterConfig;
 
 use self::init::ClusterInitilizer;
@@ -139,7 +139,7 @@ impl Cluster {
                 let sock = set_read_write_timeout(sock, rt, wt)
                     .expect("set read/write timeout in cluster must be ok");
                 sock.set_nodelay(true).expect("set nodelay must ok");
-                let codec = RespCodec {};
+                let codec = RespFSMCodec::default();
                 let (sink, stream) = codec.framed(sock).split();
                 let arx = rx.map_err(|err| {
                     info!("fail to send due to {:?}", err);

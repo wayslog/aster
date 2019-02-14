@@ -3,7 +3,7 @@ use crate::com::*;
 use crate::crc::crc16 as crc;
 use crate::notify::Notify;
 use crate::proxy::Request;
-use crate::redis::resp::{Resp, RespCodec};
+use crate::redis::resp::{Resp, RespFSMCodec};
 use crate::redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
 
 use btoi;
@@ -194,7 +194,6 @@ impl Cmd {
 pub struct Command {
     pub is_done: bool,
     pub is_ask: bool,
-    pub is_inline: bool,
 
     pub is_complex: bool,
     pub cmd_type: CmdType,
@@ -223,7 +222,6 @@ impl Command {
         Command {
             is_done: false,
             is_ask: false,
-            is_inline: false,
 
             is_complex,
             cmd_type,
@@ -237,15 +235,6 @@ impl Command {
     }
 
     fn from_resp(resp: Resp) -> Command {
-        if resp.is_inline() {
-            let data = resp.unwrap_data().expect("inline resp data is never empty");
-            let dstring = String::from_utf8_lossy(&data);
-            let args = dstring.split(' ').map(|x| x.to_string()).collect();
-            let mut cmd = new_cmd(args);
-            cmd.is_inline = true;
-            return cmd;
-        }
-
         let notify = Notify::empty();
         let mut command = Self::inner_from_resp(resp, notify);
         command.mksubs();
@@ -253,7 +242,7 @@ impl Command {
     }
 
     fn get_single_cmd(cmd_resp: Resp) -> Resp {
-        if cmd_resp.data.as_ref().expect("cmd must be bulk never nil") == b"MGET" {
+        if &cmd_resp.data.as_ref().expect("cmd must be bulk never nil")[..] == b"MGET" {
             return RESP_OBJ_BULK_GET.clone();
         }
         cmd_resp
@@ -294,7 +283,7 @@ impl Command {
             .map(|y| {
                 y.data
                     .as_ref()
-                    .map(|x| x != b"EVAL")
+                    .map(|x| &x[..] != b"EVAL")
                     .expect("command inner is never be empty for Command::key")
             })
             .expect("command is never be empty for Command::key");
@@ -304,7 +293,7 @@ impl Command {
             return key_req
                 .data
                 .as_ref()
-                .cloned()
+                .map(|x| x.to_vec())
                 .expect("key_req's key is never be empty");
         }
         Vec::new()
@@ -603,7 +592,7 @@ fn calc_crc16(data: &[u8]) -> u16 {
 }
 
 pub struct CmdCodec {
-    rc: RespCodec,
+    rc: RespFSMCodec,
 }
 
 impl Decoder for CmdCodec {
@@ -644,7 +633,9 @@ impl Encoder for CmdCodec {
 
 impl Default for CmdCodec {
     fn default() -> Self {
-        CmdCodec { rc: RespCodec {} }
+        CmdCodec {
+            rc: RespFSMCodec::default(),
+        }
     }
 }
 
@@ -714,7 +705,6 @@ pub fn new_asking_cmd() -> Cmd {
     let cmd = Command {
         is_done: false,
         is_ask: false,
-        is_inline: false,
 
         is_complex: false,
         cmd_type: CmdType::IngnoreReply,
@@ -738,7 +728,6 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
     let cmd = Command {
         is_done: false,
         is_ask: false,
-        is_inline: false,
 
         is_complex: false,
         cmd_type: CmdType::Ctrl,
@@ -754,7 +743,7 @@ pub fn new_cluster_nodes_cmd() -> Cmd {
 }
 
 pub struct HandleCodec {
-    rc: RespCodec,
+    rc: RespFSMCodec,
 }
 
 impl HandleCodec {
@@ -843,17 +832,21 @@ impl Encoder for HandleCodec {
 
 impl Default for HandleCodec {
     fn default() -> Self {
-        HandleCodec { rc: RespCodec {} }
+        HandleCodec {
+            rc: RespFSMCodec::default(),
+        }
     }
 }
 
 pub struct NodeCodec {
-    rc: RespCodec,
+    rc: RespFSMCodec,
 }
 
 impl Default for NodeCodec {
     fn default() -> Self {
-        NodeCodec { rc: RespCodec {} }
+        NodeCodec {
+            rc: RespFSMCodec::default(),
+        }
     }
 }
 
@@ -885,7 +878,6 @@ fn new_ping_request() -> Cmd {
     let cmd = Command {
         is_done: false,
         is_ask: false,
-        is_inline: false,
 
         is_complex: false,
         cmd_type: CmdType::Read,
