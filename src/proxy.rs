@@ -439,24 +439,21 @@ fn fnv1a64(data: &[u8]) -> u64 {
     hasher.finish()
 }
 
-// #[cfg(test)]
-// #[test]
-// fn test_trim_hash_tag() {
-//     assert_eq!(Request::trim_hash_tag(b"{}", b"abc{a}b"), b"a");
-//     assert_eq!(Request::trim_hash_tag(b"{}", b"abc{ab"), b"abc{ab");
-//     assert_eq!(Request::trim_hash_tag(b"{}", b"abc{ab}"), b"ab");
-//     assert_eq!(Request::trim_hash_tag(b"{}", b"abc{ab}asd{abc}d"), b"ab");
-//     assert_eq!(
-//         Request::trim_hash_tag(b"{", b"abc{ab}asd{abc}d"),
-//         b"abc{ab}asd{abc}d"
-//     );
-//     assert_eq!(
-//         Request::trim_hash_tag(b"", b"abc{ab}asd{abc}d"),
-//         b"abc{ab}asd{abc}d"
-//     );
-//     assert_eq!(
-//         Request::trim_hash_tag(b"abc", b"abc{ab}asd{abc}d"),
-//         b"abc{ab}asd{abc}d"
-//     );
-//     assert_eq!(Request::trim_hash_tag(b"ab", b"abc{ab}asd{abc}d"), b"");
-// }
+#[cfg(test)]
+#[test]
+fn test_trim_hash_tag() {
+    assert_eq!(trim_hash_tag(b"{}", b"abc{a}b"), b"a");
+    assert_eq!(trim_hash_tag(b"{}", b"abc{ab"), b"abc{ab");
+    assert_eq!(trim_hash_tag(b"{}", b"abc{ab}"), b"ab");
+    assert_eq!(trim_hash_tag(b"{}", b"abc{ab}asd{abc}d"), b"ab");
+    assert_eq!(
+        trim_hash_tag(b"{", b"abc{ab}asd{abc}d"),
+        b"abc{ab}asd{abc}d"
+    );
+    assert_eq!(trim_hash_tag(b"", b"abc{ab}asd{abc}d"), b"abc{ab}asd{abc}d");
+    assert_eq!(
+        trim_hash_tag(b"abc", b"abc{ab}asd{abc}d"),
+        b"abc{ab}asd{abc}d"
+    );
+    assert_eq!(trim_hash_tag(b"ab", b"abc{ab}asd{abc}d"), b"");
+}
