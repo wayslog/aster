@@ -2,7 +2,7 @@
 use crate::com::*;
 use crate::crc::crc16 as crc;
 use crate::notify::Notify;
-use crate::proxy::Request;
+use crate::proxy::{trim_hash_tag, Request};
 use crate::redis::resp::{Resp, RespCodec};
 use crate::redis::resp::{BYTES_CRLF, RESP_ARRAY, RESP_BULK, RESP_ERROR, RESP_INT, RESP_STRING};
 
@@ -49,9 +49,10 @@ impl Request for Cmd {
         new_ping_request()
     }
 
-    fn key(&self) -> Vec<u8> {
-        self.cmd.borrow().key()
+    fn key_hash(&self, hash_tag: &[u8], hasher: fn(&[u8]) -> u64) -> u64 {
+        self.cmd_key_hash(hash_tag, hasher)
     }
+
     fn subs(&self) -> Option<Vec<Self>> {
         self.sub_reqs()
     }
@@ -110,7 +111,17 @@ impl From<Resp> for Cmd {
     }
 }
 
+
 impl Cmd {
+    fn cmd_key_hash(&self, hash_tag: &[u8], hasher: fn(&[u8]) -> u64) -> u64 {
+        const EMPTY_BYTES: &[u8] = &[0u8; 0];
+        let borrow = self.cmd.borrow();
+        // TODO: judgement by invalid
+        // For PING command only
+        let key = borrow.key_ref().unwrap_or(EMPTY_BYTES);
+        hasher(trim_hash_tag(key, hash_tag))
+    }
+
     fn new(command: Command) -> Cmd {
         Cmd {
             cmd: Rc::new(RefCell::new(command)),
@@ -287,6 +298,21 @@ impl Command {
 }
 
 impl Command {
+    pub fn key_ref(&self) -> Option<&[u8]> {
+        let req = self.req.as_ref();
+        let is_not_eval = req
+            .get(0)
+            .map(|y| {
+                y.data
+                    .as_ref()
+                    .map(|x| x != b"EVAL")
+                    .expect("command inner is never be empty for Command::key")
+            })
+            .expect("command is never be empty for Command::key");
+        let key_pos = if is_not_eval { 1 } else { 3 };
+        req.get(key_pos)?.data.as_ref().map(|x| &x[..])
+    }
+
     pub fn key(&self) -> Vec<u8> {
         let req = self.req.as_ref();
         let is_not_eval = req

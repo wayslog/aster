@@ -1,6 +1,6 @@
 use crate::com::*;
 use crate::notify::Notify;
-use crate::proxy::Request;
+use crate::proxy::{trim_hash_tag, Request};
 
 use btoi;
 // use bytes::{BufMut, BytesMut};
@@ -111,8 +111,13 @@ impl Request for Req {
     fn handle_codec() -> Self::HandleCodec {
         HandleCodec::default()
     }
+
     fn node_codec() -> Self::NodeCodec {
         NodeCodec::default()
+    }
+
+    fn key_hash(&self, hash_tag: &[u8], hasher: fn(&[u8]) -> u64) -> u64 {
+        self.req.borrow().req_key_hash(hash_tag, hasher)
     }
 
     fn ping_request() -> Self {
@@ -122,13 +127,6 @@ impl Request for Req {
     fn reregister(&self, task: Task) {
         // self.req.borrow_mut().notify.reregister();
         self.req.borrow_mut().reregister(&task);
-    }
-
-    fn key(&self) -> Vec<u8> {
-        // let Range { start, end } = { self.req.borrow().key.clone() };
-        // self.req.borrow().data[start..end].to_vec()
-        // unsafe { Vec::from_raw_parts(data.as_mut_ptr(), end - start, end - start) }
-        self.req.borrow().key()
     }
 
     fn subs(&self) -> Option<Vec<Self>> {
@@ -204,9 +202,9 @@ impl MCReq {
             .unwrap_or(self.is_done)
     }
 
-    fn key(&self) -> Vec<u8> {
+    fn req_key_hash(&self, hash_tag: &[u8], hasher: fn(&[u8]) -> u64) -> u64 {
         let Range { start, end } = self.key;
-        self.data[start..end].to_vec()
+        hasher(trim_hash_tag(&self.data[start..end], hash_tag))
     }
 
     fn reregister(&mut self, task: &Task) {

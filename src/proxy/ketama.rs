@@ -1,6 +1,5 @@
 use crate::com::*;
 
-use log::Level;
 use md5;
 
 use std::cmp::Ordering;
@@ -109,22 +108,28 @@ impl<T: Hasher + Default> HashRing<T> {
         }
     }
 
+    #[inline]
+    pub fn get_pos_by_hash(&self, hash: u64) -> usize {
+        let find = self.ticks.binary_search_by(|x| x.hash.cmp(&hash));
+        match find {
+            Ok(val) => val,
+            Err(val) if self.ticks.len() == val => 0,
+            Err(val) => val,
+        }
+    }
+
+    pub fn get_node_ref_by_pos(&self, pos: usize) -> &str {
+        &self.ticks.get(pos).unwrap().node
+    }
+
     pub fn get_node<K: AsRef<[u8]>>(&self, key: K) -> String {
         let mut hash = T::default();
         hash.write(key.as_ref());
         let value = hash.finish();
 
-        let find = self.ticks.binary_search_by(|x| x.hash.cmp(&value));
+        let pos = self.get_pos_by_hash(value);
 
-        let pos = match find {
-            Ok(val) => val,
-            Err(val) if self.ticks.len() == val => 0,
-            Err(val) => val,
-        };
         let node = self.ticks[pos].node.clone();
-        if log_enabled!(Level::Trace) {
-            trace!("get node of {}", &node);
-        }
         node
     }
 }

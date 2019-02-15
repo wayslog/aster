@@ -1,6 +1,6 @@
 use crate::com::*;
 use crate::notify::Notify;
-use crate::proxy::Request;
+use crate::proxy::{trim_hash_tag, Request};
 
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::BytesMut;
@@ -126,17 +126,21 @@ impl Request for Req {
     fn node_codec() -> Self::NodeCodec {
         NodeCodec::default()
     }
+
     fn ping_request() -> Self {
         new_ping_request()
     }
+
     fn reregister(&self, task: Task) {
         self.req.borrow_mut().notify.reregister(task.clone());
     }
-    fn key(&self) -> Vec<u8> {
+
+    fn key_hash(&self, hash_tag: &[u8], hasher: fn(&[u8]) -> u64) -> u64 {
         let req = self.req.borrow();
         let key = &req.data[req.key.start..req.key.end];
-        key.to_vec()
+        hasher(trim_hash_tag(key, hash_tag))
     }
+
     fn subs(&self) -> Option<Vec<Self>> {
         None
     }
