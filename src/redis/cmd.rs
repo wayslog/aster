@@ -111,7 +111,6 @@ impl From<Resp> for Cmd {
     }
 }
 
-
 impl Cmd {
     fn cmd_key_hash(&self, hash_tag: &[u8], hasher: fn(&[u8]) -> u64) -> u64 {
         const EMPTY_BYTES: &[u8] = &[0u8; 0];
