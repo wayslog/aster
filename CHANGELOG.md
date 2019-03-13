@@ -1,3 +1,11 @@
+## 0.1.4
+
+* make compatible config with [overlord](https://github.com/bilibili/overlord/cmd/proxy)
+* add set_read_write_timeout support for non-windows server
+* rename asswecan as aster
+* add criterion for benchmark test in stable
+* upgrade aster to rust edition 2018
+
 ## 0.1.3
 
 * support auto drop/clone counter for notify.
