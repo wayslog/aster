@@ -1,12 +1,12 @@
 Aster [![Build Status](https://travis-ci.org/wayslog/aster.svg?branch=master)](https://travis-ci.org/wayslog/aster) [![LOC](https://tokei.rs/b1/github/wayslog/aster)](https://github.com/wayslog/aster)
 ======================
 
-Aster is a light, fast and powerful cache proxy written by rust.
+Aster is a light, fast and powerful cache proxy written in rust.
 
 It supports memcache/redis singleton/redis cluster protocol all in one. Aster can proxy with two models means:
 
 1. proxy mode: the same with [twemproxy](https://github.com/twitter/twemproxy) but support multi-threads.
-2. cluster mode: proxy for redis cluster. Make redis cluster can be used to simple redis client.(which means that you can use redis non-cluster client access the redis cluster api).(Inspired with [Corvus](https://github.com/eleme/corvus))
+2. cluster mode: proxy requests to Redis cluster. Make redis cluster can be used to simple redis client. (which means that you can use redis non-cluster client access the redis cluster API).(Inspired with [Corvus](https://github.com/eleme/corvus))
 
 ## Usage
 
@@ -18,7 +18,7 @@ cargo build --release && AS_CFG=as.toml RUST_LOG=libaster=info RUST_BACKTRACE=1 
 
 ```
 [[clusters]]
-# name of the cluster. Each cluster means one front-end port.
+# name of the cluster. Each cluster must has the unique name.
 
 name="test-redis-cluster"
 
@@ -26,7 +26,7 @@ name="test-redis-cluster"
 
 listen_addr="0.0.0.0:9001"
 
-# cache_type only support memcache|redis|redis_cluster
+# cache_type only support memcache|redis|redis_cluster|memcache_binary
 
 cache_type="redis_cluster"
 
@@ -38,7 +38,7 @@ cache_type="redis_cluster"
 #       "127.0.0.1:7002:10 redis-2",
 #       "127.0.0.1:7003:10 redis-3"]
 #
-# as you can see, the format is consisted with:
+# as you can see, the format is considered as:
 #
 #       "${addr}:hash_weight ${node_alias}"
 #
