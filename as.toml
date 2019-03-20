@@ -1,3 +1,7 @@
+[main]
+# may be release | debug
+env = "release"
+
 [[clusters]]
 name="test-redis-cluster"
 listen_addr="0.0.0.0:9001"
