@@ -51,8 +51,8 @@ impl Cluster {
     pub fn init_node_conn(&self) -> Result<(), Error> {
         let mut slots_map = self.slots.borrow_mut();
         for addr in &self.cc.servers {
-            let tx = self.create_node_conn(&addr)?;
-            slots_map.add_node(addr.clone(), tx.clone());
+            let tx = self.create_node_conn(addr)?;
+            slots_map.add_node(addr, tx.clone());
         }
 
         Ok(())
@@ -180,7 +180,7 @@ impl Cluster {
                 return Cluster::try_dispatch(sender, cmd);
             }
             let tx = self.create_node_conn(node)?;
-            slots_map.add_node(node.to_string(), tx);
+            slots_map.add_node(node, tx);
         }
     }
 
@@ -210,7 +210,9 @@ impl Cluster {
                             break;
                         }
                         Ok(AsyncSink::Ready) => {
-                            node_set.insert(addr.clone());
+                            if node_set.contains(&*addr) {
+                                node_set.insert(addr.to_string());
+                            }
                             count += 1;
                             let _cmd = cmds.pop_front().unwrap();
                             break;
@@ -222,7 +224,7 @@ impl Cluster {
                     }
                 }
                 let tx = self.create_node_conn(&addr)?;
-                slots_map.add_node(addr, tx);
+                slots_map.add_node(&*addr, tx);
             }
         }
 

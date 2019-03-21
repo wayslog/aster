@@ -12,6 +12,7 @@ use self::ketama::HashRing;
 use self::node::spawn_node;
 use self::ping::Ping;
 
+use crate::stringview::StringView;
 use crate::com::*;
 use crate::ClusterConfig;
 
@@ -291,13 +292,13 @@ impl<T: Request + 'static> Proxy<T> {
         self.ring.borrow_mut().del_node(node);
     }
 
-    fn trans_alias(&self, who: &str) -> String {
+    fn trans_alias(&self, who: &str) -> StringView {
         if self.is_alias {
             if let Some(addr) = self.alias.borrow().get(who) {
-                return addr.to_string();
+                return StringView::from_str(addr);
             }
         }
-        who.to_string()
+        StringView::from_str(who)
     }
 
     fn execute(&self, who: &str, req: T) -> Result<AsyncSink<T>, Error> {
@@ -306,7 +307,7 @@ impl<T: Request + 'static> Proxy<T> {
         let rslt = {
             let mut conns = self.conns.borrow_mut();
             let conn = conns
-                .get_mut(&node)
+                .get_mut(&*node)
                 .expect("start_send conn must be exists");
             conn.start_send(req)
         };
@@ -314,7 +315,7 @@ impl<T: Request + 'static> Proxy<T> {
             Ok(AsyncSink::Ready) => match self
                 .conns
                 .borrow_mut()
-                .get_mut(&node)
+                .get_mut(&*node)
                 .expect("complte conn must be exists")
                 .poll_complete()
             {
@@ -352,7 +353,7 @@ impl<T: Request + 'static> Proxy<T> {
                 };
                 let result = {
                     let mut conns = self.conns.borrow_mut();
-                    let conn = conns.get_mut(&node).expect("must get the conn");
+                    let conn = conns.get_mut(&*node).expect("must get the conn");
                     conn.start_send(req.clone()).map_err(|err| {
                         error!("fail to dispatch to backend due to {:?}", err);
                         Error::Critical
@@ -362,7 +363,9 @@ impl<T: Request + 'static> Proxy<T> {
                 match result {
                     Ok(AsyncSink::Ready) => {
                         let _ = cmds.pop_front().expect("pop_front never be empty");
-                        nodes.insert(node.clone());
+                        if !nodes.contains(&*node) {
+                            nodes.insert((&*node).to_string());
+                        }
                     }
                     Ok(AsyncSink::NotReady(_)) => {
                         break;
@@ -382,7 +385,7 @@ impl<T: Request + 'static> Proxy<T> {
                 let rslt = self
                     .conns
                     .borrow_mut()
-                    .get_mut(&node)
+                    .get_mut(&*node)
                     .expect("node connection is never be absent")
                     .poll_complete();
                 match rslt {

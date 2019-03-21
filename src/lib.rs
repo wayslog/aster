@@ -14,6 +14,8 @@ mod crc;
 mod mc;
 mod mcbin;
 mod notify;
+pub mod stringview;
+
 pub mod proxy;
 pub mod redis;
 

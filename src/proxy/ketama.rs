@@ -122,15 +122,14 @@ impl<T: Hasher + Default> HashRing<T> {
         &self.ticks.get(pos).unwrap().node
     }
 
-    pub fn get_node<K: AsRef<[u8]>>(&self, key: K) -> String {
+    pub fn get_node<K: AsRef<[u8]>>(&self, key: K) -> &str{
         let mut hash = T::default();
         hash.write(key.as_ref());
         let value = hash.finish();
 
         let pos = self.get_pos_by_hash(value);
 
-        let node = self.ticks[pos].node.clone();
-        node
+        &self.ticks[pos].node
     }
 }
 
@@ -158,7 +157,7 @@ mod test_ketama {
         )
         .expect("create new hash ring success");
         let node = ring.get_node("a");
-        assert_eq!(&node, "mc-1");
-        assert_eq!(&ring.get_node("memtier-102"), "mc-x")
+        assert_eq!(node, "mc-1");
+        assert_eq!(ring.get_node("memtier-102"), "mc-x")
     }
 }

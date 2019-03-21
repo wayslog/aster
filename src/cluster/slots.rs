@@ -1,5 +1,6 @@
 use crate::com::*;
 use crate::redis::cmd::Cmd;
+use crate::stringview::StringView;
 
 use futures::unsync::mpsc::Sender;
 
@@ -124,18 +125,18 @@ impl SlotsMap {
         }
     }
 
-    pub fn add_node(&mut self, node: String, sender: Sender<Cmd>) {
-        self.nodes.insert(node, sender);
+    pub fn add_node(&mut self, node: &str, sender: Sender<Cmd>) {
+        self.nodes.insert(node.to_string(), sender);
     }
 
     pub fn get_sender_by_addr(&mut self, node: &str) -> Option<&mut Sender<Cmd>> {
         self.nodes.get_mut(node)
     }
 
-    pub fn get_addr(&mut self, slot: usize) -> String {
+    pub fn get_addr(&mut self, slot: usize) -> StringView {
         self.slots
             .get(slot)
-            .cloned()
+            .map(|x| StringView::from_str(x))
             .expect("slot must be full matched")
     }
 }
