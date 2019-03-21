@@ -6,6 +6,7 @@ pub struct StringView {
 }
 
 impl StringView {
+    #[inline]
     pub fn from_str(v: &str) -> StringView {
         let ptr = v.as_ptr();
         let len = v.len();
@@ -18,6 +19,7 @@ impl StringView {
 impl Deref for StringView {
     type Target = str;
 
+    #[inline]
     fn deref(&self) -> &str {
         use std::slice;
         use std::str;
