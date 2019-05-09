@@ -7,10 +7,15 @@ extern crate log;
 extern crate lazy_static;
 #[macro_use]
 extern crate serde_derive;
+#[macro_use]
+extern crate failure;
+
+pub mod com;
+pub mod protocol;
+pub mod proxy;
+pub(crate) mod utils;
 
 use failure::Error;
-
-
 
 pub fn run() -> Result<(), Error> {
     unimplemented!();
