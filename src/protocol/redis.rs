@@ -3,6 +3,8 @@ use bytes::BytesMut;
 use failure::Error;
 use futures::task::Task;
 
+use crate::com::RespError;
+use crate::utils::myitoa;
 use crate::utils::notify::Notify;
 use crate::utils::upper;
 
@@ -30,6 +32,15 @@ pub struct Command {
     subs: Option<Vec<Command>>,
 }
 
+const BYTES_JUSTOK: &[u8] = b"+OK\r\n";
+const BYTES_NULL_ARRAY: &[u8] = b"*-1\r\n";
+const BYTES_ZERO_INT: &[u8] = b":0\r\n";
+
+const BYTES_CRLF: &[u8] = b"\r\n";
+
+const BYTES_ARRAY_FLAG: &[u8] = b"*";
+const BYTES_INTEGER_FLAG: &[u8] = b":";
+
 // for front end
 impl Command {
     pub fn parse_cmd(buf: &mut BytesMut) -> Result<Option<Command>, Error> {
@@ -37,13 +48,52 @@ impl Command {
         Ok(msg.map(Into::into))
     }
 
-    pub fn reply_cmd(&mut self, buf: &mut BytesMut) -> Result<usize, Error> {
-        unimplemented!()
+    pub fn reply_cmd(&self, buf: &mut BytesMut) -> Result<usize, Error> {
+        if self.ctype.is_mset() {
+            buf.extend_from_slice(BYTES_JUSTOK);
+            return Ok(BYTES_JUSTOK.len());
+        } else if self.ctype.is_mget() {
+            if let Some(subs) = self.subs.as_ref() {
+                let begin = buf.len();
+                buf.extend_from_slice(BYTES_ARRAY_FLAG);
+
+                let len = subs.len();
+                myitoa(len, buf);
+                buf.extend_from_slice(BYTES_CRLF);
+
+                for sub in subs {
+                    sub.reply_cmd(buf)?;
+                }
+                return Ok(buf.len() - begin);
+            } else {
+                buf.extend_from_slice(BYTES_NULL_ARRAY);
+                return Ok(BYTES_NULL_ARRAY.len());
+            }
+        } else if self.ctype.is_del() || self.ctype.is_exists() {
+            if let Some(subs) = self.subs.as_ref() {
+                let begin = buf.len();
+                buf.extend_from_slice(BYTES_INTEGER_FLAG);
+                let len = subs.len();
+                myitoa(len, buf);
+                buf.extend_from_slice(BYTES_CRLF);
+                return Ok(buf.len() - begin);
+            } else {
+                buf.extend_from_slice(BYTES_ZERO_INT);
+                return Ok(BYTES_ZERO_INT.len());
+            }
+        } else {
+            if let Some(size) = self.reply.as_ref().map(|x| x.save(buf)) {
+                return Ok(size);
+            } else {
+                Err(RespError::BadReply.into())
+            }
+        }
     }
 }
 
 const BYTES_ASK: &[u8] = b"*1/r/n$3/r/nASK/r/n";
 
+const BYTES_GET: &[u8] = b"*3\r\nGET\r\n";
 const BYTES_LEN2_HEAD: &[u8] = b"*2/r/n";
 const BYTES_LEN3_HEAD: &[u8] = b"*3/r/n";
 
@@ -52,7 +102,7 @@ impl Command {
     /// save redis Command into given BytesMut
     pub fn send_req(&self, buf: &mut BytesMut) -> Result<usize, Error> {
         let mut size = 0;
-        if self.ctype.is_mget() && self.ctype.is_exists() && self.ctype.is_del() {
+        if self.ctype.is_exists() && self.ctype.is_del() {
             size += BYTES_LEN2_HEAD.len();
             buf.extend_from_slice(BYTES_LEN2_HEAD);
             if let RespType::Array(_, arrs) = &self.req.rtype {
@@ -66,6 +116,18 @@ impl Command {
             buf.extend_from_slice(BYTES_LEN3_HEAD);
             if let RespType::Array(_, arrs) = &self.req.rtype {
                 for rtype in arrs {
+                    size += self.req.save_by_rtype(rtype, buf);
+                }
+            }
+            return Ok(size);
+        } else if self.ctype.is_mget() {
+            size += BYTES_LEN2_HEAD.len();
+            buf.extend_from_slice(BYTES_LEN2_HEAD);
+            size += BYTES_GET.len();
+            buf.extend_from_slice(BYTES_GET);
+
+            if let RespType::Array(_, arrs) = &self.req.rtype {
+                for rtype in &arrs[1..] {
                     size += self.req.save_by_rtype(rtype, buf);
                 }
             }

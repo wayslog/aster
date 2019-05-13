@@ -7,4 +7,7 @@ pub enum RespError {
 
     #[fail(display = "message is ok but request bad or not allowed")]
     BadReqeust,
+
+    #[fail(display = "message reply is bad")]
+    BadReply,
 }
