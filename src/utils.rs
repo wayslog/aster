@@ -3,6 +3,7 @@ use itoa;
 
 pub mod simdfind;
 pub mod notify;
+pub mod crc;
 
 const LOWER_BEGIN: u8 = b'a';
 const LOWER_END: u8 = b'z';

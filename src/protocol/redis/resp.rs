@@ -17,18 +17,31 @@ pub const BYTE_LF: u8 = b'\n';
 
 #[derive(Clone, Copy, Debug)]
 pub struct Range {
-    pub begin: usize,
-    pub end: usize,
+    pub begin: u32,
+    pub end: u32,
 }
 
 impl Range {
     pub fn new(begin: usize, end: usize) -> Range {
-        Range { begin, end }
+        Range {
+            begin: begin as u32,
+            end: end as u32,
+        }
+    }
+
+    #[inline(always)]
+    pub fn begin(&self) -> usize {
+        self.begin as usize
+    }
+
+    #[inline(always)]
+    pub fn end(&self) -> usize {
+        self.end as usize
     }
 
     #[inline]
     pub fn range(&self) -> usize {
-        self.end - self.begin
+        (self.end - self.begin) as usize
     }
 }
 
@@ -220,7 +233,7 @@ fn test_parse() {
 impl MessageMut {
     pub fn nth_mut(&mut self, index: usize) -> Option<&mut [u8]> {
         if let Some(range) = self.get_nth_data_range(index) {
-            Some(&mut self.data.as_mut()[range.begin..range.end])
+            Some(&mut self.data.as_mut()[range.begin()..range.end()])
         } else {
             None
         }
@@ -228,7 +241,7 @@ impl MessageMut {
 
     pub fn nth(&self, index: usize) -> Option<&[u8]> {
         if let Some(range) = self.get_nth_data_range(index) {
-            Some(&self.data.as_ref()[range.begin..range.end])
+            Some(&self.data.as_ref()[range.begin()..range.end()])
         } else {
             None
         }
@@ -298,23 +311,23 @@ impl Message {
     pub fn save_by_rtype(&self, rtype: &RespType, buf: &mut BytesMut) -> usize {
         match rtype {
             RespType::String(rg) => {
-                buf.extend_from_slice(&self.data.as_ref()[rg.begin..rg.end]);
+                buf.extend_from_slice(&self.data.as_ref()[rg.begin()..rg.end()]);
                 rg.range()
             }
             RespType::Error(rg) => {
-                buf.extend_from_slice(&self.data.as_ref()[rg.begin..rg.end]);
+                buf.extend_from_slice(&self.data.as_ref()[rg.begin()..rg.end()]);
                 rg.range()
             }
             RespType::Integer(rg) => {
-                buf.extend_from_slice(&self.data.as_ref()[rg.begin..rg.end]);
+                buf.extend_from_slice(&self.data.as_ref()[rg.begin()..rg.end()]);
                 rg.range()
             }
             RespType::Bulk(head, body) => {
-                buf.extend_from_slice(&self.data.as_ref()[head.begin..body.end]);
-                body.end - head.begin
+                buf.extend_from_slice(&self.data.as_ref()[head.begin()..body.end()]);
+                (body.end - head.begin) as usize
             }
             RespType::Array(head, subs) => {
-                buf.extend_from_slice(&self.data.as_ref()[head.begin..head.end]);
+                buf.extend_from_slice(&self.data.as_ref()[head.begin()..head.end()]);
                 let mut size = head.range();
                 for sub in subs {
                     size += self.save_by_rtype(sub, buf);
@@ -330,7 +343,7 @@ impl Message {
 
     pub fn nth(&self, index: usize) -> Option<&[u8]> {
         if let Some(range) = self.get_nth_data_range(index) {
-            Some(&self.data.as_ref()[range.begin..range.end])
+            Some(&self.data.as_ref()[range.begin()..range.end()])
         } else {
             None
         }
