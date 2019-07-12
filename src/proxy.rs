@@ -1,19 +1,18 @@
 //! proxy is the mod which contains genneral proxy
 
+pub mod backend;
 pub mod fnv;
 mod handler;
 pub mod ketama;
-mod node;
 mod ping;
 
 use self::fnv::Fnv1a64;
 use self::handler::Handle;
 use self::ketama::HashRing;
-use self::node::spawn_node;
 use self::ping::Ping;
 
-use crate::stringview::StringView;
 use crate::com::*;
+use crate::stringview::StringView;
 use crate::ClusterConfig;
 
 use futures::lazy;
@@ -251,6 +250,7 @@ impl<T: Request + 'static> Proxy<T> {
 
     fn create_conn(node: &str, rt: Option<u64>, wt: Option<u64>) -> AsResult<Sender<T>> {
         let node_addr = node.to_string();
+        let node_addr_clone = node_addr.clone();
         let (tx, rx) = channel(1024 * 8);
         let ret_tx = tx.clone();
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
@@ -273,9 +273,10 @@ impl<T: Request + 'static> Proxy<T> {
                     info!("fail to send due to {:?}", err);
                     Error::Critical
                 });
-                let (nd, nr) = spawn_node(arx, sink, stream);
-                current_thread::spawn(nd);
-                current_thread::spawn(nr);
+                let backend = backend::Backend::new(&node_addr_clone, arx, sink, stream);
+                current_thread::spawn(backend.map_err(|err| {
+                    error!("fail to complete the whole connection due {:?}", err);
+                }));
                 Ok(())
             });
         current_thread::spawn(amt);
@@ -430,7 +431,10 @@ pub fn trim_hash_tag<'a, 'b>(key: &'a [u8], hash_tag: &'b [u8]) -> &'a [u8] {
     }
     if let Some(begin) = key.iter().position(|x| *x == hash_tag[0]) {
         if let Some(end_offset) = key[begin..].iter().position(|x| *x == hash_tag[1]) {
-            return &key[begin + 1..begin + end_offset];
+            // to avoid abc{}de
+            if end_offset > 1 {
+                return &key[begin + 1..begin + end_offset];
+            }
         }
     }
     key
@@ -453,10 +457,14 @@ fn test_trim_hash_tag() {
         trim_hash_tag(b"abc{ab}asd{abc}d", b"{"),
         b"abc{ab}asd{abc}d"
     );
+    assert_eq!(trim_hash_tag(b"abc{}def", b"{}"), b"abc{}def");
     assert_eq!(trim_hash_tag(b"abc{ab}asd{abc}d", b""), b"abc{ab}asd{abc}d");
     assert_eq!(
         trim_hash_tag(b"abc{ab}asd{abc}d", b"abc"),
         b"abc{ab}asd{abc}d"
     );
-    assert_eq!(trim_hash_tag(b"abc{ab}asd{abc}d", b"ab"), b"");
+    assert_eq!(
+        trim_hash_tag(b"abc{ab}asd{abc}d", b"ab"),
+        b"abc{ab}asd{abc}d"
+    );
 }

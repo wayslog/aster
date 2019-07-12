@@ -1,4 +1,4 @@
-#![deny(warnings)]
+// #![deny(warnings)]
 #[macro_use(try_ready)]
 extern crate futures;
 #[macro_use]

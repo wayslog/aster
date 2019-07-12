@@ -38,6 +38,7 @@ impl<T: Request> Future for Ping<T> {
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
         loop {
+            debug!("trying to into ping poll to {}", self.addr);
             if self.retry == self.max_retry {
                 info!("remove node {} from hash ring", self.addr);
                 self.proxy.del_node(&self.addr);
@@ -51,7 +52,7 @@ impl<T: Request> Future for Ping<T> {
                     return Ok(Async::Ready(()));
                 }
                 // debug!("");
-                // debug!("trying to execute ping command to {}", self.addr);
+                debug!("trying to execute ping command to {}", self.addr);
 
                 let req = T::ping_request();
                 let local_task = task::current();
@@ -74,13 +75,14 @@ impl<T: Request> Future for Ping<T> {
             }
 
             if self.req.is_some() {
-                // debug!("wait for command to done for {}", self.addr);
+                debug!("wait for command to done for {}", self.addr);
                 if !self
                     .req
                     .as_ref()
                     .expect("ping request is never be empty")
                     .is_done()
                 {
+                    debug!("ping to backend {} not done", self.addr);
                     return Ok(Async::NotReady);
                 }
 
@@ -88,7 +90,7 @@ impl<T: Request> Future for Ping<T> {
                     info!("re-add node {} to hash ring", self.addr);
                     self.proxy.add_node(&self.addr);
                 }
-
+                debug!("send ping success to {}", self.addr);
                 self.req = None;
                 self.retry = 0;
             }
