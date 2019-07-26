@@ -24,6 +24,7 @@ pub enum Error {
     BadConfig,
     BadSlotsMap,
     ClusterDown,
+    BackendNotFound,
     IoError(io::Error),
     Critical,
     StrParseIntError(num::ParseIntError),

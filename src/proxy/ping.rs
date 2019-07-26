@@ -1,30 +1,38 @@
-// use com::*;
 use crate::proxy::*;
 
 use futures::{task, Async, AsyncSink, Future};
-use std::time::Duration;
 use tokio::timer::Interval;
 
-//use std::marker::PhantomData;
+use std::rc::Weak;
+use std::time::Duration;
 
 pub struct Ping<T>
 where
     T: Request + 'static,
 {
-    proxy: Rc<Proxy<T>>,
+    proxy: Weak<Proxy<T>>,
     addr: String,
     req: Option<T>,
     max_retry: usize,
     retry: usize,
     interval: Interval,
+    is_alive: bool,
 }
 
-impl<T: Request> Ping<T> {
-    pub fn new(proxy: Rc<Proxy<T>>, addr: String, max_retry: usize, interval: u64) -> Ping<T> {
+impl<T: Request + 'static> Ping<T> {
+    pub fn new(
+        proxy: Weak<Proxy<T>>,
+        addr: String,
+        max_retry: usize,
+        interval: u64,
+        is_alive: bool,
+    ) -> Ping<T> {
         Ping {
             proxy,
             addr,
             max_retry,
+            is_alive,
+
             retry: 0,
             req: None,
             interval: Interval::new_interval(Duration::from_millis(interval)),
@@ -39,9 +47,19 @@ impl<T: Request> Future for Ping<T> {
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
         loop {
             debug!("trying to into ping poll to {}", self.addr);
-            if self.retry == self.max_retry {
-                info!("remove node {} from hash ring", self.addr);
-                self.proxy.del_node(&self.addr);
+            if self.retry >= self.max_retry {
+                let proxy = match self.proxy.upgrade() {
+                    None => return Ok(Async::Ready(())),
+                    Some(pc) => pc,
+                };
+                if self.is_alive {
+                    info!("disable node {} from hash ring", self.addr);
+                    disable_node(proxy, &self.addr);
+                } else {
+                    info!("recovery node {} to hash ring", self.addr);
+                    recovery_node(proxy, &self.addr);
+                }
+                return Ok(Async::Ready(()));
             }
 
             if self.req.is_none() {
@@ -51,16 +69,18 @@ impl<T: Request> Future for Ping<T> {
                 if rslt.is_none() {
                     return Ok(Async::Ready(()));
                 }
-                // debug!("");
                 debug!("trying to execute ping command to {}", self.addr);
 
                 let req = T::ping_request();
                 let local_task = task::current();
                 req.reregister(local_task);
+                let proxy = match self.proxy.upgrade() {
+                    None => return Ok(Async::Ready(())),
+                    Some(pc) => pc,
+                };
 
-                match self.proxy.execute(&self.addr, req.clone()) {
+                match proxy.execute(&self.addr, req.clone()) {
                     Ok(AsyncSink::Ready) => {
-                        self.retry += 1;
                         self.req = Some(req);
                     }
                     Ok(AsyncSink::NotReady(_)) => {
@@ -68,7 +88,11 @@ impl<T: Request> Future for Ping<T> {
                     }
                     Err(err) => {
                         warn!("connection ping to {} is error {:?}", self.addr, err);
-                        self.retry += 1;
+                        if self.is_alive {
+                            self.retry += 1;
+                        } else {
+                            self.retry = 0
+                        };
                         continue;
                     }
                 }
@@ -85,14 +109,14 @@ impl<T: Request> Future for Ping<T> {
                     debug!("ping to backend {} not done", self.addr);
                     return Ok(Async::NotReady);
                 }
-
-                if self.retry >= self.max_retry {
-                    info!("re-add node {} to hash ring", self.addr);
-                    self.proxy.add_node(&self.addr);
-                }
                 debug!("send ping success to {}", self.addr);
+
+                if self.is_alive {
+                    self.retry = 0;
+                } else {
+                    self.retry += 1;
+                }
                 self.req = None;
-                self.retry = 0;
             }
         }
     }

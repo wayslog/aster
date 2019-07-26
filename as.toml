@@ -27,3 +27,4 @@ servers = ["127.0.0.1:6379:10 redis-1"]
 thread = 1
 ping_fail_limit=3
 ping_interval=10000
+server_retry_timeout=600000

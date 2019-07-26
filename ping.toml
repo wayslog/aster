@@ -1,0 +1,9 @@
+[[clusters]]
+name="test-redis-proxy"
+listen_addr="0.0.0.0:9000"
+cache_type="redis"
+servers = [ "127.0.0.1:9001:10 redis-1", "127.0.0.1:9002:10 redis2"]
+thread = 1
+ping_fail_limit=3
+ping_interval=1000
+server_retry_timeout=10000

@@ -4,7 +4,7 @@ pub mod backend;
 pub mod fnv;
 mod handler;
 pub mod ketama;
-mod ping;
+pub mod ping;
 
 use self::fnv::Fnv1a64;
 use self::handler::Handle;
@@ -29,23 +29,82 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hasher;
 use std::net::SocketAddr;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 fn spawn_ping<T: Request + 'static>(proxy: Rc<Proxy<T>>) -> Result<(), ()> {
-    if let Some(limit) = proxy.cc.ping_fail_limit {
-        info!("setup ping for cluster {}", proxy.cc.name);
-        // default ping interval 500
-        let interval = proxy.cc.ping_interval.map(|x| x as u64).unwrap_or(500u64);
-
-        let addrs = proxy.spots.keys().cloned();
-        for addr in addrs {
-            let ping = Ping::new(proxy.clone(), addr, limit, interval);
-            current_thread::spawn(ping);
+    match proxy.cc.ping_fail_limit {
+        Some(ref limit) if *limit == 0 => {
+            debug!(
+                "skip proxy ping feature for cluster {} due limit was 0",
+                proxy.cc.name
+            );
         }
-    } else {
-        debug!("skip proxy ping feature for cluster {}", proxy.cc.name);
-    }
+        None => {
+            debug!(
+                "skip proxy ping feature for cluster {} due limit not set",
+                proxy.cc.name
+            );
+        }
+        Some(limit) => {
+            info!(
+                "setup ping for cluster {} with limit {}",
+                proxy.cc.name, limit
+            );
+            // default ping interval 500
+            let interval = proxy.cc.ping_interval.map(|x| x as u64).unwrap_or(500u64);
+
+            let addrs = proxy.spots.keys().cloned();
+            for addr in addrs {
+                setup_ping(
+                    Rc::downgrade(&proxy),
+                    addr.to_string(),
+                    limit,
+                    interval,
+                    true,
+                );
+            }
+        }
+    };
     Ok(())
+}
+
+pub(crate) fn recovery_node<T: Request + 'static>(proxy: Rc<Proxy<T>>, node: &str) {
+    let max_retry = proxy.cc.ping_fail_limit.unwrap_or(5);
+    let interval = proxy.cc.ping_interval.unwrap_or(500usize);
+    if let Some(spot) = proxy.spots.get(node) {
+        proxy.ring.borrow_mut().add_node(node.to_string(), *spot);
+    }
+    setup_ping(
+        Rc::downgrade(&proxy),
+        node.to_string(),
+        max_retry,
+        interval as u64,
+        true,
+    );
+}
+
+pub(crate) fn disable_node<T: Request + 'static>(proxy: Rc<Proxy<T>>, node: &str) {
+    let max_retry = proxy.cc.ping_fail_limit.unwrap_or(5 * 10);
+    let interval = proxy.cc.server_retry_timeout.unwrap_or(500usize);
+    proxy.ring.borrow_mut().del_node(node);
+    setup_ping(
+        Rc::downgrade(&proxy),
+        node.to_string(),
+        max_retry,
+        interval as u64,
+        false,
+    );
+}
+
+pub(crate) fn setup_ping<T: Request + 'static>(
+    proxy: Weak<Proxy<T>>,
+    addr: String,
+    max_retry: usize,
+    interval: u64,
+    alive: bool,
+) {
+    let ping = Ping::new(proxy, addr, max_retry, interval, alive);
+    current_thread::spawn(ping);
 }
 
 fn start_listen<T: Request + 'static>(p: (Rc<Proxy<T>>, TcpListener)) -> Result<Rc<Proxy<T>>, ()> {
@@ -281,16 +340,6 @@ impl<T: Request + 'static> Proxy<T> {
             });
         current_thread::spawn(amt);
         Ok(ret_tx)
-    }
-
-    fn add_node(&self, node: &str) {
-        if let Some(spot) = self.spots.get(node) {
-            self.ring.borrow_mut().add_node(node.to_string(), *spot);
-        }
-    }
-
-    fn del_node(&self, node: &str) {
-        self.ring.borrow_mut().del_node(node);
     }
 
     fn trans_alias(&self, who: &str) -> StringView {

@@ -2,11 +2,10 @@ use crate::com::*;
 use crate::proxy::Request;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 
+use std::collections::VecDeque;
+
 const BATCH_SIZE: usize = 1024;
 
-// use std::cell::RefCell;
-use std::collections::VecDeque;
-// use std::rc::Rc;
 enum State {
     Running,
     Closing,
@@ -165,7 +164,10 @@ where
             .iter()
             .for_each(|item| item.done_with_error(Error::Critical));
         self.down.close().map_err(|e| {
-            error!("fail to close the internal connection to {} succeed due to {:?}", &self.addr, e);
+            error!(
+                "fail to close the internal connection to {} succeed due to {:?}",
+                &self.addr, e
+            );
             Error::Critical
         })?;
 
