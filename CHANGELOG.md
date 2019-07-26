@@ -1,3 +1,9 @@
+## 0.1.5
+
+* fixed ping bugs
+* change proxy/node as proxy/backend
+* add version report for aster when can not found config file
+
 ## 0.1.4
 
 * make compatible config with [overlord](https://github.com/bilibili/overlord/cmd/proxy)

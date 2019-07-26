@@ -1,4 +1,4 @@
-#![deny(warnings)]
+// #![deny(warnings)]
 #[macro_use(try_ready)]
 extern crate futures;
 #[macro_use]
@@ -24,9 +24,15 @@ pub use crate::com::*;
 // use futures::task::current;
 use std::thread;
 
+const EXIT_DUE_CONFIG: i32 = 1;
+
+const ASTER_VERSION_MAJOR: i32 = 0;
+const ASTER_VERSION_MINOR: i32 = 1;
+const ASTER_VERSION_PATCH: i32 = 5;
+
 pub fn run() -> Result<(), std::io::Error> {
     env_logger::init();
-    let config = load_config();
+    let config = load_config_or_print_help();
     info!("aster has shined with config={:?}", config);
     let ths: Vec<_> = config
         .clusters
@@ -41,19 +47,44 @@ pub fn run() -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn load_config() -> Config {
+fn load_config_or_print_help() -> Config {
+    match load_config() {
+        Ok(cfg) => return cfg,
+        Err(err) => {
+            eprintln!("fail to load config due {:?}", err);
+        }
+    }
+
+    print_help();
+    std::process::exit(EXIT_DUE_CONFIG);
+}
+
+fn print_help() {
+    eprintln!(
+        r#"
+
+aster-proxy({}.{}.{}): A fast and lightweight cache (a.k.a: memcache,redis,redis-cluster) proxy.
+
+  basic usage: AS_CFG=as.toml path/to/binary/aster-proxy
+
+"#,
+        ASTER_VERSION_MAJOR, ASTER_VERSION_MINOR, ASTER_VERSION_PATCH
+    );
+}
+
+fn load_config() -> Result<Config, Error> {
     use std::env;
     let path = env::var("AS_CFG").unwrap_or_else(|_| "as.toml".to_string());
     use std::fs;
     use std::io::{BufReader, Read};
 
-    let fd = fs::File::open(&path).expect("fail to open config file(default: as.toml)");
+    let fd = fs::File::open(&path)?;
     let mut rd = BufReader::new(fd);
     let mut data = String::new();
     rd.read_to_string(&mut data)
         .expect("fail to read config file");
 
-    toml::from_str(&data).expect("fail to parse toml")
+    Ok(toml::from_str(&data).unwrap())
 }
 
 pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
@@ -131,6 +162,7 @@ pub struct ClusterConfig {
     // proxy special
     pub ping_fail_limit: Option<usize>,
     pub ping_interval: Option<usize>,
+    pub server_retry_timeout: Option<usize>,
 
     // dead codes
 

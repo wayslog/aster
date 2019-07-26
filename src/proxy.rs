@@ -1,19 +1,18 @@
 //! proxy is the mod which contains genneral proxy
 
+pub mod backend;
 pub mod fnv;
 mod handler;
 pub mod ketama;
-mod node;
-mod ping;
+pub mod ping;
 
 use self::fnv::Fnv1a64;
 use self::handler::Handle;
 use self::ketama::HashRing;
-use self::node::spawn_node;
 use self::ping::Ping;
 
-use crate::stringview::StringView;
 use crate::com::*;
+use crate::stringview::StringView;
 use crate::ClusterConfig;
 
 use futures::lazy;
@@ -30,23 +29,82 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hasher;
 use std::net::SocketAddr;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 fn spawn_ping<T: Request + 'static>(proxy: Rc<Proxy<T>>) -> Result<(), ()> {
-    if let Some(limit) = proxy.cc.ping_fail_limit {
-        info!("setup ping for cluster {}", proxy.cc.name);
-        // default ping interval 500
-        let interval = proxy.cc.ping_interval.map(|x| x as u64).unwrap_or(500u64);
-
-        let addrs = proxy.spots.keys().cloned();
-        for addr in addrs {
-            let ping = Ping::new(proxy.clone(), addr, limit, interval);
-            current_thread::spawn(ping);
+    match proxy.cc.ping_fail_limit {
+        Some(ref limit) if *limit == 0 => {
+            debug!(
+                "skip proxy ping feature for cluster {} due limit was 0",
+                proxy.cc.name
+            );
         }
-    } else {
-        debug!("skip proxy ping feature for cluster {}", proxy.cc.name);
-    }
+        None => {
+            debug!(
+                "skip proxy ping feature for cluster {} due limit not set",
+                proxy.cc.name
+            );
+        }
+        Some(limit) => {
+            info!(
+                "setup ping for cluster {} with limit {}",
+                proxy.cc.name, limit
+            );
+            // default ping interval 500
+            let interval = proxy.cc.ping_interval.map(|x| x as u64).unwrap_or(500u64);
+
+            let addrs = proxy.spots.keys().cloned();
+            for addr in addrs {
+                setup_ping(
+                    Rc::downgrade(&proxy),
+                    addr.to_string(),
+                    limit,
+                    interval,
+                    true,
+                );
+            }
+        }
+    };
     Ok(())
+}
+
+pub(crate) fn recovery_node<T: Request + 'static>(proxy: Rc<Proxy<T>>, node: &str) {
+    let max_retry = proxy.cc.ping_fail_limit.unwrap_or(5);
+    let interval = proxy.cc.ping_interval.unwrap_or(500usize);
+    if let Some(spot) = proxy.spots.get(node) {
+        proxy.ring.borrow_mut().add_node(node.to_string(), *spot);
+    }
+    setup_ping(
+        Rc::downgrade(&proxy),
+        node.to_string(),
+        max_retry,
+        interval as u64,
+        true,
+    );
+}
+
+pub(crate) fn disable_node<T: Request + 'static>(proxy: Rc<Proxy<T>>, node: &str) {
+    let max_retry = proxy.cc.ping_fail_limit.unwrap_or(5 * 10);
+    let interval = proxy.cc.server_retry_timeout.unwrap_or(500usize);
+    proxy.ring.borrow_mut().del_node(node);
+    setup_ping(
+        Rc::downgrade(&proxy),
+        node.to_string(),
+        max_retry,
+        interval as u64,
+        false,
+    );
+}
+
+pub(crate) fn setup_ping<T: Request + 'static>(
+    proxy: Weak<Proxy<T>>,
+    addr: String,
+    max_retry: usize,
+    interval: u64,
+    alive: bool,
+) {
+    let ping = Ping::new(proxy, addr, max_retry, interval, alive);
+    current_thread::spawn(ping);
 }
 
 fn start_listen<T: Request + 'static>(p: (Rc<Proxy<T>>, TcpListener)) -> Result<Rc<Proxy<T>>, ()> {
@@ -251,6 +309,7 @@ impl<T: Request + 'static> Proxy<T> {
 
     fn create_conn(node: &str, rt: Option<u64>, wt: Option<u64>) -> AsResult<Sender<T>> {
         let node_addr = node.to_string();
+        let node_addr_clone = node_addr.clone();
         let (tx, rx) = channel(1024 * 8);
         let ret_tx = tx.clone();
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
@@ -273,23 +332,14 @@ impl<T: Request + 'static> Proxy<T> {
                     info!("fail to send due to {:?}", err);
                     Error::Critical
                 });
-                let (nd, nr) = spawn_node(arx, sink, stream);
-                current_thread::spawn(nd);
-                current_thread::spawn(nr);
+                let backend = backend::Backend::new(&node_addr_clone, arx, sink, stream);
+                current_thread::spawn(backend.map_err(|err| {
+                    error!("fail to complete the whole connection due {:?}", err);
+                }));
                 Ok(())
             });
         current_thread::spawn(amt);
         Ok(ret_tx)
-    }
-
-    fn add_node(&self, node: &str) {
-        if let Some(spot) = self.spots.get(node) {
-            self.ring.borrow_mut().add_node(node.to_string(), *spot);
-        }
-    }
-
-    fn del_node(&self, node: &str) {
-        self.ring.borrow_mut().del_node(node);
     }
 
     fn trans_alias(&self, who: &str) -> StringView {
@@ -430,7 +480,10 @@ pub fn trim_hash_tag<'a, 'b>(key: &'a [u8], hash_tag: &'b [u8]) -> &'a [u8] {
     }
     if let Some(begin) = key.iter().position(|x| *x == hash_tag[0]) {
         if let Some(end_offset) = key[begin..].iter().position(|x| *x == hash_tag[1]) {
-            return &key[begin + 1..begin + end_offset];
+            // to avoid abc{}de
+            if end_offset > 1 {
+                return &key[begin + 1..begin + end_offset];
+            }
         }
     }
     key
@@ -453,10 +506,14 @@ fn test_trim_hash_tag() {
         trim_hash_tag(b"abc{ab}asd{abc}d", b"{"),
         b"abc{ab}asd{abc}d"
     );
+    assert_eq!(trim_hash_tag(b"abc{}def", b"{}"), b"abc{}def");
     assert_eq!(trim_hash_tag(b"abc{ab}asd{abc}d", b""), b"abc{ab}asd{abc}d");
     assert_eq!(
         trim_hash_tag(b"abc{ab}asd{abc}d", b"abc"),
         b"abc{ab}asd{abc}d"
     );
-    assert_eq!(trim_hash_tag(b"abc{ab}asd{abc}d", b"ab"), b"");
+    assert_eq!(
+        trim_hash_tag(b"abc{ab}asd{abc}d", b"ab"),
+        b"abc{ab}asd{abc}d"
+    );
 }
