@@ -13,8 +13,8 @@ where
     proxy: Weak<Proxy<T>>,
     addr: String,
     req: Option<T>,
-    max_retry: usize,
-    retry: usize,
+    max_retry: u64,
+    retry: u64,
     interval: Interval,
     is_alive: bool,
 }
@@ -23,7 +23,7 @@ impl<T: Request + 'static> Ping<T> {
     pub fn new(
         proxy: Weak<Proxy<T>>,
         addr: String,
-        max_retry: usize,
+        max_retry: u64,
         interval: u64,
         is_alive: bool,
     ) -> Ping<T> {

@@ -9,7 +9,7 @@ use hashbrown::{HashMap, HashSet};
 use std::mem;
 
 pub const SLOTS_COUNT: usize = 16384;
-pub static LF_STR: &'static str = "\n";
+pub static LF_STR: &str = "\n";
 
 pub struct Slots(pub Vec<String>);
 

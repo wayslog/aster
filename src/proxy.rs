@@ -33,7 +33,7 @@ use std::rc::{Rc, Weak};
 
 fn spawn_ping<T: Request + 'static>(proxy: Rc<Proxy<T>>) -> Result<(), ()> {
     match proxy.cc.ping_fail_limit {
-        Some(ref limit) if *limit == 0 => {
+        Some(0) => {
             debug!(
                 "skip proxy ping feature for cluster {} due limit was 0",
                 proxy.cc.name
@@ -51,10 +51,9 @@ fn spawn_ping<T: Request + 'static>(proxy: Rc<Proxy<T>>) -> Result<(), ()> {
                 proxy.cc.name, limit
             );
             // default ping interval 500
-            let interval = proxy.cc.ping_interval.map(|x| x as u64).unwrap_or(500u64);
+            let interval = proxy.cc.ping_interval.map(|x| x).unwrap_or(500);
 
-            let addrs = proxy.spots.keys().cloned();
-            for addr in addrs {
+            for addr in proxy.spots.keys() {
                 setup_ping(
                     Rc::downgrade(&proxy),
                     addr.to_string(),
@@ -70,7 +69,7 @@ fn spawn_ping<T: Request + 'static>(proxy: Rc<Proxy<T>>) -> Result<(), ()> {
 
 pub(crate) fn recovery_node<T: Request + 'static>(proxy: Rc<Proxy<T>>, node: &str) {
     let max_retry = proxy.cc.ping_fail_limit.unwrap_or(5);
-    let interval = proxy.cc.ping_interval.unwrap_or(500usize);
+    let interval = proxy.cc.ping_interval.unwrap_or(500);
     if let Some(spot) = proxy.spots.get(node) {
         proxy.ring.borrow_mut().add_node(node.to_string(), *spot);
     }
@@ -85,7 +84,7 @@ pub(crate) fn recovery_node<T: Request + 'static>(proxy: Rc<Proxy<T>>, node: &st
 
 pub(crate) fn disable_node<T: Request + 'static>(proxy: Rc<Proxy<T>>, node: &str) {
     let max_retry = proxy.cc.ping_fail_limit.unwrap_or(5 * 10);
-    let interval = proxy.cc.server_retry_timeout.unwrap_or(500usize);
+    let interval = proxy.cc.server_retry_timeout.unwrap_or(500);
     proxy.ring.borrow_mut().del_node(node);
     setup_ping(
         Rc::downgrade(&proxy),
@@ -99,7 +98,7 @@ pub(crate) fn disable_node<T: Request + 'static>(proxy: Rc<Proxy<T>>, node: &str
 pub(crate) fn setup_ping<T: Request + 'static>(
     proxy: Weak<Proxy<T>>,
     addr: String,
-    max_retry: usize,
+    max_retry: u64,
     interval: u64,
     alive: bool,
 ) {
@@ -150,7 +149,6 @@ pub fn start_proxy<T: Request + 'static>(proxy: Proxy<T>) {
     let addr = proxy
         .cc
         .listen_addr
-        .clone()
         .parse::<SocketAddr>()
         .expect("parse socket never fail");
 
