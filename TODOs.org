@@ -1,21 +1,4 @@
-
 * TODOS [4/8]
-** DONE implement inline protocol
-   CLOSED: [2018-10-10 Wed 11:08]
-** TODO implement cluster slots cmd (for jedis only)
-** DONE add cluster redirect logic
-   CLOSED: [2018-10-10 Wed 11:08]
-*** done with code but neeed tests
-** DONE fetch bugs for slotsmap
-   CLOSED: [2018-10-26 Fri 17:07]
-*** may panic when fetch fail
-** TODO more test cases for redis
-** DONE support for memcache and redis singleton.
-   CLOSED: [2018-10-26 Fri 17:07]
-** TODO support for memcache binary protocol
-** TODO support multi level cache
-** TODO fixed reconncected logic in redis cluster
-** TODO more effective for handle process
-** TODO change node recv process notifyer as channel between node down
-** TODO fixed error handling more plain and raw
-** TODO more standardable close connection way
+** 将 memcache text/binary 协议合并成一个
+** 去掉 redis standalone 中没有用到的crc16计算
+** 用 failure::Error 统一所有 Error
