@@ -3,10 +3,10 @@ Aster [![Build Status](https://travis-ci.org/wayslog/aster.svg?branch=master)](h
 
 Aster is a light, fast and powerful cache proxy written in rust.
 
-It supports memcache/redis singleton/redis cluster protocol all in one. Aster can proxy with two models means:
+It supports `memcache`/`redis standalone`/`redis cluster` protocol all in one. Aster be use to proxy two cache models:
 
-1. proxy mode: the same with [twemproxy](https://github.com/twitter/twemproxy) but support multi-threads.
-2. cluster mode: proxy requests to Redis cluster. Make redis cluster can be used to simple redis client. (which means that you can use redis non-cluster client access the redis cluster API).(Inspired with [Corvus](https://github.com/eleme/corvus))
+1. proxy mode(aka: standalone): the same as [twemproxy](https://github.com/twitter/twemproxy) but with multi-threads.
+2. cluster mode: proxys requests to Redis cluster. Make redis cluster can be used by simple redis client. (that you can use the client without cluster support to access the redis cluster).(Inspired with [Corvus](https://github.com/eleme/corvus))
 
 ## Usage
 
@@ -16,7 +16,7 @@ cargo build --release && AS_CFG=as.toml RUST_LOG=libaster=info RUST_BACKTRACE=1 
 
 ## Configuration
 
-```
+```toml
 [[clusters]]
 # name of the cluster. Each cluster must has the unique name.
 
@@ -82,4 +82,9 @@ ping_fail_limit=3
 # ping_interval means the interval of each ping was send into backend node in millisecond.
 
 ping_interval=10000
+
+# server_retry_timeout means that when a node is removed from the proxy consist hash ring, 
+# aster pinger will sleep until the timeout (ms) reached and trying to re-add the node again.
+
+server_retry_timeout=600000
 ```
