@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 
 const BATCH_SIZE: usize = 1024;
 
+#[derive(Eq, PartialEq, Debug, Copy, Clone)]
 enum State {
     Running,
     Closing,
@@ -13,18 +14,12 @@ enum State {
 }
 
 impl State {
-    fn is_closed(&self) -> bool {
-        match self {
-            State::Closed => return true,
-            _ => return false,
-        }
+    fn is_closed(self) -> bool {
+        self == State::Closed
     }
 
-    fn is_closing(&self) -> bool {
-        match self {
-            State::Closing => return true,
-            _ => return false,
-        }
+    fn is_closing(self) -> bool {
+        self == State::Closing
     }
 }
 

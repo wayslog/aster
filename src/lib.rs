@@ -2,11 +2,16 @@
 #[macro_use(try_ready)]
 extern crate futures;
 #[macro_use]
-extern crate log;
-#[macro_use]
 extern crate lazy_static;
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate serde_derive;
+
+use crate::cluster::{start_cluster, Cluster};
+pub use crate::com::*;
+use std::thread;
+use std::thread::JoinHandle;
 
 mod cluster;
 mod com;
@@ -19,11 +24,6 @@ pub mod stringview;
 pub mod proxy;
 pub mod redis;
 
-use crate::cluster::{start_cluster, Cluster};
-pub use crate::com::*;
-// use futures::task::current;
-use std::thread;
-
 const EXIT_DUE_CONFIG: i32 = 1;
 
 const ASTER_VERSION_MAJOR: i32 = 0;
@@ -34,7 +34,7 @@ pub fn run() -> Result<(), std::io::Error> {
     env_logger::init();
     let config = load_config_or_print_help();
     info!("aster has shined with config={:?}", config);
-    let ths: Vec<_> = config
+    let ths: Vec<JoinHandle<()>> = config
         .clusters
         .iter()
         .map(|cc| create_cluster(cc))
@@ -88,11 +88,8 @@ fn load_config() -> Result<Config, Error> {
 }
 
 pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
-    let count = if let Some(&thread) = cc.thread.as_ref() {
-        usize::max(thread, 1)
-    } else {
-        num_cpus::get()
-    };
+    let count = cc.thread.unwrap_or_else(num_cpus::get).max(1);
+
     info!(
         "aster start {} listen at {} with {} thread",
         &cc.name, &cc.listen_addr, count
@@ -124,6 +121,7 @@ pub fn create_cluster(cc: &ClusterConfig) -> Vec<thread::JoinHandle<()>> {
         })
         .collect()
 }
+
 #[derive(Deserialize, Debug)]
 pub struct Config {
     clusters: Vec<ClusterConfig>,
@@ -160,9 +158,9 @@ pub struct ClusterConfig {
     pub read_from_slave: Option<bool>,
 
     // proxy special
-    pub ping_fail_limit: Option<usize>,
-    pub ping_interval: Option<usize>,
-    pub server_retry_timeout: Option<usize>,
+    pub ping_fail_limit: Option<u64>,
+    pub ping_interval: Option<u64>,
+    pub server_retry_timeout: Option<u64>,
 
     // dead codes
 

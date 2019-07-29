@@ -122,7 +122,7 @@ impl<T: Hasher + Default> HashRing<T> {
         &self.ticks.get(pos).unwrap().node
     }
 
-    pub fn get_node<K: AsRef<[u8]>>(&self, key: K) -> &str{
+    pub fn get_node<K: AsRef<[u8]>>(&self, key: K) -> &str {
         let mut hash = T::default();
         hash.write(key.as_ref());
         let value = hash.finish();
