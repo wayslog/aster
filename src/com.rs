@@ -23,6 +23,7 @@ pub enum Error {
     BadCmd,
     BadConfig,
     BadSlotsMap,
+    BadClusterSlotsReply,
     ClusterDown,
     BackendNotFound,
     IoError(io::Error),

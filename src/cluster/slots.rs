@@ -1,90 +1,16 @@
 use crate::com::*;
 use crate::redis::cmd::Cmd;
+use crate::redis::resp::{Resp, RESP_ARRAY};
 use crate::stringview::StringView;
 
 use futures::unsync::mpsc::Sender;
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashMap;
 
 use std::convert::From;
 use std::mem;
 
 pub const SLOTS_COUNT: usize = 16384;
-pub static LF_STR: &str = "\n";
-
-pub struct Slots(pub Vec<String>);
-
-impl Slots {
-    pub fn parse(data: &[u8]) -> AsResult<Slots> {
-        let content = String::from_utf8_lossy(data);
-        let mut slots = Vec::with_capacity(SLOTS_COUNT);
-        slots.resize(SLOTS_COUNT, "".to_owned());
-        let mapper = content.split(LF_STR).filter_map(|line| {
-            if line.is_empty() {
-                return None;
-            }
-
-            let items: Vec<_> = line.split(' ').collect();
-            if !items[2].contains("master") {
-                return None;
-            }
-            let sub_slots: HashSet<_> = items[8..]
-                .iter()
-                .map(|x| x)
-                .map(|item| Self::parse_item(item))
-                .flatten()
-                .collect();
-
-            let addr = items[1].split('@').next().expect("must contains addr");
-
-            Some((addr.to_owned(), sub_slots))
-        });
-        let mut count = 0;
-        for (addr, ss) in mapper {
-            for i in ss.into_iter() {
-                slots[i] = addr.clone();
-                count += 1;
-            }
-        }
-        if count != SLOTS_COUNT {
-            Err(Error::BadSlotsMap)
-        } else {
-            Ok(Slots(slots))
-        }
-    }
-
-    fn parse_item(item: &str) -> Vec<usize> {
-        let mut slots = Vec::new();
-        if item.is_empty() {
-            return slots;
-        }
-
-        if item.contains("->-") {
-            debug!("parse cluster nodes result for migrating item={}", item);
-            return item
-                .split("->-")
-                .take(1)
-                .map(|x| x.trim_start_matches('['))
-                .map(|num_str| num_str.parse::<usize>().expect("must parse integer done"))
-                .collect();
-        }
-
-        let mut iter = item.split('-');
-        let begin_str = iter.next().expect("must have integer");
-        let begin = begin_str.parse::<usize>().expect("must parse integer done");
-        if let Some(end_str) = iter.next() {
-            let end = end_str
-                .parse::<usize>()
-                .expect("must parse end integer done");
-            for i in begin..=end {
-                slots.push(i);
-            }
-        } else {
-            slots.push(begin);
-        }
-        slots
-    }
-}
 
 #[derive(Debug)]
 pub struct SlotsMap {
@@ -102,28 +28,84 @@ impl Default for SlotsMap {
 }
 
 impl SlotsMap {
-    pub fn try_update_all(&mut self, data: &[u8]) -> bool {
-        match Slots::parse(data) {
-            Ok(slots) => {
-                let mut slots = slots;
-                if self.slots.is_empty()
-                    || self
-                        .slots
-                        .iter()
-                        .zip(slots.0.iter())
-                        .any(|(my, other)| my != other)
-                {
-                    mem::swap(&mut self.slots, &mut slots.0);
-                    true
-                } else {
-                    false
+    #[allow(clippy::needless_range_loop)]
+    pub fn try_update_all(&mut self, resp: Resp) -> Result<bool, Error> {
+        if resp.rtype != RESP_ARRAY {
+            warn!(
+                "fail to update slots map by `cluster slots` bad resp type {}",
+                resp.rtype
+            );
+            return Err(Error::BadClusterSlotsReply);
+        }
+
+        if resp.array.is_none() {
+            warn!(
+                "fail to update slots map by `cluster slots` bad number {:?}",
+                resp.array
+            );
+            return Err(Error::BadClusterSlotsReply);
+        }
+
+        let mut addrs = Vec::with_capacity(SLOTS_COUNT);
+        addrs.resize(SLOTS_COUNT, String::new());
+
+        let arr = resp.array.unwrap();
+        for r in arr.into_iter() {
+            if r.rtype != RESP_ARRAY {
+                warn!(
+                    "fail to update slots map by `cluster slots` bad resp type {}",
+                    r.rtype
+                );
+                return Err(Error::BadClusterSlotsReply);
+            }
+
+            match r.array {
+                Some(inner) => {
+                    let mut iter = inner.into_iter();
+                    let begin = resp_to_usize(iter.next().ok_or(Error::BadClusterSlotsReply)?)?;
+                    let end = resp_to_usize(iter.next().ok_or(Error::BadClusterSlotsReply)?)?;
+
+                    let endpoint = iter.next().ok_or(Error::BadClusterSlotsReply)?;
+                    let mut epiter = endpoint
+                        .array
+                        .ok_or(Error::BadClusterSlotsReply)?
+                        .into_iter();
+
+                    let addr_resp = epiter.next().ok_or(Error::BadClusterSlotsReply)?;
+                    let addr_data = addr_resp.data.ok_or(Error::BadClusterSlotsReply)?;
+                    let addr = String::from_utf8_lossy(&addr_data);
+                    let port = resp_to_usize(epiter.next().ok_or(Error::BadClusterSlotsReply)?)?;
+                    let backend = format!("{}:{}", addr, port);
+
+                    info!("slots begin={} end={} backend={}", begin, end, backend);
+                    for i in begin..=end {
+                        addrs[i] = backend.clone();
+                    }
+                }
+                None => {
+                    warn!("fail to update slots map by `cluster slots` bad inner number : 0");
+                    return Err(Error::BadClusterSlotsReply);
                 }
             }
-            Err(err) => {
-                warn!("fail to update slots map by given data due {:?}", err);
-                false
-            }
         }
+
+        if addrs.iter().any(|x| x == "") {
+            warn!("fail to update slots map by `cluster slots` not full cover slots");
+            return Err(Error::BadClusterSlotsReply);
+        }
+
+        if self.slots.is_empty()
+            || self
+                .slots
+                .iter()
+                .zip(addrs.iter())
+                .any(|(my, other)| my != other)
+        {
+            mem::swap(&mut self.slots, &mut addrs);
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 
     pub fn add_node(&mut self, node: &str, sender: Sender<Cmd>) {
@@ -140,4 +122,9 @@ impl SlotsMap {
             .map(|x| From::from(x.as_str()))
             .expect("slot must be full matched")
     }
+}
+
+fn resp_to_usize(resp: Resp) -> Result<usize, Error> {
+    let data = resp.data.unwrap();
+    Ok(btoi::btoi::<usize>(&data)?)
 }

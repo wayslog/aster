@@ -750,10 +750,10 @@ pub fn new_asking_cmd() -> Cmd {
     Cmd::new(cmd)
 }
 
-pub fn new_cluster_nodes_cmd() -> Cmd {
+pub fn new_cluster_slots_cmd() -> Cmd {
     let req = Resp::new_array(Some(vec![
         Resp::new_plain(RESP_BULK, Some(b"CLUSTER".to_vec())),
-        Resp::new_plain(RESP_BULK, Some(b"NODES".to_vec())),
+        Resp::new_plain(RESP_BULK, Some(b"SLOTS".to_vec())),
     ]));
     let notify = Notify::empty();
     let cmd = Command {

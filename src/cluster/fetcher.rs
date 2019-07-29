@@ -1,7 +1,7 @@
 use crate::cluster::Cluster;
 use crate::com::*;
-use crate::redis::cmd::{new_cluster_nodes_cmd, Cmd};
-use crate::redis::resp::RESP_BULK;
+use crate::redis::cmd::{new_cluster_slots_cmd, Cmd};
+use crate::redis::resp::RESP_ARRAY;
 
 use futures::task;
 use tokio::prelude::{Async, AsyncSink, Stream};
@@ -36,7 +36,7 @@ impl Fetcher {
             servers,
             cursor: 0,
             state: FetchState::Pending,
-            info_cmd: new_cluster_nodes_cmd(),
+            info_cmd: new_cluster_slots_cmd(),
             internal: Interval::new(Instant::now(), duration),
         }
     }
@@ -52,7 +52,7 @@ impl Stream for Fetcher {
             match self.state {
                 FetchState::Pending => {
                     // initialize
-                    self.info_cmd = new_cluster_nodes_cmd();
+                    self.info_cmd = new_cluster_slots_cmd();
                     let local_task = task::current();
                     self.info_cmd.cmd_reregister(local_task);
                     self.state = FetchState::Ready;
@@ -98,26 +98,34 @@ impl Stream for Fetcher {
                         .swap_reply()
                         .expect("fetch result never be empty for an done cmd");
 
-                    if resp.rtype != RESP_BULK {
+                    if resp.rtype != RESP_ARRAY {
                         warn!("fetch fail due to bad resp {:?}", resp);
                         self.state = FetchState::Ready;
                         continue;
                     }
 
                     let mut slots_map = self.cluster.slots.borrow_mut();
-                    let updated =
-                        slots_map.try_update_all(resp.data.as_ref().expect("never be empty"));
-                    if updated {
-                        info!("success update slotsmap due slots map is changed");
-                    } else {
-                        debug!("skip to update due cluster slots map is never changed");
+                    let updated = slots_map.try_update_all(resp);
+                    match updated {
+                        Ok(true) => {
+                            info!("success update slotsmap due slots map is changed");
+                        }
+                        Ok(false) => {
+                            debug!("skip to update due cluster slots map is never changed");
+                        }
+                        Err(err) => {
+                            info!(
+                                "skip to update due cluster slots command is fail due {:?}",
+                                err
+                            );
+                        }
                     }
                     self.state = FetchState::Done;
                 }
                 FetchState::Done => {
                     self.cursor = 0;
                     self.state = FetchState::Ready;
-                    self.info_cmd = new_cluster_nodes_cmd();
+                    self.info_cmd = new_cluster_slots_cmd();
                     let task = task::current();
                     self.info_cmd.cmd_reregister(task);
                     return Ok(Async::Ready(Some(())));

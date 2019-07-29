@@ -1,7 +1,7 @@
 use crate::cluster::Cluster;
 use crate::com::*;
-use crate::redis::cmd::{new_cluster_nodes_cmd, Cmd};
-use crate::redis::resp::RESP_BULK;
+use crate::redis::cmd::{new_cluster_slots_cmd, Cmd};
+use crate::redis::resp::RESP_ARRAY;
 
 use tokio::net::TcpListener;
 use tokio::prelude::{Async, AsyncSink, Future};
@@ -34,7 +34,7 @@ impl ClusterInitilizer {
             listen: Some(listen),
             servers,
             cursor: 0,
-            info_cmd: new_cluster_nodes_cmd(),
+            info_cmd: new_cluster_slots_cmd(),
             state: InitState::Ready,
         }
     }
@@ -82,13 +82,13 @@ impl Future for ClusterInitilizer {
                         .swap_reply()
                         .expect("reply never be empty for an done cmd");
 
-                    if resp.rtype != RESP_BULK {
+                    if resp.rtype != RESP_ARRAY {
                         self.state = InitState::Pend;
                         continue;
                     }
 
                     let mut slots_map = self.cluster.slots.borrow_mut();
-                    slots_map.try_update_all(resp.data.as_ref().expect("never be empty"));
+                    let _ = slots_map.try_update_all(resp);
                     let mut listener = None;
                     mem::swap(&mut listener, &mut self.listen);
                     return Ok(Async::Ready((self.cluster.clone(), listener.unwrap())));
