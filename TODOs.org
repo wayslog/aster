@@ -1,6 +1,8 @@
-* TODOS [1/4]
+* TODOS [1/6]
 ** TODO 将 memcache text/binary 协议合并成一个
 ** TODO 去掉 redis standalone 中没有用到的crc16计算
 ** TODO 用 failure::Error 统一所有 Error
 ** DONE 使用 cluster slots 替换 cluster nodes
    CLOSED: [2019-07-29 Mon 17:45]
+** TODO cluster 用 backend 模式重写后端
+** TODO cluster.rs 模式重新整理

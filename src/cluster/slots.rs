@@ -77,7 +77,7 @@ impl SlotsMap {
                     let port = resp_to_usize(epiter.next().ok_or(Error::BadClusterSlotsReply)?)?;
                     let backend = format!("{}:{}", addr, port);
 
-                    info!("slots begin={} end={} backend={}", begin, end, backend);
+                    debug!("slots begin={} end={} backend={}", begin, end, backend);
                     for i in begin..=end {
                         addrs[i] = backend.clone();
                     }

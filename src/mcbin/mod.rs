@@ -88,11 +88,7 @@ pub struct MCBinReq {
     req_type: ReqType,
     key_len: u16,
     extra_len: u8,
-    // dataType: u8,
-    // status: [u8; 2],
     body_len: u32,
-    // opaque: [u8; 4],
-    // cas: [u8; 4],
     key: Range,
     data: BytesMut,
     is_done: bool,
@@ -103,11 +99,13 @@ pub struct MCBinReq {
 pub struct Req {
     req: Rc<RefCell<MCBinReq>>,
 }
+
 impl Drop for Req {
     fn drop(&mut self) {
         self.req.borrow().notify.notify();
     }
 }
+
 impl Clone for Req {
     fn clone(&self) -> Req {
         self.req.borrow().notify.add(1);
@@ -116,6 +114,7 @@ impl Clone for Req {
         }
     }
 }
+
 impl Request for Req {
     type Reply = BytesMut;
     type HandleCodec = HandleCodec;
@@ -162,6 +161,7 @@ impl Request for Req {
         req.reply = Some(buf);
     }
 }
+
 impl Default for MCBinReq {
     fn default() -> Self {
         MCBinReq {
@@ -171,11 +171,7 @@ impl Default for MCBinReq {
             extra_len: 0,
             notify: Notify::empty(),
             is_done: false,
-            // dataType: 0,
-            // status: [0; 2],
             body_len: 0,
-            // opaque: [0; 4],
-            // cas: [0; 4],
             key: Range { start: 0, end: 0 },
             data: BytesMut::with_capacity(9),
             reply: None,
@@ -246,14 +242,8 @@ fn parse_header(src: &[u8], decode: bool) -> Result<MCBinReq, Error> {
     let mut len = Cursor::new(&src[2..4]);
     req.key_len = len.read_u16::<BigEndian>().unwrap();
     req.extra_len = src[4];
-    // req.dataType = src[5];
-    // if !decode {
-    //     req.status.copy_from_slice(&src[6..8]);
-    // }
     let mut bodylen = Cursor::new(&src[8..12]);
     req.body_len = bodylen.read_u32::<BigEndian>().unwrap();
-    // req.opaque.copy_from_slice(&src[12..16]);
-    // req.cas.copy_from_slice(&src[16..24]);
     Ok(req)
 }
 fn parse_body(req: &mut MCBinReq, src: &mut BytesMut) -> Result<(), Error> {
