@@ -5,10 +5,9 @@ pub struct StringView {
     len: usize,
 }
 
-impl StringView {
+impl<'a> From<&'a str> for StringView {
     #[inline]
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(v: &str) -> StringView {
+    fn from(v: &'a str) -> StringView {
         let ptr = v.as_ptr();
         let len = v.len();
         StringView { ptr, len }

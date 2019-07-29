@@ -6,6 +6,7 @@ use futures::unsync::mpsc::Sender;
 
 use hashbrown::{HashMap, HashSet};
 
+use std::convert::From;
 use std::mem;
 
 pub const SLOTS_COUNT: usize = 16384;
@@ -136,7 +137,7 @@ impl SlotsMap {
     pub fn get_addr(&mut self, slot: usize) -> StringView {
         self.slots
             .get(slot)
-            .map(|x| StringView::from_str(x))
+            .map(|x| From::from(x.as_str()))
             .expect("slot must be full matched")
     }
 }

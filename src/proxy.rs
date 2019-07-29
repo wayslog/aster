@@ -343,10 +343,10 @@ impl<T: Request + 'static> Proxy<T> {
     fn trans_alias(&self, who: &str) -> StringView {
         if self.is_alias {
             if let Some(addr) = self.alias.borrow().get(who) {
-                return StringView::from_str(addr);
+                return StringView::from(addr.as_str());
             }
         }
-        StringView::from_str(who)
+        StringView::from(who)
     }
 
     fn execute(&self, who: &str, req: T) -> Result<AsyncSink<T>, Error> {
