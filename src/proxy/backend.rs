@@ -151,16 +151,17 @@ where
 
     // clean all the
     fn on_close(&mut self) -> Result<(), Error> {
+        self.buf
+            .iter()
+            .for_each(|item| item.done_with_error(Error::Critical));
+
         if let Some(req) = self.store.take() {
             req.done_with_error(Error::Critical);
         }
 
-        self.buf
-            .iter()
-            .for_each(|item| item.done_with_error(Error::Critical));
         self.down.close().map_err(|e| {
             error!(
-                "fail to close the internal connection to {} succeed due to {:?}",
+                "fail to close the internal connection to {} due to {:?}",
                 &self.addr, e
             );
             Error::Critical
@@ -186,12 +187,11 @@ where
         let mut can_recv = true;
 
         loop {
-            if self.state.is_closed() {
-                return Ok(Async::Ready(()));
-            }
-
             if self.state.is_closing() {
                 self.on_close()?;
+            }
+
+            if self.state.is_closed() {
                 return Ok(Async::Ready(()));
             }
 

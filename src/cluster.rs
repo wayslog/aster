@@ -3,6 +3,7 @@ mod handler;
 mod init;
 mod node;
 mod slots;
+pub mod backend;
 
 use crate::cluster::fetcher::Fetcher;
 use crate::cluster::handler::Handle;

@@ -138,6 +138,7 @@ where
         }
     }
 
+    #[inline]
     fn parse_redirect(resp: &Resp) -> Option<(bool, String)> {
         if resp.rtype != RESP_ERROR {
             return None;

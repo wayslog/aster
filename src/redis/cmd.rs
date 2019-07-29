@@ -608,6 +608,14 @@ lazy_static! {
     {
         Resp::new_plain(RESP_ERROR, Some((&b"command format wrong"[..]).to_vec())) };
 
+    pub static ref RESP_OBJ_BACKEND_CLOSED: Resp =
+    {
+        Resp::new_plain(RESP_ERROR, Some((&b"backend closed"[..]).to_vec())) };
+
+    pub static ref RESP_OBJ_BACKEND_ERROR: Resp =
+    {
+        Resp::new_plain(RESP_ERROR, Some((&b"backend error"[..]).to_vec())) };
+
     pub static ref RESP_OBJ_STRING_PONG: Resp =
     {
         Resp::new_plain(RESP_STRING, Some((&b"PONG"[..]).to_vec())) };

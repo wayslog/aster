@@ -16,22 +16,26 @@ use std::result;
 #[derive(Debug)]
 pub enum Error {
     None,
-    MoreData,
-    NotSupport,
     BadMsg,
     BadKey,
     BadCmd,
     BadConfig,
-    BadSlotsMap,
-    BadClusterSlotsReply,
     ClusterDown,
     BackendNotFound,
     IoError(io::Error),
     Critical,
     StrParseIntError(num::ParseIntError),
-    ParseIntError(btoi::ParseIntegerError),
     SendError(SendError<resp::Resp>),
+
+    // newer
+    BadSlotsMap,
+    BadClusterSlotsReply,
     AddrParseError(net::AddrParseError),
+    ParseIntError(btoi::ParseIntegerError),
+    MoreData,
+    NotSupport,
+    UnableRedirect,
+    BackendClosed,
 }
 
 impl From<net::AddrParseError> for Error {
