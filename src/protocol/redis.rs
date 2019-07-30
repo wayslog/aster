@@ -2,8 +2,9 @@ use bitflags::bitflags;
 use bytes::BytesMut;
 use failure::Error;
 use futures::task::Task;
+use tokio::codec::{Decoder, Encoder};
 
-use crate::com::RespError;
+use crate::com::AsError;
 use crate::utils::myitoa;
 use crate::utils::notify::Notify;
 use crate::utils::upper;
@@ -18,12 +19,14 @@ bitflags! {
 pub mod cmd;
 pub mod resp;
 
-use cmd::CmdType;
-use resp::{Message, MessageMut, RespType};
+pub use cmd::CmdType;
+pub use resp::{Message, MessageMut, RespType};
 
 pub struct Command {
     flags: CFlags,
     ctype: CmdType,
+    // Command redirect count
+    cycle: u8,
 
     req: Message,
     reply: Option<Message>,
@@ -38,8 +41,11 @@ const BYTES_ZERO_INT: &[u8] = b":0\r\n";
 
 const BYTES_CRLF: &[u8] = b"\r\n";
 
-const BYTES_ARRAY_FLAG: &[u8] = b"*";
-const BYTES_INTEGER_FLAG: &[u8] = b":";
+const BYTES_ARRAY: &[u8] = b"*";
+const BYTES_INTEGER: &[u8] = b":";
+
+const DEFAULT_CYCLE: u8 = 0;
+const MAX_CYCLE: u8 = 0b11111111;
 
 // for front end
 impl Command {
@@ -54,9 +60,9 @@ impl Command {
             return Ok(BYTES_JUSTOK.len());
         } else if self.ctype.is_mget() {
             if let Some(subs) = self.subs.as_ref() {
-                let begin = buf.len();
-                buf.extend_from_slice(BYTES_ARRAY_FLAG);
+                buf.extend_from_slice(BYTES_ARRAY);
 
+                let begin = buf.len();
                 let len = subs.len();
                 myitoa(len, buf);
                 buf.extend_from_slice(BYTES_CRLF);
@@ -72,7 +78,7 @@ impl Command {
         } else if self.ctype.is_del() || self.ctype.is_exists() {
             if let Some(subs) = self.subs.as_ref() {
                 let begin = buf.len();
-                buf.extend_from_slice(BYTES_INTEGER_FLAG);
+                buf.extend_from_slice(BYTES_INTEGER);
                 let len = subs.len();
                 myitoa(len, buf);
                 buf.extend_from_slice(BYTES_CRLF);
@@ -85,13 +91,13 @@ impl Command {
             if let Some(size) = self.reply.as_ref().map(|x| x.save(buf)) {
                 return Ok(size);
             } else {
-                Err(RespError::BadReply.into())
+                Err(AsError::BadReply.into())
             }
         }
     }
 }
 
-const BYTES_ASK: &[u8] = b"*1/r/n$3/r/nASK/r/n";
+// const BYTES_ASK: &[u8] = b"*1/r/n$3/r/nASK/r/n";
 
 const BYTES_GET: &[u8] = b"*3\r\nGET\r\n";
 const BYTES_LEN2_HEAD: &[u8] = b"*2/r/n";
@@ -100,47 +106,43 @@ const BYTES_LEN3_HEAD: &[u8] = b"*3/r/n";
 // for back end
 impl Command {
     /// save redis Command into given BytesMut
-    pub fn send_req(&self, buf: &mut BytesMut) -> Result<usize, Error> {
-        let mut size = 0;
+    pub fn send_req(&self, buf: &mut BytesMut) -> Result<(), Error> {
         if self.ctype.is_exists() && self.ctype.is_del() {
-            size += BYTES_LEN2_HEAD.len();
             buf.extend_from_slice(BYTES_LEN2_HEAD);
             if let RespType::Array(_, arrs) = &self.req.rtype {
                 for rtype in arrs {
-                    size += self.req.save_by_rtype(rtype, buf);
+                    self.req.save_by_rtype(rtype, buf);
                 }
             }
-            return Ok(size);
+            return Ok(());
         } else if self.ctype.is_mset() {
-            size += BYTES_LEN3_HEAD.len();
             buf.extend_from_slice(BYTES_LEN3_HEAD);
             if let RespType::Array(_, arrs) = &self.req.rtype {
                 for rtype in arrs {
-                    size += self.req.save_by_rtype(rtype, buf);
+                    self.req.save_by_rtype(rtype, buf);
                 }
             }
-            return Ok(size);
+            return Ok(());
         } else if self.ctype.is_mget() {
-            size += BYTES_LEN2_HEAD.len();
             buf.extend_from_slice(BYTES_LEN2_HEAD);
-            size += BYTES_GET.len();
             buf.extend_from_slice(BYTES_GET);
 
             if let RespType::Array(_, arrs) = &self.req.rtype {
                 for rtype in &arrs[1..] {
-                    size += self.req.save_by_rtype(rtype, buf);
+                    self.req.save_by_rtype(rtype, buf);
                 }
             }
-            return Ok(size);
+            return Ok(());
         }
-        Ok(size + self.req.save(buf))
+        self.req.save(buf);
+        Ok(())
     }
+}
 
-    /// parse redis Command from BytesMut buffer ignore if that's ask
-    pub fn recv_reply(buf: &mut BytesMut) -> Result<Option<Message>, Error> {
-        let reply = MessageMut::parse(buf)?;
-        Ok(reply.map(Into::into))
-    }
+/// parse redis Command from BytesMut buffer ignore if that's ask
+pub fn recv_reply(buf: &mut BytesMut) -> Result<Option<Message>, Error> {
+    let reply = MessageMut::parse(buf)?;
+    Ok(reply.map(Into::into))
 }
 
 impl Command {
@@ -158,6 +160,7 @@ impl Command {
         }
     }
 
+    #[inline(always)]
     fn key_pos(&self) -> usize {
         if self.ctype.is_eval() {
             return KEY_EVAL_POS;
@@ -171,6 +174,18 @@ impl Command {
 
     pub fn is_done(&self) -> bool {
         self.flags & CFlags::DONE == CFlags::DONE
+    }
+
+    pub fn cycle(&self) -> u8 {
+        self.cycle
+    }
+
+    pub fn can_cycle(&mut self) -> bool {
+        self.cycle < MAX_CYCLE
+    }
+
+    pub fn add_cycle(&mut self) {
+        self.cycle += 1;
     }
 
     pub fn set_done(&mut self) {
@@ -212,6 +227,7 @@ impl Command {
                 let subcmd = Command {
                     flags,
                     ctype,
+                    cycle: DEFAULT_CYCLE,
                     req: sub,
                     reply: None,
                     notify: notify.clone(),
@@ -224,6 +240,7 @@ impl Command {
                 flags,
                 ctype,
                 notify,
+                cycle: DEFAULT_CYCLE,
                 subs: Some(subs),
                 req: msg,
                 reply: None,
@@ -236,7 +253,6 @@ impl Command {
     fn mk_subs(flags: CFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Command {
         let Message { rtype, data } = msg.clone();
         if let RespType::Array(head, array) = rtype {
-            // let array = rtype.array().expect("mget sub never none");
             let array_len = array.len();
             if array.len() > MAX_KEY_COUNT {
                 // TODO: forbidden large request
@@ -254,6 +270,7 @@ impl Command {
                 let subcmd = Command {
                     flags,
                     ctype,
+                    cycle: DEFAULT_CYCLE,
                     req: sub,
                     reply: None,
                     notify: notify.clone(),
@@ -265,6 +282,7 @@ impl Command {
 
             Command {
                 flags,
+                cycle: DEFAULT_CYCLE,
                 ctype,
                 req: msg,
                 reply: None,
@@ -278,15 +296,14 @@ impl Command {
 }
 
 const COMMAND_POS: usize = 0;
-
 const KEY_EVAL_POS: usize = 3;
 const KEY_RAW_POS: usize = 1;
 
-const CMD_BYTES_MGET: &[u8] = b"MGET";
-const CMD_BYTES_MSET: &[u8] = b"MSET";
-const CMD_BYTES_DEL: &[u8] = b"DEL";
-const CMD_BYTES_EXISTS: &[u8] = b"EXISTS";
-const CMD_BYTES_EVAL: &[u8] = b"EVAL";
+// const CMD_BYTES_MGET: &[u8] = b"MGET";
+// const CMD_BYTES_MSET: &[u8] = b"MSET";
+// const CMD_BYTES_DEL: &[u8] = b"DEL";
+// const CMD_BYTES_EXISTS: &[u8] = b"EXISTS";
+// const CMD_BYTES_EVAL: &[u8] = b"EVAL";
 
 const MAX_KEY_COUNT: usize = 10000;
 
@@ -316,10 +333,50 @@ impl From<MessageMut> for Command {
         Command {
             flags,
             ctype,
+            cycle: DEFAULT_CYCLE,
             req: msg,
             reply: None,
             notify,
             subs: None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RedisHandleCodec {}
+
+impl Decoder for RedisHandleCodec {
+    type Item = Command;
+    type Error = Error;
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        Command::parse_cmd(src)
+    }
+}
+
+impl Encoder for RedisHandleCodec {
+    type Item = Command;
+    type Error = Error;
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let _ = item.reply_cmd(dst)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RedisNodeCodec {}
+
+impl Decoder for RedisNodeCodec {
+    type Item = Message;
+    type Error = Error;
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        recv_reply(src)
+    }
+}
+
+impl Encoder for RedisNodeCodec {
+    type Item = Command;
+    type Error = Error;
+    fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        item.send_req(dst)
     }
 }

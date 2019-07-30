@@ -151,7 +151,7 @@ lazy_static! {
     };
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum CmdType {
     Read,
     Write,
@@ -159,52 +159,32 @@ pub enum CmdType {
     NotSupport,
     IgnoreReply,
 
-    MSet,
-    MGet,
-    Exists,
-    Eval,
-    Del,
+    MSet,   // Write
+    MGet,   // Read
+    Exists, // Read
+    Eval,   // Write
+    Del,    // Write
 }
 
 impl CmdType {
     pub fn is_mget(&self) -> bool {
-        if let CmdType::MGet = self {
-            true
-        } else {
-            false
-        }
+        CmdType::MGet == *self
     }
 
     pub fn is_mset(&self) -> bool {
-        if let CmdType::MSet = self {
-            true
-        } else {
-            false
-        }
+        CmdType::MSet == *self
     }
 
     pub fn is_exists(&self) -> bool {
-        if let CmdType::Exists = self {
-            true
-        } else {
-            false
-        }
+        CmdType::Exists == *self
     }
 
     pub fn is_eval(&self) -> bool {
-        if let CmdType::Eval = self {
-            true
-        } else {
-            false
-        }
+        CmdType::Eval == *self
     }
 
     pub fn is_del(&self) -> bool {
-        if let CmdType::Del = self {
-            true
-        } else {
-            false
-        }
+        CmdType::Del == *self
     }
 
     pub fn get_cmd_type(msg: &Message) -> CmdType {

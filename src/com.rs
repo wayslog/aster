@@ -1,17 +1,22 @@
 pub use failure::Error;
 
 #[derive(Debug, Fail)]
-pub enum RespError {
+pub enum AsError {
     #[fail(display = "invalid message")]
     BadMessage,
 
     #[fail(display = "message is ok but request bad or not allowed")]
     BadReqeust,
 
+    #[fail(display = "request not spport")]
+    RequestNotSupport,
+
     #[fail(display = "message reply is bad")]
     BadReply,
-}
 
+    #[fail(display = "there is nothing happend")]
+    None,
+}
 
 #[derive(Deserialize, Debug)]
 pub struct Config {

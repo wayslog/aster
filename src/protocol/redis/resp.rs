@@ -3,6 +3,7 @@ use crate::utils::simdfind;
 
 use bytes::{Bytes, BytesMut};
 
+use std::collections::VecDeque;
 use std::usize;
 
 pub const RESP_INLINE: u8 = 0u8;
@@ -81,13 +82,13 @@ impl MessageMut {
         };
 
         if pos == 0 {
-            return Err(RespError::BadMessage.into());
+            return Err(AsError::BadMessage.into());
         }
 
         // detect pos -1 is CR
         if src[cursor + pos - 1] != BYTE_CR {
             // should detect inline
-            return Err(RespError::BadMessage.into());
+            return Err(AsError::BadMessage.into());
         }
 
         match src[cursor] {
@@ -112,7 +113,7 @@ impl MessageMut {
             RESP_BULK => {
                 let csize = match btoi::btoi::<isize>(&src[cursor + 1..cursor + pos - 1]) {
                     Ok(csize) => csize,
-                    Err(_err) => return Err(RespError::BadMessage.into()),
+                    Err(_err) => return Err(AsError::BadMessage.into()),
                 };
 
                 if csize == -1 {
@@ -121,7 +122,7 @@ impl MessageMut {
                         size: 5,
                     }));
                 } else if csize < 0 {
-                    return Err(RespError::BadMessage.into());
+                    return Err(AsError::BadMessage.into());
                 }
 
                 let total_size = (pos + 1) + (csize as usize) + 2;
@@ -139,7 +140,7 @@ impl MessageMut {
             RESP_ARRAY => {
                 let csize = match btoi::btoi::<isize>(&src[cursor + 1..cursor + pos - 1]) {
                     Ok(csize) => csize,
-                    Err(_err) => return Err(RespError::BadMessage.into()),
+                    Err(_err) => return Err(AsError::BadMessage.into()),
                 };
                 if csize == -1 {
                     return Ok(Some(MsgPack {
@@ -147,7 +148,7 @@ impl MessageMut {
                         size: 5,
                     }));
                 } else if csize < 0 {
-                    return Err(RespError::BadMessage.into());
+                    return Err(AsError::BadMessage.into());
                 }
                 let mut mycursor = cursor + pos + 1;
                 let mut items = Vec::new();
@@ -165,7 +166,7 @@ impl MessageMut {
                 }));
             }
             _ => {
-                return Err(RespError::BadMessage.into());
+                return Err(AsError::BadMessage.into());
             }
         }
 
@@ -176,6 +177,7 @@ impl MessageMut {
         let rslt = match Self::parse_inner(0, &src[..]) {
             Ok(r) => r,
             Err(err) => {
+                // TODO: should change it as wrong bad command error
                 if let Some(pos) = simdfind::find_lf_simd(&src[..]) {
                     src.advance(pos + 1);
                 }
@@ -297,6 +299,21 @@ impl From<MessageMut> for Message {
     }
 }
 
+pub struct MessageIter<'a> {
+    msg: &'a Message,
+    index: usize,
+}
+
+impl<'a> Iterator for MessageIter<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.index;
+        self.index += 1;
+        self.msg.nth(current)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Message {
     pub rtype: RespType,
@@ -337,50 +354,72 @@ impl Message {
         }
     }
 
-    pub fn data(&self) -> &[u8] {
+    pub fn raw_data(&self) -> &[u8] {
         self.data.as_ref()
+    }
+
+    pub fn data(&self) -> Option<&[u8]> {
+        let range = self.get_range(Some(&self.rtype));
+        range.map(|rg| &self.data.as_ref()[rg.begin()..rg.end()])
     }
 
     pub fn nth(&self, index: usize) -> Option<&[u8]> {
         if let Some(range) = self.get_nth_data_range(index) {
-            Some(&self.data.as_ref()[range.begin()..range.end()])
-        } else {
-            None
+            return Some(&self.data.as_ref()[range.begin()..range.end()]);
         }
+
+        if index == 0 {
+            // only zero shot path to data
+            return self.data();
+        }
+        None
     }
 
     fn get_nth_data_range(&self, index: usize) -> Option<Range> {
         if let RespType::Array(_, items) = &self.rtype {
-            if let Some(item) = items.get(index) {
-                match item {
-                    RespType::String(Range { begin, end }) => {
-                        return Some(Range {
-                            begin: begin + 1,
-                            end: end - 2,
-                        })
-                    }
-                    RespType::Error(Range { begin, end }) => {
-                        return Some(Range {
-                            begin: begin + 1,
-                            end: end - 2,
-                        })
-                    }
-                    RespType::Integer(Range { begin, end }) => {
-                        return Some(Range {
-                            begin: begin + 1,
-                            end: end - 2,
-                        })
-                    }
-                    RespType::Bulk(_, Range { begin, end }) => {
-                        return Some(Range {
-                            begin: *begin,
-                            end: end - 2,
-                        })
-                    }
-                    _ => return None,
-                }
-            }
+            return self.get_range(items.get(index));
         }
         None
+    }
+
+    fn get_range(&self, rtype: Option<&RespType>) -> Option<Range> {
+        if let Some(item) = rtype {
+            match item {
+                RespType::String(Range { begin, end }) => {
+                    return Some(Range {
+                        begin: begin + 1,
+                        end: end - 2,
+                    })
+                }
+                RespType::Error(Range { begin, end }) => {
+                    return Some(Range {
+                        begin: begin + 1,
+                        end: end - 2,
+                    })
+                }
+                RespType::Integer(Range { begin, end }) => {
+                    return Some(Range {
+                        begin: begin + 1,
+                        end: end - 2,
+                    })
+                }
+                RespType::Bulk(_, Range { begin, end }) => {
+                    return Some(Range {
+                        begin: *begin,
+                        end: end - 2,
+                    })
+                }
+                _ => return None,
+            }
+        }
+
+        None
+    }
+
+    pub fn iter(&self) -> MessageIter {
+        MessageIter {
+            msg: &self,
+            index: 0,
+        }
     }
 }
