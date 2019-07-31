@@ -3,7 +3,6 @@ use crate::utils::simdfind;
 
 use bytes::{Bytes, BytesMut};
 
-use std::collections::VecDeque;
 use std::usize;
 
 pub const RESP_INLINE: u8 = 0u8;
@@ -232,6 +231,39 @@ fn test_parse() {
     }
 }
 
+#[test]
+fn test_iter() {
+    let data = b"*2\r\n$3\r\nget\r\n$4\r\nab\nc\r\n";
+    let mut src = BytesMut::from(&data[..]);
+    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+    assert_eq!(msg.raw_data().len(), data.len());
+    let mut iter = msg.iter();
+    assert_eq!(iter.next(), Some(b"get".as_ref()));
+    assert_eq!(iter.next(), Some(b"ab\nc".as_ref()));
+}
+
+#[test]
+fn test_iter_plain() {
+    let data = b"+abcdef\r\n";
+    let mut src = BytesMut::from(&data[..]);
+    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+    assert_eq!(msg.raw_data().len(), data.len());
+    let mut iter = msg.iter();
+    assert_eq!(iter.next(), Some("abcdef".as_bytes()));
+    assert_eq!(iter.next(), None);
+}
+
+#[test]
+fn test_iter_bulk() {
+    let data = b"$3\r\nabc\r\n";
+    let mut src = BytesMut::from(&data[..]);
+    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+    assert_eq!(msg.raw_data().len(), data.len());
+    let mut iter = msg.iter();
+    assert_eq!(iter.next(), Some("abc".as_bytes()));
+    assert_eq!(iter.next(), None);
+}
+
 impl MessageMut {
     pub fn nth_mut(&mut self, index: usize) -> Option<&mut [u8]> {
         if let Some(range) = self.get_nth_data_range(index) {
@@ -382,7 +414,11 @@ impl Message {
         None
     }
 
-    fn get_range(&self, rtype: Option<&RespType>) -> Option<Range> {
+    pub(super) fn get_data_of_range(&self, rg: Range) -> &[u8] {
+        &self.data.as_ref()[rg.begin()..rg.end()]
+    }
+
+    pub(super) fn get_range(&self, rtype: Option<&RespType>) -> Option<Range> {
         if let Some(item) = rtype {
             match item {
                 RespType::String(Range { begin, end }) => {

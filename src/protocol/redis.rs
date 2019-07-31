@@ -9,18 +9,22 @@ use crate::utils::myitoa;
 use crate::utils::notify::Notify;
 use crate::utils::upper;
 
+use std::collections::{BTreeMap, HashSet};
+
+const SLOT_COUNT: usize = 16384;
+
+pub mod cmd;
+pub mod resp;
+
+pub use cmd::CmdType;
+pub use resp::{Message, MessageIter, MessageMut, RespType};
+
 bitflags! {
     struct CFlags: u8 {
         const DONE     = 0b00000001;
         const ASK      = 0b00000010;
     }
 }
-
-pub mod cmd;
-pub mod resp;
-
-pub use cmd::CmdType;
-pub use resp::{Message, MessageMut, RespType};
 
 pub struct Command {
     flags: CFlags,
@@ -378,5 +382,75 @@ impl Encoder for RedisNodeCodec {
     type Error = Error;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         item.send_req(dst)
+    }
+}
+
+pub type ReplicaLayer = (Vec<String>, Vec<Vec<String>>);
+
+pub fn slots_reply_to_replicas(msg: Message) -> Result<Option<ReplicaLayer>, AsError> {
+    match msg.rtype {
+        RespType::Array(_, ref subs) => {
+            let mut masters = BTreeMap::<usize, String>::new();
+            let mut replicas = BTreeMap::<usize, HashSet<String>>::new();
+
+            let get_data = |index: usize, each: &[RespType]| -> Result<&[u8], AsError> {
+                let frg = msg
+                    .get_range(each.get(index))
+                    .ok_or(AsError::WrongClusterSlotsReplySlot)?;
+                Ok(msg.get_data_of_range(frg))
+            };
+
+            let get_number = |index: usize, each: &[RespType]| -> Result<usize, AsError> {
+                let data = get_data(index, each)?;
+                let num = btoi::btoi::<usize>(data)?;
+                Ok(num)
+            };
+
+            let get_addr = |each: &RespType| -> Result<String, AsError> {
+                if let RespType::Array(_, ref inner) = each {
+                    let port = get_number(1, inner)?;
+                    let addr = String::from_utf8_lossy(get_data(2, inner)?);
+                    Ok(format!("{}:{}", addr, port))
+                } else {
+                    Err(AsError::WrongClusterSlotsReplyType)
+                }
+            };
+
+            for sub in subs {
+                if let RespType::Array(_, ref subs) = sub {
+                    let begin = get_number(0, subs)?;
+                    let end = get_number(1, subs)?;
+                    let master = get_addr(subs.get(2).ok_or(AsError::WrongClusterSlotsReplyType)?)?;
+                    for i in begin..=end {
+                        masters.insert(i, master.clone());
+                    }
+                    for i in begin..=end {
+                        replicas.insert(i, HashSet::new());
+                    }
+                    if subs.len() > 3 {
+                        let mut replica_set = HashSet::new();
+                        for resp in subs.iter().skip(3) {
+                            let replica = get_addr(resp)?;
+                            replica_set.insert(replica);
+                        }
+                        for i in begin..=end {
+                            replicas.insert(i, replica_set.clone());
+                        }
+                    }
+                } else {
+                    return Err(AsError::WrongClusterSlotsReplyType);
+                }
+            }
+            if masters.len() != SLOT_COUNT {
+                return Ok(None);
+            }
+            let master_list = masters.into_iter().map(|(_, v)| v).collect();
+            let replicas_list = replicas
+                .into_iter()
+                .map(|(_, v)| v.into_iter().collect())
+                .collect();
+            Ok(Some((master_list, replicas_list)))
+        }
+        _ => Err(AsError::WrongClusterSlotsReplyType),
     }
 }

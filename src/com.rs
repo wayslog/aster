@@ -14,8 +14,23 @@ pub enum AsError {
     #[fail(display = "message reply is bad")]
     BadReply,
 
+    #[fail(display = "fail to parse integer {}", _0)]
+    ParseIntError(btoi::ParseIntegerError),
+
+    #[fail(display = "CLUSTER SLOTS must be replied with array")]
+    WrongClusterSlotsReplyType,
+
+    #[fail(display = "CLUSTER SLOTS must contains slot info")]
+    WrongClusterSlotsReplySlot,
+
     #[fail(display = "there is nothing happend")]
     None,
+}
+
+impl From<btoi::ParseIntegerError> for AsError {
+    fn from(oe: btoi::ParseIntegerError) -> AsError {
+        AsError::ParseIntError(oe)
+    }
 }
 
 #[derive(Deserialize, Debug)]
