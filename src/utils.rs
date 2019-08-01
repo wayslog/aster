@@ -40,3 +40,20 @@ pub(crate) fn myitoa(input: usize, buf: &mut BytesMut) {
     let mut writer = buf.writer();
     itoa::write(&mut writer, input).unwrap();
 }
+
+
+#[inline]
+pub fn trim_hash_tag<'a, 'b>(key: &'a [u8], hash_tag: &'b [u8]) -> &'a [u8] {
+    if hash_tag.len() != 2 {
+        return key;
+    }
+    if let Some(begin) = key.iter().position(|x| *x == hash_tag[0]) {
+        if let Some(end_offset) = key[begin..].iter().position(|x| *x == hash_tag[1]) {
+            // to avoid abc{}de
+            if end_offset > 1 {
+                return &key[begin + 1..begin + end_offset];
+            }
+        }
+    }
+    key
+}

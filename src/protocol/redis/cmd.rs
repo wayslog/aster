@@ -167,6 +167,14 @@ pub enum CmdType {
 }
 
 impl CmdType {
+    pub fn is_read(&self) -> bool {
+        CmdType::Read == *self || self.is_mget() || self.is_exists()
+    }
+
+    pub fn is_write(&self) -> bool {
+        CmdType::Write == *self
+    }
+
     pub fn is_mget(&self) -> bool {
         CmdType::MGet == *self
     }

@@ -5,13 +5,12 @@ use futures::task::Task;
 use tokio::codec::{Decoder, Encoder};
 
 use crate::com::AsError;
-use crate::utils::myitoa;
 use crate::utils::notify::Notify;
-use crate::utils::upper;
+use crate::utils::{myitoa, trim_hash_tag, upper};
 
 use std::collections::{BTreeMap, HashSet};
 
-const SLOT_COUNT: usize = 16384;
+pub const SLOTS_COUNT: usize = 16384;
 
 pub mod cmd;
 pub mod resp;
@@ -23,6 +22,7 @@ bitflags! {
     struct CFlags: u8 {
         const DONE     = 0b00000001;
         const ASK      = 0b00000010;
+        const MOVED    = 0b00000100;
     }
 }
 
@@ -150,14 +150,14 @@ pub fn recv_reply(buf: &mut BytesMut) -> Result<Option<Message>, Error> {
 }
 
 impl Command {
-    pub fn key_hash<T>(&self, method: T) -> u64
+    pub fn key_hash<T>(&self, hash_tag: &[u8], method: T) -> usize
     where
-        T: Fn(&[u8]) -> u64,
+        T: Fn(&[u8]) -> u16,
     {
         let pos = self.key_pos();
 
-        if let Some(cmd_data) = self.req.nth(pos) {
-            method(cmd_data)
+        if let Some(key_data) = self.req.nth(pos) {
+            method(trim_hash_tag(key_data, hash_tag)) as usize
         } else {
             // TODO: set bad request error
             unreachable!()
@@ -180,6 +180,10 @@ impl Command {
         self.flags & CFlags::DONE == CFlags::DONE
     }
 
+    pub fn set_done(&mut self) {
+        self.flags |= CFlags::DONE;
+    }
+
     pub fn cycle(&self) -> u8 {
         self.cycle
     }
@@ -192,16 +196,24 @@ impl Command {
         self.cycle += 1;
     }
 
-    pub fn set_done(&mut self) {
-        self.flags |= CFlags::DONE;
-    }
-
     pub fn is_ask(&self) -> bool {
         self.flags & CFlags::ASK == CFlags::ASK
     }
 
     pub fn set_ask(&mut self) {
         self.flags |= CFlags::ASK;
+    }
+
+    pub fn is_moved(&mut self) -> bool {
+        self.flags & CFlags::MOVED == CFlags::MOVED
+    }
+
+    pub fn set_moved(&mut self) {
+        self.flags |= CFlags::MOVED;
+    }
+
+    pub fn is_read(&self) -> bool {
+        self.ctype.is_read()
     }
 }
 
@@ -441,7 +453,7 @@ pub fn slots_reply_to_replicas(msg: Message) -> Result<Option<ReplicaLayer>, AsE
                     return Err(AsError::WrongClusterSlotsReplyType);
                 }
             }
-            if masters.len() != SLOT_COUNT {
+            if masters.len() != SLOTS_COUNT {
                 return Ok(None);
             }
             let master_list = masters.into_iter().map(|(_, v)| v).collect();

@@ -18,8 +18,8 @@ services:
   - memcached
 
 matrix:
-  # allow_failures:
-  #   - rust: stable
+  allow_failures:
+    - rust: stable
   fast_finish: true
 
 cache:
