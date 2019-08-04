@@ -23,8 +23,17 @@ pub enum AsError {
     #[fail(display = "CLUSTER SLOTS must contains slot info")]
     WrongClusterSlotsReplySlot,
 
+    #[fail(display = "unexcept io error {}", _0)]
+    IoError(tokio::io::Error),
+
     #[fail(display = "there is nothing happend")]
     None,
+}
+
+impl From<tokio::io::Error> for AsError {
+    fn from(oe: tokio::io::Error) -> AsError {
+        AsError::IoError(oe)
+    }
 }
 
 impl From<btoi::ParseIntegerError> for AsError {

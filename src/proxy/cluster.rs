@@ -1,24 +1,27 @@
+pub mod back;
+pub mod front;
+
 use crate::com::AsError;
 use crate::com::ClusterConfig;
-use crate::protocol::redis::{Command, Message, MessageIter, ReplicaLayer, SLOTS_COUNT};
+use crate::protocol::redis::{Cmd, ReplicaLayer, SLOTS_COUNT};
 use crate::utils::crc::crc16;
 
-use failure::Error;
+// use failure::Error;
 use futures::task::Task;
 use futures::unsync::mpsc::{channel, Receiver, SendError, Sender};
 use futures::AsyncSink;
 use futures::{Sink, Stream};
-use log::Level::{Trace, Debug};
+use log::Level::{Debug, Trace};
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 
-// macro_rules! primary {
-//     ($conns:expr, s:expr) => {
-//         $conns.get_mut($s).map(|&mut x| x.get_primary())
-//     };
-// }
+pub enum Redirect {
+    Move { slot: usize, to: String },
+    Ask { slot: usize, to: String },
+}
 
+pub use Redirect::{Ask, Move};
 
 pub struct Cluster {
     pub cc: ClusterConfig,
@@ -48,36 +51,38 @@ impl Cluster {
         Ok(())
     }
 
-    pub fn dispatch_all(&self, cmds: &mut VecDeque<Command>) -> Result<(), AsError> {
+    pub fn dispatch_all(&self, cmds: &mut VecDeque<Cmd>) -> Result<usize, AsError> {
+        let mut count = 0usize;
         loop {
             if cmds.is_empty() {
-                return Ok(());
+                return Ok(count);
             }
             let cmd = cmds
                 .pop_front()
                 .expect("due to check len first, pop front never be empty");
-            let slot = cmd.key_hash(self.hash_tag.as_ref(), crc16);
-            let addr = self.get_addr(slot, cmd.is_read());
+            let slot = cmd.borrow().key_hash(self.hash_tag.as_ref(), crc16);
+            let addr = self.get_addr(slot, cmd.borrow().is_read());
             let mut conns = self.conns.borrow_mut();
 
-            if let Some(sender) = conns.get_mut(&addr).map(|x| x.primary()) {
+            if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {
                 match sender.start_send(cmd) {
                     Ok(AsyncSink::Ready) => {
                         if log_enabled!(Trace) {
                             debug!("success start command into backend");
                         }
+                        count += 1;
                     }
-                    Ok(AsyncSink::NotReady(mut cmd)) => {
-                        cmd.add_cycle();
+                    Ok(AsyncSink::NotReady(cmd)) => {
+                        cmd.borrow_mut().add_cycle();
                         cmds.push_front(cmd);
-                        return Ok(());
+                        return Ok(count);
                     }
                     Err(se) => {
-                        let mut cmd = se.into_inner();
-                        cmd.add_cycle();
+                        let cmd = se.into_inner();
+                        cmd.borrow_mut().add_cycle();
                         cmds.push_front(cmd);
                         self.connect(&addr, &mut conns)?;
-                        return Ok(());
+                        return Ok(count);
                     }
                 }
             } else {
@@ -88,27 +93,23 @@ impl Cluster {
 }
 
 struct Conns {
-    inner: HashMap<String, Conn<Sender<Command>>>,
+    inner: HashMap<String, Conn<Sender<Cmd>>>,
 }
 
 impl Conns {
-    fn get_mut(&mut self, s: &str) -> Option<&mut Conn<Sender<Command>>> {
+    fn get_mut(&mut self, s: &str) -> Option<&mut Conn<Sender<Cmd>>> {
         self.inner.get_mut(s)
     }
 }
 
 struct Conn<S> {
     addr: String,
-    primary: S,
-    secondary: Option<S>,
+    sender: S,
 }
 
 impl<S> Conn<S> {
-    fn primary(&mut self) -> &mut S {
-        &mut self.primary
-    }
-    fn secondary(&mut self) -> Option<&mut S> {
-        self.secondary.as_mut()
+    fn sender(&mut self) -> &mut S {
+        &mut self.sender
     }
 }
 

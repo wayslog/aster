@@ -8,6 +8,9 @@ use crate::com::AsError;
 use crate::utils::notify::Notify;
 use crate::utils::{myitoa, trim_hash_tag, upper};
 
+use std::cell::{Ref, RefCell, RefMut};
+use std::rc::Rc;
+
 use std::collections::{BTreeMap, HashSet};
 
 pub const SLOTS_COUNT: usize = 16384;
@@ -17,6 +20,29 @@ pub mod resp;
 
 pub use cmd::CmdType;
 pub use resp::{Message, MessageIter, MessageMut, RespType};
+
+#[derive(Clone)]
+pub struct Cmd {
+    cmd: Rc<RefCell<Command>>,
+}
+
+impl From<Command> for Cmd {
+    fn from(cmd: Command) -> Self {
+        Cmd {
+            cmd: Rc::new(RefCell::new(cmd)),
+        }
+    }
+}
+
+impl Cmd {
+    pub fn borrow(&self) -> Ref<Command> {
+        self.cmd.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> RefMut<Command> {
+        self.cmd.borrow_mut()
+    }
+}
 
 bitflags! {
     struct CFlags: u8 {
@@ -36,7 +62,7 @@ pub struct Command {
     reply: Option<Message>,
 
     notify: Notify,
-    subs: Option<Vec<Command>>,
+    subs: Option<Vec<Cmd>>,
 }
 
 const BYTES_JUSTOK: &[u8] = b"+OK\r\n";
@@ -72,7 +98,7 @@ impl Command {
                 buf.extend_from_slice(BYTES_CRLF);
 
                 for sub in subs {
-                    sub.reply_cmd(buf)?;
+                    sub.borrow().reply_cmd(buf)?;
                 }
                 return Ok(buf.len() - begin);
             } else {
@@ -101,7 +127,7 @@ impl Command {
     }
 }
 
-// const BYTES_ASK: &[u8] = b"*1/r/n$3/r/nASK/r/n";
+const BYTES_ASK: &[u8] = b"*1/r/n$3/r/nASK/r/n";
 
 const BYTES_GET: &[u8] = b"*3\r\nGET\r\n";
 const BYTES_LEN2_HEAD: &[u8] = b"*2/r/n";
@@ -111,6 +137,10 @@ const BYTES_LEN3_HEAD: &[u8] = b"*3/r/n";
 impl Command {
     /// save redis Command into given BytesMut
     pub fn send_req(&self, buf: &mut BytesMut) -> Result<(), Error> {
+        if self.is_ask() {
+            buf.extend_from_slice(BYTES_ASK);
+        }
+
         if self.ctype.is_exists() && self.ctype.is_del() {
             buf.extend_from_slice(BYTES_LEN2_HEAD);
             if let RespType::Array(_, arrs) = &self.req.rtype {
@@ -144,10 +174,6 @@ impl Command {
 }
 
 /// parse redis Command from BytesMut buffer ignore if that's ask
-pub fn recv_reply(buf: &mut BytesMut) -> Result<Option<Message>, Error> {
-    let reply = MessageMut::parse(buf)?;
-    Ok(reply.map(Into::into))
-}
 
 impl Command {
     pub fn key_hash<T>(&self, hash_tag: &[u8], method: T) -> usize
@@ -170,6 +196,10 @@ impl Command {
             return KEY_EVAL_POS;
         }
         KEY_RAW_POS
+    }
+
+    pub fn subs(&self) -> Option<Vec<Cmd>> {
+        self.subs.as_ref().cloned()
     }
 
     pub fn reregister(&self, task: Task) {
@@ -250,7 +280,7 @@ impl Command {
                     subs: None,
                 };
 
-                subs.push(subcmd);
+                subs.push(subcmd.into());
             }
             Command {
                 flags,
@@ -293,7 +323,7 @@ impl Command {
                     subs: None,
                 };
 
-                subs.push(subcmd);
+                subs.push(subcmd.into());
             }
 
             Command {
@@ -362,18 +392,19 @@ impl From<MessageMut> for Command {
 pub struct RedisHandleCodec {}
 
 impl Decoder for RedisHandleCodec {
-    type Item = Command;
+    type Item = Cmd;
     type Error = Error;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        Command::parse_cmd(src)
+        let command = Command::parse_cmd(src);
+        command.map(|x| x.map(|y| y.into()))
     }
 }
 
 impl Encoder for RedisHandleCodec {
-    type Item = Command;
+    type Item = Cmd;
     type Error = Error;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        let _ = item.reply_cmd(dst)?;
+        let _ = item.borrow().reply_cmd(dst)?;
         Ok(())
     }
 }
@@ -385,15 +416,16 @@ impl Decoder for RedisNodeCodec {
     type Item = Message;
     type Error = Error;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        recv_reply(src)
+        let reply = MessageMut::parse(src)?;
+        Ok(reply.map(Into::into))
     }
 }
 
 impl Encoder for RedisNodeCodec {
-    type Item = Command;
+    type Item = Cmd;
     type Error = Error;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        item.send_req(dst)
+        item.borrow().send_req(dst)
     }
 }
 
