@@ -48,6 +48,7 @@ num_cpus = "1.8"
 failure="0.1"
 slab="0.4"
 bitflags = "1.0.4"
+aho-corasick = "0.7.6"
 
 [profile.release]
 debug = true

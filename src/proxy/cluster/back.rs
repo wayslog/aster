@@ -87,10 +87,27 @@ where
         Ok(Async::NotReady)
     }
 
+    fn try_recv(&mut self) -> Result<Async<()>, AsError> {
+        loop {
+            if self.cmdq.is_empty() {
+                return Ok(Async::NotReady);
+            }
 
-    fn try_recv(&mut self) -> Result<(), AsError> {
-        loop{
-            // TODO: for done it quickly
+            let is_ask = self
+                .cmdq
+                .front()
+                .map(|x| x.borrow().is_ask())
+                .expect("front always have cmd");
+
+            // TODO: add redirect checker
+            // match self.recv.poll() {
+            //     Ok(Async::Ready(msg)) => {
+            //         // check if it is redirect
+            //         let redirect = msg.check_redirect();
+            //     }
+            //     Ok(Async::NotReady) => {
+            //     }
+            // }
         }
     }
 }

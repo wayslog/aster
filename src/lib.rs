@@ -1,5 +1,6 @@
 // #![deny(warnings)]
 #![feature(cell_update)]
+#![feature(option_flattening)]
 
 #[macro_use(try_ready)]
 extern crate futures;

@@ -1,6 +1,8 @@
 use crate::com::*;
+use crate::proxy::cluster::Redirect;
 use crate::utils::simdfind;
 
+use aho_corasick::AhoCorasick;
 use bytes::{Bytes, BytesMut};
 
 use std::usize;
@@ -15,7 +17,7 @@ pub const RESP_ARRAY: u8 = b'*';
 pub const BYTE_CR: u8 = b'\r';
 pub const BYTE_LF: u8 = b'\n';
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Range {
     pub begin: u32,
     pub end: u32,
@@ -458,4 +460,47 @@ impl Message {
             index: 0,
         }
     }
+
+    pub fn check_redirect(&self) -> Option<Redirect> {
+        match self.rtype {
+            RespType::Error(_) => {}
+            _ => return None,
+        }
+        self.data().map(|data| parse_redirect(data)).flatten()
+    }
+}
+
+const BYTE_SPACE: u8 = b' ';
+const PATTERNS: &[&'static str] = &["ASK", "MOVED"];
+
+lazy_static! {
+    static ref FINDER: AhoCorasick = { AhoCorasick::new(PATTERNS) };
+}
+
+fn parse_redirect(data: &[u8]) -> Option<Redirect> {
+    if let Some(mat) = FINDER.find(data) {
+        let pat = mat.pattern();
+        let end = mat.end();
+        let rdata = &data[end + 1..];
+
+        let pos = if let Some(pos) = rdata.iter().position(|&x| x == BYTE_SPACE) {
+            pos
+        } else {
+            return None;
+        };
+
+        let sdata = &rdata[..pos];
+        let tdata = &rdata[pos + 1..];
+        if let Some(slot) = btoi::btoi::<usize>(sdata).ok() {
+            let to = String::from_utf8_lossy(tdata);
+            let to = to.to_string();
+            if pat == 0 {
+                return Some(Redirect::Ask { slot, to });
+            } else {
+                // moved
+                return Some(Redirect::Move { slot, to });
+            }
+        }
+    }
+    None
 }
