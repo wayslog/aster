@@ -75,7 +75,7 @@ pub struct MessageMut {
 }
 
 impl MessageMut {
-    fn parse_inner(cursor: usize, src: &[u8]) -> Result<Option<MsgPack>, Error> {
+    fn parse_inner(cursor: usize, src: &[u8]) -> Result<Option<MsgPack>, AsError> {
         let pos = if let Some(p) = simdfind::find_lf_simd(&src[cursor..]) {
             p
         } else {
@@ -83,13 +83,13 @@ impl MessageMut {
         };
 
         if pos == 0 {
-            return Err(AsError::BadMessage.into());
+            return Err(AsError::BadMessage);
         }
 
         // detect pos -1 is CR
         if src[cursor + pos - 1] != BYTE_CR {
             // should detect inline
-            return Err(AsError::BadMessage.into());
+            return Err(AsError::BadMessage);
         }
 
         match src[cursor] {
@@ -174,7 +174,7 @@ impl MessageMut {
         Ok(None)
     }
 
-    pub fn parse(src: &mut BytesMut) -> Result<Option<MessageMut>, Error> {
+    pub fn parse(src: &mut BytesMut) -> Result<Option<MessageMut>, AsError> {
         let rslt = match Self::parse_inner(0, &src[..]) {
             Ok(r) => r,
             Err(err) => {

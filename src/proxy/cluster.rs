@@ -4,17 +4,25 @@ pub mod front;
 use crate::com::AsError;
 use crate::com::ClusterConfig;
 use crate::protocol::redis::{Cmd, ReplicaLayer, SLOTS_COUNT};
+use crate::protocol::redis::{RedisHandleCodec, RedisNodeCodec};
 use crate::utils::crc::crc16;
 
 // use failure::Error;
+use futures::future::*;
 use futures::task::Task;
+
 use futures::unsync::mpsc::{channel, Receiver, SendError, Sender};
 use futures::AsyncSink;
 use futures::{Sink, Stream};
 use log::Level::{Debug, Trace};
 
+use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::current_thread;
+use tokio_codec::{Decoder, Encoder};
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
+use std::net::SocketAddr;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
@@ -39,8 +47,7 @@ pub struct Redirection {
 
 pub use Redirect::{Ask, Move};
 
-pub struct RedirectFuture {
-}
+pub struct RedirectFuture {}
 
 pub struct Cluster {
     pub cc: ClusterConfig,
@@ -68,8 +75,33 @@ impl Cluster {
             .expect("master addr never be empty")
     }
 
-    fn connect(&self, addr: &str, conns: &mut Conns) -> Result<(), AsError> {
+    fn connect(&self, node: &str, conns: &mut Conns) -> Result<(), AsError> {
+        let node_addr = node.to_string();
+        let node_addr_clone = node_addr.clone();
+        let (tx, rx) = channel(1024 * 8);
+        let moved = self.moved.clone();
+        let amt = lazy(|| -> Result<(), ()> { Ok(()) })
+            .and_then(move |_| {
+                node_addr
+                    .as_str()
+                    .parse()
+                    .map_err(|err| error!("fail to parse addr {:?}", err))
+            })
+            .and_then(|addr| {
+                TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+            })
+            .and_then(move |sock| {
+                // let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
 
+                sock.set_nodelay(true).expect("set nodelay must ok");
+                let codec = RedisNodeCodec {};
+                let (sink, stream) = codec.framed(sock).split();
+                let backend = back::Back::new(node_addr_clone, rx, sink, stream, moved);
+                current_thread::spawn(backend);
+                Ok(())
+            });
+        current_thread::spawn(amt);
+        conns.insert(node, tx);
         Ok(())
     }
 
@@ -144,6 +176,14 @@ struct Conns {
 impl Conns {
     fn get_mut(&mut self, s: &str) -> Option<&mut Conn<Sender<Cmd>>> {
         self.inner.get_mut(s)
+    }
+
+    fn insert(&mut self, s: &str, sender: Sender<Cmd>) {
+        let conn = Conn {
+            addr: s.to_string(),
+            sender,
+        };
+        self.inner.insert(s.to_string(), conn);
     }
 }
 

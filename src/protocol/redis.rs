@@ -1,6 +1,5 @@
 use bitflags::bitflags;
 use bytes::BytesMut;
-use failure::Error;
 use futures::task::Task;
 use tokio::codec::{Decoder, Encoder};
 
@@ -86,12 +85,12 @@ const MAX_CYCLE: u8 = 0b11111111;
 
 // for front end
 impl Command {
-    pub fn parse_cmd(buf: &mut BytesMut) -> Result<Option<Command>, Error> {
+    pub fn parse_cmd(buf: &mut BytesMut) -> Result<Option<Command>, AsError> {
         let msg = MessageMut::parse(buf)?;
         Ok(msg.map(Into::into))
     }
 
-    pub fn reply_cmd(&self, buf: &mut BytesMut) -> Result<usize, Error> {
+    pub fn reply_cmd(&self, buf: &mut BytesMut) -> Result<usize, AsError> {
         if self.ctype.is_mset() {
             buf.extend_from_slice(BYTES_JUSTOK);
             return Ok(BYTES_JUSTOK.len());
@@ -143,7 +142,7 @@ const BYTES_LEN3_HEAD: &[u8] = b"*3/r/n";
 // for back end
 impl Command {
     /// save redis Command into given BytesMut
-    pub fn send_req(&self, buf: &mut BytesMut) -> Result<(), Error> {
+    pub fn send_req(&self, buf: &mut BytesMut) -> Result<(), AsError> {
         if self.is_ask() {
             buf.extend_from_slice(BYTES_ASK);
         }
@@ -412,7 +411,7 @@ pub struct RedisHandleCodec {}
 
 impl Decoder for RedisHandleCodec {
     type Item = Cmd;
-    type Error = Error;
+    type Error = AsError;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let command = Command::parse_cmd(src);
         command.map(|x| x.map(|y| y.into()))
@@ -421,7 +420,7 @@ impl Decoder for RedisHandleCodec {
 
 impl Encoder for RedisHandleCodec {
     type Item = Cmd;
-    type Error = Error;
+    type Error = AsError;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         let _ = item.borrow().reply_cmd(dst)?;
         Ok(())
@@ -433,7 +432,7 @@ pub struct RedisNodeCodec {}
 
 impl Decoder for RedisNodeCodec {
     type Item = Message;
-    type Error = Error;
+    type Error = AsError;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let reply = MessageMut::parse(src)?;
         Ok(reply.map(Into::into))
@@ -442,7 +441,7 @@ impl Decoder for RedisNodeCodec {
 
 impl Encoder for RedisNodeCodec {
     type Item = Cmd;
-    type Error = Error;
+    type Error = AsError;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         item.borrow().send_req(dst)
     }
