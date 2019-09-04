@@ -23,8 +23,17 @@ pub enum AsError {
     #[fail(display = "CLUSTER SLOTS must contains slot info")]
     WrongClusterSlotsReplySlot,
 
+    #[fail(display = "cluster fail to dispatch command")]
+    ClusterFailDispatch,
+
     #[fail(display = "unexcept io error {}", _0)]
     IoError(tokio::io::Error),
+
+    #[fail(display = "remote connection has active close connection {}", _0)]
+    BackendClosedError(String),
+
+    #[fail(display = "fail to redirect command")]
+    RedirectFailError,
 
     #[fail(display = "there is nothing happend")]
     None,

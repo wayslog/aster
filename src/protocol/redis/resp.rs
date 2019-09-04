@@ -3,7 +3,7 @@ use crate::proxy::cluster::Redirect;
 use crate::utils::simdfind;
 
 use aho_corasick::AhoCorasick;
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 
 use std::usize;
 
@@ -355,6 +355,31 @@ pub struct Message {
 }
 
 impl Message {
+    pub fn plain<I: Into<Bytes>>(data: I, resp_type: u8) -> Message {
+        let bytes = data.into();
+        let mut rdata = BytesMut::new();
+        rdata.reserve(1 /* resp_type */ + bytes.len() + 2 /*\r\n*/);
+        rdata.put_u8(resp_type);
+        rdata.put(&bytes);
+        rdata.put_u8(BYTE_CR);
+        rdata.put_u8(BYTE_LF);
+
+        let rtype = if resp_type == RESP_STRING {
+            RespType::String(Range::new(1, bytes.len() - 2))
+        } else if resp_type == RESP_INT {
+            RespType::Integer(Range::new(1, bytes.len() - 2))
+        } else if resp_type == RESP_ERROR {
+            RespType::Error(Range::new(1, bytes.len() - 2))
+        } else {
+            unreachable!("fail to create uon plain message");
+        };
+
+        Message {
+            data: rdata.into(),
+            rtype,
+        }
+    }
+
     pub fn save(&self, buf: &mut BytesMut) -> usize {
         self.save_by_rtype(&self.rtype, buf)
     }

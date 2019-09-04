@@ -9,6 +9,7 @@ use crate::utils::notify::Notify;
 use crate::utils::{myitoa, trim_hash_tag, upper};
 
 use std::cell::{Ref, RefCell, RefMut};
+use std::fmt::Display;
 use std::rc::Rc;
 
 use std::collections::{BTreeMap, HashSet};
@@ -19,9 +20,10 @@ pub mod cmd;
 pub mod resp;
 
 pub use cmd::CmdType;
+pub use resp::RESP_STRING;
 pub use resp::{Message, MessageIter, MessageMut, RespType};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
 }
@@ -42,6 +44,10 @@ impl Cmd {
     pub fn borrow_mut(&self) -> RefMut<Command> {
         self.cmd.borrow_mut()
     }
+
+    pub fn set_reply<T: IntoReply>(&self, reply: T) {
+        self.borrow_mut().set_reply(reply);
+    }
 }
 
 bitflags! {
@@ -52,6 +58,7 @@ bitflags! {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct Command {
     flags: CFlags,
     ctype: CmdType,
@@ -198,6 +205,10 @@ impl Command {
         KEY_RAW_POS
     }
 
+    pub fn set_reply<T: IntoReply>(&mut self, reply: T) {
+        self.reply = Some(reply.into_reply());
+    }
+
     pub fn subs(&self) -> Option<Vec<Cmd>> {
         self.subs.as_ref().cloned()
     }
@@ -218,7 +229,7 @@ impl Command {
         self.cycle
     }
 
-    pub fn can_cycle(&mut self) -> bool {
+    pub fn can_cycle(&self) -> bool {
         self.cycle < MAX_CYCLE
     }
 
@@ -228,6 +239,10 @@ impl Command {
 
     pub fn is_ask(&self) -> bool {
         self.flags & CFlags::ASK == CFlags::ASK
+    }
+
+    pub fn unset_ask(&mut self) {
+        self.flags &= !CFlags::ASK;
     }
 
     pub fn set_ask(&mut self) {
@@ -240,6 +255,10 @@ impl Command {
 
     pub fn set_moved(&mut self) {
         self.flags |= CFlags::MOVED;
+    }
+
+    pub fn unset_moved(&mut self) {
+        self.flags &= !CFlags::MOVED;
     }
 
     pub fn is_read(&self) -> bool {
@@ -496,5 +515,22 @@ pub fn slots_reply_to_replicas(msg: Message) -> Result<Option<ReplicaLayer>, AsE
             Ok(Some((master_list, replicas_list)))
         }
         _ => Err(AsError::WrongClusterSlotsReplyType),
+    }
+}
+
+pub trait IntoReply {
+    fn into_reply(self) -> Message;
+}
+
+impl IntoReply for Message {
+    fn into_reply(self) -> Message {
+        self
+    }
+}
+
+impl<T: Display> IntoReply for T {
+    fn into_reply(self) -> Message {
+        let value = format!("{}", self);
+        Message::plain(value.as_bytes(), RESP_STRING)
     }
 }

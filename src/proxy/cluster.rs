@@ -16,12 +16,31 @@ use log::Level::{Debug, Trace};
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
     Move { slot: usize, to: String },
     Ask { slot: usize, to: String },
 }
 
+impl Redirect {
+    pub(crate) fn is_ask(&self) -> bool {
+        match self {
+            Redirect::Ask { .. } => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Redirection {
+    pub target: Redirect,
+    pub cmd: Cmd,
+}
+
 pub use Redirect::{Ask, Move};
+
+pub struct RedirectFuture {
+}
 
 pub struct Cluster {
     pub cc: ClusterConfig,
@@ -30,6 +49,8 @@ pub struct Cluster {
     conns: RefCell<Conns>,
     hash_tag: Vec<u8>,
     read_from_slave: bool,
+
+    moved: Sender<Redirection>,
 }
 
 impl Cluster {
@@ -48,7 +69,29 @@ impl Cluster {
     }
 
     fn connect(&self, addr: &str, conns: &mut Conns) -> Result<(), AsError> {
+
         Ok(())
+    }
+
+    pub fn dispath_to(&self, addr: &str, cmd: Cmd) -> Result<AsyncSink<Cmd>, AsError> {
+        if !cmd.borrow().can_cycle() {
+            cmd.set_reply(AsError::ClusterFailDispatch);
+            return Ok(AsyncSink::Ready);
+        }
+        let mut conns = self.conns.borrow_mut();
+        if let Some(sender) = conns.get_mut(addr).map(|x| x.sender()) {
+            match sender.start_send(cmd) {
+                Ok(ret) => {
+                    return Ok(ret);
+                }
+                Err(se) => {
+                    let cmd = se.into_inner();
+                    return Ok(AsyncSink::NotReady(cmd));
+                }
+            }
+        } else {
+            unreachable!("connection must be initial first");
+        }
     }
 
     pub fn dispatch_all(&self, cmds: &mut VecDeque<Cmd>) -> Result<usize, AsError> {
@@ -57,9 +100,11 @@ impl Cluster {
             if cmds.is_empty() {
                 return Ok(count);
             }
-            let cmd = cmds
-                .pop_front()
-                .expect("due to check len first, pop front never be empty");
+            let cmd = cmds.pop_front().expect("cmds pop front never be empty");
+            if !cmd.borrow().can_cycle() {
+                cmd.set_reply(AsError::ClusterFailDispatch);
+                continue;
+            }
             let slot = cmd.borrow().key_hash(self.hash_tag.as_ref(), crc16);
             let addr = self.get_addr(slot, cmd.borrow().is_read());
             let mut conns = self.conns.borrow_mut();
@@ -68,7 +113,7 @@ impl Cluster {
                 match sender.start_send(cmd) {
                     Ok(AsyncSink::Ready) => {
                         if log_enabled!(Trace) {
-                            debug!("success start command into backend");
+                            trace!("success start command into backend");
                         }
                         count += 1;
                     }
