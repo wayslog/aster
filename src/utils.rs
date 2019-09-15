@@ -1,9 +1,9 @@
-use bytes::{BytesMut, BufMut};
+use bytes::{BufMut, BytesMut};
 use itoa;
 
-pub mod simdfind;
-pub mod notify;
 pub mod crc;
+pub mod notify;
+pub mod simdfind;
 
 const LOWER_BEGIN: u8 = b'a';
 const LOWER_END: u8 = b'z';
@@ -22,7 +22,6 @@ pub(crate) fn upper(input: &mut [u8]) {
     }
 }
 
-
 #[test]
 fn test_itoa_ok() {
     let mut buf = BytesMut::with_capacity(1);
@@ -32,7 +31,10 @@ fn test_itoa_ok() {
     buf.clear();
 
     myitoa(std::usize::MAX, &mut buf);
-    assert_eq!("18446744073709551615", String::from_utf8_lossy(buf.as_ref()));
+    assert_eq!(
+        "18446744073709551615",
+        String::from_utf8_lossy(buf.as_ref())
+    );
     buf.clear();
 }
 
@@ -40,7 +42,6 @@ pub(crate) fn myitoa(input: usize, buf: &mut BytesMut) {
     let mut writer = buf.writer();
     itoa::write(&mut writer, input).unwrap();
 }
-
 
 #[inline]
 pub fn trim_hash_tag<'a, 'b>(key: &'a [u8], hash_tag: &'b [u8]) -> &'a [u8] {

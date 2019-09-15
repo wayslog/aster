@@ -179,8 +179,6 @@ impl Command {
     }
 }
 
-/// parse redis Command from BytesMut buffer ignore if that's ask
-
 impl Command {
     pub fn key_hash<T>(&self, hash_tag: &[u8], method: T) -> usize
     where
@@ -363,12 +361,6 @@ const COMMAND_POS: usize = 0;
 const KEY_EVAL_POS: usize = 3;
 const KEY_RAW_POS: usize = 1;
 
-// const CMD_BYTES_MGET: &[u8] = b"MGET";
-// const CMD_BYTES_MSET: &[u8] = b"MSET";
-// const CMD_BYTES_DEL: &[u8] = b"DEL";
-// const CMD_BYTES_EXISTS: &[u8] = b"EXISTS";
-// const CMD_BYTES_EVAL: &[u8] = b"EVAL";
-
 const MAX_KEY_COUNT: usize = 10000;
 
 impl From<MessageMut> for Command {
@@ -447,9 +439,33 @@ impl Encoder for RedisNodeCodec {
     }
 }
 
-pub type ReplicaLayer = (Vec<String>, Vec<Vec<String>>);
+pub fn new_cluster_slots_cmd() -> Cmd {
+    let msg = Message::new_cluster_slots();
+    let flags = CFlags::empty();
+    let mut notify = Notify::empty();
+    let ctype = CmdType::get_cmd_type(&msg);
+    notify.set_expect(1);
 
-pub fn slots_reply_to_replicas(msg: Message) -> Result<Option<ReplicaLayer>, AsError> {
+    let cmd = Command {
+        flags,
+        ctype,
+        notify,
+        cycle: DEFAULT_CYCLE,
+        req: msg,
+        reply: None,
+        subs: None,
+    };
+    Cmd::from(cmd)
+}
+
+pub type ReplicaLayout = (Vec<String>, Vec<Vec<String>>);
+
+pub fn slots_reply_to_replicas(cmd: Cmd) -> Result<Option<ReplicaLayout>, AsError> {
+    let msg = cmd
+        .borrow_mut()
+        .reply
+        .take()
+        .expect("reply must be non-empty");
     match msg.rtype {
         RespType::Array(_, ref subs) => {
             let mut masters = BTreeMap::<usize, String>::new();

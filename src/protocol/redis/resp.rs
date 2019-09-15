@@ -355,6 +355,19 @@ pub struct Message {
 }
 
 impl Message {
+    pub fn new_cluster_slots() -> Message {
+        Message {
+            data: Bytes::from("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n"),
+            rtype: RespType::Array(
+                Range::new(1, 2),
+                vec![
+                    RespType::Bulk(Range::new(6, 7), Range::new(8, 15)),
+                    RespType::Bulk(Range::new(17, 18), Range::new(19, 24)),
+                ],
+            ),
+        }
+    }
+
     pub fn plain<I: Into<Bytes>>(data: I, resp_type: u8) -> Message {
         let bytes = data.into();
         let mut rdata = BytesMut::new();

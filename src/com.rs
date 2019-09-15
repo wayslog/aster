@@ -35,6 +35,9 @@ pub enum AsError {
     #[fail(display = "fail to redirect command")]
     RedirectFailError,
 
+    #[fail(display = "fail to init cluster {} due to all seed nodes is die", _0)]
+    ClusterAllSeedsDie(String),
+
     #[fail(display = "there is nothing happend")]
     None,
 }

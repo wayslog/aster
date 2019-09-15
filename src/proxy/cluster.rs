@@ -1,9 +1,10 @@
 pub mod back;
 pub mod front;
+pub mod init;
 
 use crate::com::AsError;
 use crate::com::ClusterConfig;
-use crate::protocol::redis::{Cmd, ReplicaLayer, SLOTS_COUNT};
+use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
 use crate::protocol::redis::{RedisHandleCodec, RedisNodeCodec};
 use crate::utils::crc::crc16;
 
@@ -11,9 +12,11 @@ use crate::utils::crc::crc16;
 use futures::future::*;
 use futures::task::Task;
 
-use futures::unsync::mpsc::{channel, Receiver, SendError, Sender};
+use futures::future::ok;
+use futures::unsync::mpsc::{channel, unbounded, Receiver, SendError, Sender};
 use futures::AsyncSink;
 use futures::{Sink, Stream};
+
 use log::Level::{Debug, Trace};
 
 use tokio::net::{TcpListener, TcpStream};
@@ -21,8 +24,8 @@ use tokio::runtime::current_thread;
 use tokio_codec::{Decoder, Encoder};
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
@@ -52,7 +55,7 @@ pub struct RedirectFuture {}
 pub struct Cluster {
     pub cc: ClusterConfig,
 
-    slots: Slots,
+    slots: RefCell<Slots>,
     conns: RefCell<Conns>,
     hash_tag: Vec<u8>,
     read_from_slave: bool,
@@ -61,48 +64,63 @@ pub struct Cluster {
 }
 
 impl Cluster {
+    pub(crate) fn new(cc: ClusterConfig, replica: ReplicaLayout) -> Result<(), AsError> {
+        let fut = ok::<ClusterConfig, AsError>(cc)
+            .and_then(|mut cc| {
+                let read_from_slave = cc.read_from_slave.clone().unwrap_or(false);
+                let hash_tag = cc.hash_tag.clone().map(|x| x.as_bytes().to_vec()).unwrap_or(vec![]);
+                let mut slots = Slots::default();
+                slots.try_update_all(replica);
+                let (moved, moved_rx) = channel(10240);
+
+                let all_masters = slots.get_all_masters();
+                cc.servers = all_masters.iter().map(|x| x.clone()).collect();
+                let all_servers = cc.servers.clone();
+                let mut conns = Conns::default();
+                for master in all_servers.into_iter() {
+                    let conn = connect(moved.clone(), &master)?;
+                    conns.insert(&master, conn);
+                }
+
+                if read_from_slave {
+                    let all_slaves = slots.get_all_slaves();
+                    for slave in all_slaves.into_iter() {
+                        let conn = connect(moved.clone(), &slave)?;
+                        conns.insert(&slave, conn);
+                    }
+                }
+                let cluster = Cluster{
+                    cc,
+                    hash_tag,
+                    read_from_slave,
+                    moved,
+                    slots: RefCell::new(slots),
+                    conns: RefCell::new(conns),
+                };
+                Ok((cluster, moved_rx))
+            })
+            // TODO: and_then add redirection
+            // TODO: and_then add fetcher
+            .and_then(|_| Ok(()))
+            .map_err(|_| AsError::None);
+        current_thread::block_on_all(fut)
+    }
+}
+
+impl Cluster {
     fn get_addr(&self, slot: usize, is_read: bool) -> String {
         if self.read_from_slave && is_read {
-            if let Some(replica) = self.slots.get_replica(slot) {
+            if let Some(replica) = self.slots.borrow().get_replica(slot) {
                 if replica != "" {
                     return replica.to_string();
                 }
             }
         }
         self.slots
+            .borrow()
             .get_master(slot)
             .map(|x| x.to_string())
             .expect("master addr never be empty")
-    }
-
-    fn connect(&self, node: &str, conns: &mut Conns) -> Result<(), AsError> {
-        let node_addr = node.to_string();
-        let node_addr_clone = node_addr.clone();
-        let (tx, rx) = channel(1024 * 8);
-        let moved = self.moved.clone();
-        let amt = lazy(|| -> Result<(), ()> { Ok(()) })
-            .and_then(move |_| {
-                node_addr
-                    .as_str()
-                    .parse()
-                    .map_err(|err| error!("fail to parse addr {:?}", err))
-            })
-            .and_then(|addr| {
-                TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-            })
-            .and_then(move |sock| {
-                // let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
-
-                sock.set_nodelay(true).expect("set nodelay must ok");
-                let codec = RedisNodeCodec {};
-                let (sink, stream) = codec.framed(sock).split();
-                let backend = back::Back::new(node_addr_clone, rx, sink, stream, moved);
-                current_thread::spawn(backend);
-                Ok(())
-            });
-        current_thread::spawn(amt);
-        conns.insert(node, tx);
-        Ok(())
     }
 
     pub fn dispath_to(&self, addr: &str, cmd: Cmd) -> Result<AsyncSink<Cmd>, AsError> {
@@ -158,7 +176,8 @@ impl Cluster {
                         let cmd = se.into_inner();
                         cmd.borrow_mut().add_cycle();
                         cmds.push_front(cmd);
-                        self.connect(&addr, &mut conns)?;
+                        let sender = connect(self.moved.clone(), &addr)?;
+                        conns.insert(&addr, sender);
                         return Ok(count);
                     }
                 }
@@ -187,6 +206,14 @@ impl Conns {
     }
 }
 
+impl Default for Conns {
+    fn default() -> Conns {
+        Conns {
+            inner: HashMap::new(),
+        }
+    }
+}
+
 struct Conn<S> {
     addr: String,
     sender: S,
@@ -198,40 +225,31 @@ impl<S> Conn<S> {
     }
 }
 
+impl<S> Drop for Conn<S> {
+    fn drop(&mut self) {
+        info!("connection to backend {} is disconnected", self.addr);
+    }
+}
+
 struct Slots {
     masters: Vec<String>,
     replicas: Vec<Replica>,
-
-    moved_counter: Vec<u32>,
-    moved_threshold: u32,
 }
 
 impl Slots {
-    fn try_move(&mut self, slot: usize, new: &str) -> Option<String> {
-        let count = self.moved_counter[slot].clone();
-        if count >= self.moved_threshold {
-            self.moved_counter[slot] = 0;
-            let old = self.masters.get(slot).cloned();
-            self.masters.insert(slot, new.to_string());
-            return old;
-        }
-        self.moved_counter[slot] = count + 1;
-        None
-    }
-
-    fn try_update_all(&mut self, layer: ReplicaLayer) -> bool {
-        let (masters, replicas) = layer;
+    fn try_update_all(&mut self, layout: ReplicaLayout) -> bool {
+        let (masters, replicas) = layout;
         let mut changed = false;
         for i in 0..SLOTS_COUNT {
             if self.masters[i] != masters[i] {
                 changed = true;
                 self.masters[i] = masters[i].clone();
-                self.moved_counter[i] = 0;
             }
         }
 
         for i in 0..SLOTS_COUNT {
-            if self.replicas[i].addrs.as_slice() != replicas[i].as_slice() {
+            let len_not_eqal = self.replicas[i].addrs.len() != replicas[i].len();
+            if len_not_eqal || self.replicas[i].addrs.as_slice() != replicas[i].as_slice() {
                 self.replicas[i] = Replica {
                     addrs: replicas[i].clone(),
                     current: Cell::new(0),
@@ -250,8 +268,31 @@ impl Slots {
     fn get_replica(&self, slot: usize) -> Option<&str> {
         self.replicas.get(slot).map(|x| x.get_replica())
     }
+
+    fn get_all_masters(&self) -> HashSet<String> {
+        self.masters.iter().map(|x| x.clone()).collect()
+    }
+
+    fn get_all_slaves(&self) -> HashSet<String> {
+        self.replicas
+            .iter()
+            .map(|x| x.addrs.clone())
+            .flatten()
+            .collect()
+    }
 }
 
+impl Default for Slots {
+    fn default() -> Slots {
+        let mut masters = Vec::with_capacity(SLOTS_COUNT);
+        masters.resize(SLOTS_COUNT, "".to_string());
+        let mut replicas = Vec::with_capacity(SLOTS_COUNT);
+        replicas.resize(SLOTS_COUNT, Replica::default());
+        Slots { masters, replicas }
+    }
+}
+
+#[derive(Clone)]
 struct Replica {
     addrs: Vec<String>,
     current: Cell<usize>,
@@ -267,4 +308,42 @@ impl Replica {
         self.current.update(|x| (x + 1) % len);
         &self.addrs[current]
     }
+}
+
+impl Default for Replica {
+    fn default() -> Replica {
+        Replica {
+            addrs: Vec::with_capacity(0),
+            current: Cell::new(0usize),
+        }
+    }
+}
+
+pub fn connect(moved: Sender<Redirection>, node: &str) -> Result<Sender<Cmd>, AsError> {
+    let node_addr = node.to_string();
+    let node_addr_clone = node_addr.clone();
+    let (tx, rx) = channel(1024 * 8);
+    let amt = lazy(|| -> Result<(), ()> { Ok(()) })
+        .and_then(move |_| {
+            node_addr
+                .as_str()
+                .parse()
+                .map_err(|err| error!("fail to parse addr {:?}", err))
+        })
+        .and_then(|addr| {
+            TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+        })
+        .and_then(move |sock| {
+            // TODO:
+            // let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
+
+            sock.set_nodelay(true).expect("set nodelay must ok");
+            let codec = RedisNodeCodec {};
+            let (sink, stream) = codec.framed(sock).split();
+            let backend = back::Back::new(node_addr_clone, rx, sink, stream, moved);
+            current_thread::spawn(backend);
+            Ok(())
+        });
+    current_thread::spawn(amt);
+    Ok(tx)
 }
