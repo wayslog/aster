@@ -1,6 +1,7 @@
 pub mod back;
 pub mod front;
 pub mod init;
+pub mod redirect;
 
 use crate::com::AsError;
 use crate::com::ClusterConfig;
@@ -48,6 +49,22 @@ pub struct Redirection {
     pub cmd: Cmd,
 }
 
+impl Redirection {
+    pub(crate) fn new(is_move: bool, slot: usize, to: String, cmd: Cmd) -> Redirection {
+        if is_move {
+            Redirection {
+                target: Redirect::Move { slot, to },
+                cmd,
+            }
+        } else {
+            Redirection {
+                target: Redirect::Ask { slot, to },
+                cmd,
+            }
+        }
+    }
+}
+
 pub use Redirect::{Ask, Move};
 
 pub struct RedirectFuture {}
@@ -64,7 +81,7 @@ pub struct Cluster {
 }
 
 impl Cluster {
-    pub(crate) fn new(cc: ClusterConfig, replica: ReplicaLayout) -> Result<(), AsError> {
+    pub(crate) fn run(cc: ClusterConfig, replica: ReplicaLayout) -> Result<(), AsError> {
         let fut = ok::<ClusterConfig, AsError>(cc)
             .and_then(|mut cc| {
                 let read_from_slave = cc.read_from_slave.clone().unwrap_or(false);
@@ -99,7 +116,12 @@ impl Cluster {
                 };
                 Ok((cluster, moved_rx))
             })
-            // TODO: and_then add redirection
+            .and_then(|(cluster, moved_rx)|{
+                let rc_cluster = Rc::new(cluster);
+                let redirect_handler = redirect::RedirectHandler::new(rc_cluster.clone(), moved_rx);
+                current_thread::spawn(redirect_handler);
+                Ok(rc_cluster)
+            })
             // TODO: and_then add fetcher
             .and_then(|_| Ok(()))
             .map_err(|_| AsError::None);
@@ -123,7 +145,7 @@ impl Cluster {
             .expect("master addr never be empty")
     }
 
-    pub fn dispath_to(&self, addr: &str, cmd: Cmd) -> Result<AsyncSink<Cmd>, AsError> {
+    pub fn dispatch_to(&self, addr: &str, cmd: Cmd) -> Result<AsyncSink<Cmd>, AsError> {
         if !cmd.borrow().can_cycle() {
             cmd.set_reply(AsError::ClusterFailDispatch);
             return Ok(AsyncSink::Ready);
@@ -185,6 +207,11 @@ impl Cluster {
                 unreachable!("connection must be initial first");
             }
         }
+    }
+
+    pub(crate) fn update_slot(&self, slot: usize, addr: String) {
+        debug_assert!(slot <= SLOTS_COUNT);
+        self.slots.borrow_mut().masters[slot] = addr;
     }
 }
 

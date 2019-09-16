@@ -23,6 +23,16 @@ pub struct Initializer {
     state: State,
 }
 
+impl Initializer {
+    pub fn new(cc: ClusterConfig) -> Initializer {
+        Initializer {
+            cc,
+            current: 0,
+            state: State::Pending,
+        }
+    }
+}
+
 impl Future for Initializer {
     type Item = ();
     type Error = AsError;
@@ -81,7 +91,7 @@ impl Future for Initializer {
                             "success fetch all cluster info for cluster {}",
                             self.cc.name
                         );
-                        let cluster = Cluster::new(self.cc.clone(), replica);
+                        let cluster = Cluster::run(self.cc.clone(), replica);
                         match cluster {
                             Ok(_) => {
                                 debug!("succeed to create cluster {}", self.cc.name);

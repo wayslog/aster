@@ -14,6 +14,9 @@ pub enum AsError {
     #[fail(display = "message reply is bad")]
     BadReply,
 
+    #[fail(display = "fail due move/ask too much")]
+    RequestReachMaxCycle,
+
     #[fail(display = "fail to parse integer {}", _0)]
     ParseIntError(btoi::ParseIntegerError),
 
