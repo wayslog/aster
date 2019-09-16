@@ -1,33 +1,25 @@
 use futures::task::Task;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct Notify {
-    task: Option<Task>,
-    expect: usize,
+    task: Rc<RefCell<Option<Task>>>,
 }
 
 impl Notify {
     pub fn empty() -> Self {
         Notify {
-            task: None,
-            expect: std::usize::MAX,
+            task: Rc::new(RefCell::new(None)),
         }
     }
 
-    pub fn set_expect(&mut self, num: usize) {
-        self.expect = num;
-    }
-
-    pub fn expect(&self) -> usize {
-        self.expect
-    }
-
     pub fn set_task(&mut self, task: Task) {
-        self.task = Some(task);
+        self.task.borrow_mut().replace(task);
     }
 
     pub fn notify(&self) {
-        if let Some(task) = self.task.as_ref() {
+        if let Some(task) = self.task.borrow().as_ref() {
             trace!("trace notify");
             task.notify();
         } else {

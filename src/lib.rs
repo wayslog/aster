@@ -2,8 +2,6 @@
 #![feature(cell_update)]
 #![feature(option_flattening)]
 
-#[macro_use(try_ready)]
-extern crate futures;
 #[macro_use]
 extern crate log;
 #[macro_use]

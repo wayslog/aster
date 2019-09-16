@@ -30,9 +30,10 @@ pub struct Cmd {
 impl Drop for Cmd {
     fn drop(&mut self) {
         let strong_ref = Rc::strong_count(&self.cmd);
-        let expect = self.borrow().notify.expect();
-        trace!("cmd drop strong ref {} and expect {}", strong_ref, expect);
-        if strong_ref - 1 == expect {
+        // TODO: sub command maybe notify multiple
+        trace!("cmd drop strong ref {} and expect {}", strong_ref, 1);
+        if strong_ref - 1 == 1 {
+            self.cmd.borrow_mut().set_done();
             self.borrow().notify.notify();
         }
     }
@@ -115,10 +116,11 @@ impl Command {
                 buf.extend_from_slice(BYTES_CRLF);
 
                 for sub in subs {
-                    sub.borrow().reply_cmd(buf)?;
+                    sub.borrow().reply_raw(buf)?;
                 }
                 return Ok(buf.len() - begin);
             } else {
+                debug!("subs is empty");
                 buf.extend_from_slice(BYTES_NULL_ARRAY);
                 return Ok(BYTES_NULL_ARRAY.len());
             }
@@ -135,20 +137,24 @@ impl Command {
                 return Ok(BYTES_ZERO_INT.len());
             }
         } else {
-            if let Some(size) = self.reply.as_ref().map(|x| x.save(buf)) {
-                return Ok(size);
-            } else {
-                Err(AsError::BadReply.into())
-            }
+            return self.reply_raw(buf);
+        }
+    }
+
+    fn reply_raw(&self, buf: &mut BytesMut) -> Result<usize, AsError> {
+        if let Some(size) = self.reply.as_ref().map(|x| x.save(buf)) {
+            Ok(size)
+        } else {
+            Err(AsError::BadReply.into())
         }
     }
 }
 
-const BYTES_ASK: &[u8] = b"*1/r/n$3/r/nASK/r/n";
+const BYTES_ASK: &[u8] = b"*1\r\n$3\r\nASK\r\n";
 
-const BYTES_GET: &[u8] = b"*3\r\nGET\r\n";
-const BYTES_LEN2_HEAD: &[u8] = b"*2/r/n";
-const BYTES_LEN3_HEAD: &[u8] = b"*3/r/n";
+const BYTES_GET: &[u8] = b"$3\r\nGET\r\n";
+const BYTES_LEN2_HEAD: &[u8] = b"*2\r\n";
+const BYTES_LEN3_HEAD: &[u8] = b"*3\r\n";
 
 // for back end
 impl Command {
@@ -227,6 +233,13 @@ impl Command {
     }
 
     pub fn is_done(&self) -> bool {
+        if self.subs.is_some() {
+            return self
+                .subs
+                .as_ref()
+                .map(|x| x.iter().all(|y| y.borrow().is_done()))
+                .unwrap_or(false);
+        }
         self.flags & CFlags::DONE == CFlags::DONE
     }
 
@@ -276,7 +289,7 @@ impl Command {
 }
 
 impl Command {
-    fn mk_mset(flags: CFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Command {
+    fn mk_mset(flags: CFlags, ctype: CmdType, notify: Notify, msg: Message) -> Command {
         let Message { rtype, data } = msg.clone();
         if let RespType::Array(head, array) = rtype {
             let array_len = array.len();
@@ -287,7 +300,6 @@ impl Command {
             }
 
             let cmd_count = array_len / 2;
-            notify.set_expect(cmd_count + 1);
             let mut subs = Vec::with_capacity(cmd_count / 2);
 
             for chunk in (&array[1..]).chunks(2) {
@@ -324,7 +336,7 @@ impl Command {
         }
     }
 
-    fn mk_subs(flags: CFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Command {
+    fn mk_subs(flags: CFlags, ctype: CmdType, notify: Notify, msg: Message) -> Command {
         let Message { rtype, data } = msg.clone();
         if let RespType::Array(head, array) = rtype {
             let array_len = array.len();
@@ -332,7 +344,6 @@ impl Command {
                 // TODO: forbidden large request
                 unimplemented!();
             }
-            notify.set_expect(array_len);
 
             let mut subs = Vec::with_capacity(array_len - 1);
             for key in &array[1..] {
@@ -377,7 +388,7 @@ const MAX_KEY_COUNT: usize = 10000;
 
 impl From<MessageMut> for Command {
     fn from(mut msg_mut: MessageMut) -> Command {
-        let mut notify = Notify::empty();
+        let notify = Notify::empty();
         // upper the given command
         if let Some(data) = msg_mut.nth_mut(COMMAND_POS) {
             upper(data);
@@ -397,7 +408,6 @@ impl From<MessageMut> for Command {
             return Command::mk_mset(flags, ctype, notify, msg);
         }
 
-        notify.set_expect(1);
         Command {
             flags,
             ctype,
@@ -454,9 +464,8 @@ impl Encoder for RedisNodeCodec {
 pub fn new_cluster_slots_cmd() -> Cmd {
     let msg = Message::new_cluster_slots();
     let flags = CFlags::empty();
-    let mut notify = Notify::empty();
+    let notify = Notify::empty();
     let ctype = CmdType::get_cmd_type(&msg);
-    notify.set_expect(1);
 
     let cmd = Command {
         flags,

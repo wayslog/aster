@@ -235,7 +235,7 @@ where
         let mut can_recv = true;
         let mut can_forward = true;
         loop {
-            trace!("tracing backend calls");
+            trace!("tracing backend calls to {}", self.addr);
             if self.state.is_closing() {
                 debug!("backend {} is closing", self.addr);
                 self.on_closed();

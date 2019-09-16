@@ -195,7 +195,7 @@ where
                         can_send = true;
                         can_reply = true;
                         can_recv = 0 != size && self.state == State::Running;
-                        trace!("front recv is ready and send {}", size);
+                        trace!("front recv is ready and recv {}", size);
                     }
                     Err(err) => {
                         error!("fail to read from client {} due to {}", self.client, err);
