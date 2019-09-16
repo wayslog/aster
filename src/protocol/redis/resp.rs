@@ -119,7 +119,10 @@ impl MessageMut {
 
                 if csize == -1 {
                     return Ok(Some(MsgPack {
-                        rtype: RespType::Bulk(Range::new(cursor, cursor + 5), Range::new(0, 0)),
+                        rtype: RespType::Bulk(
+                            Range::new(cursor, cursor + 5),
+                            Range::new(cursor, cursor + 5),
+                        ),
                         size: 5,
                     }));
                 } else if csize < 0 {
@@ -432,7 +435,8 @@ impl Message {
                 rg.range()
             }
             RespType::Bulk(head, body) => {
-                buf.extend_from_slice(&self.data.as_ref()[head.begin()..body.end()]);
+                let data = &self.data.as_ref()[head.begin()..body.end()];
+                buf.extend_from_slice(data);
                 (body.end - head.begin) as usize
             }
             RespType::Array(head, subs) => {

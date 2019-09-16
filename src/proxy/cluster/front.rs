@@ -10,7 +10,6 @@ use std::rc::Rc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Running,
-    Closing,
     Closed,
 }
 
@@ -117,7 +116,8 @@ where
                 }
                 self.waitq.push_back(cmd);
             } else {
-                self.state = State::Closing;
+                self.state = State::Closed;
+                return Ok(0);
             }
         }
     }
@@ -136,11 +136,8 @@ where
         let mut can_send = true;
         let mut can_recv = self.state == State::Running;
         loop {
-            if self.state == State::Closing {
-                can_recv = false;
-            }
-
             if self.state == State::Closed {
+                info!("front drop of {}", self.client);
                 return Ok(Async::Ready(()));
             }
 
@@ -162,11 +159,6 @@ where
                             can_send = true;
                         }
                         trace!("front reply is ready and reply {}", size);
-
-                        if self.waitq.is_empty() && self.state == State::Closing {
-                            self.state = State::Closed;
-                            return Ok(Async::Ready(()));
-                        }
                     }
                     Err(err) => {
                         error!(
@@ -207,7 +199,7 @@ where
                     }
                     Err(err) => {
                         error!("fail to read from client {} due to {}", self.client, err);
-                        self.state = State::Closing;
+                        self.state = State::Closed;
                         can_recv = self.state == State::Running;
                     }
                 }
