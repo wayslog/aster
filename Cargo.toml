@@ -49,6 +49,7 @@ failure="0.1"
 slab="0.4"
 bitflags = "1.0.4"
 aho-corasick = "0.7.6"
+rand = "0.7.1"
 
 [profile.release]
 debug = true

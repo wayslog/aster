@@ -2,6 +2,7 @@ use crate::com::AsError;
 use crate::protocol::redis::Cmd;
 use crate::proxy::cluster::Cluster;
 
+use futures::task;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -38,6 +39,19 @@ where
     I: Stream<Item = Cmd, Error = AsError>,
     O: Sink<SinkItem = Cmd, SinkError = AsError>,
 {
+    pub fn new(client: String, cluster: Rc<Cluster>, input: I, output: O) -> Front<I, O> {
+        Front {
+            cluster,
+            client,
+            input,
+            output,
+            sendq: VecDeque::with_capacity(2048),
+            waitq: VecDeque::with_capacity(2048),
+            state: State::Running,
+            batch_max: 2048,
+        }
+    }
+
     fn try_reply(&mut self) -> Result<Async<usize>, AsError> {
         let mut count = 0usize;
         loop {
@@ -46,6 +60,7 @@ where
             }
             let cmd = self.waitq.pop_front().expect("command never be error");
             if !cmd.borrow().is_done() {
+                self.waitq.push_front(cmd);
                 break;
             }
             match self.output.start_send(cmd) {
@@ -74,17 +89,24 @@ where
         self.cluster.dispatch_all(&mut self.sendq)
     }
 
-    fn try_recv(&mut self) -> Result<Async<usize>, AsError> {
+    fn try_recv(&mut self) -> Result<usize, AsError> {
         let mut count = 0usize;
         loop {
             if self.waitq.len() == self.batch_max {
-                return Ok(Async::Ready(count));
+                return Ok(count);
             }
 
-            let cmd = try_ready!(self.input.poll());
+            let cmd = match self.input.poll() {
+                Ok(Async::Ready(cmd)) => cmd,
+                Ok(Async::NotReady) => return Ok(count),
+                Err(err) => return Err(err),
+            };
+
             if let Some(cmd) = cmd {
                 count += 1;
                 let is_done = cmd.borrow().is_done();
+                cmd.borrow_mut().reregister(task::current());
+
                 if !is_done {
                     // for done command, never send to backend
                     if let Some(subs) = cmd.borrow().subs() {
@@ -129,6 +151,7 @@ where
             if can_reply {
                 match self.try_reply() {
                     Ok(Async::NotReady) => {
+                        trace!("front reply is not ready");
                         can_reply = false;
                     }
                     Ok(Async::Ready(size)) => {
@@ -138,6 +161,7 @@ where
                             can_recv = self.state == State::Running;
                             can_send = true;
                         }
+                        trace!("front reply is ready and reply {}", size);
 
                         if self.waitq.is_empty() && self.state == State::Closing {
                             self.state = State::Closed;
@@ -164,6 +188,7 @@ where
                             can_reply = true;
                             can_recv = self.state == State::Running;
                         }
+                        trace!("front send is ready and send {}", size);
                     }
                     Err(_) => {
                         // FIXME: fixed it.
@@ -174,14 +199,11 @@ where
 
             if can_recv {
                 match self.try_recv() {
-                    Ok(Async::Ready(size)) => {
-                        if size == 0 && self.waitq.len() == self.batch_max {
-                            can_send = true;
-                        }
-                        can_recv = self.state == State::Running;
-                    }
-                    Ok(Async::NotReady) => {
-                        can_recv = false;
+                    Ok(size) => {
+                        can_send = true;
+                        can_reply = true;
+                        can_recv = 0 != size && self.state == State::Running;
+                        trace!("front recv is ready and send {}", size);
                     }
                     Err(err) => {
                         error!("fail to read from client {} due to {}", self.client, err);

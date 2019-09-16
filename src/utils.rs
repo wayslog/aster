@@ -7,11 +7,11 @@ pub mod simdfind;
 
 const LOWER_BEGIN: u8 = b'a';
 const LOWER_END: u8 = b'z';
-const UPPER_BEGIN: u8 = b'A';
-const UPPER_END: u8 = b'Z';
+// const UPPER_BEGIN: u8 = b'A';
+// const UPPER_END: u8 = b'Z';
 const UPPER_TO_LOWER: u8 = b'a' - b'A';
 
-const ASCII_0: u8 = b'0';
+// const ASCII_0: u8 = b'0';
 
 pub(crate) fn upper(input: &mut [u8]) {
     for b in input {

@@ -48,7 +48,7 @@ impl Range {
 }
 
 // contains Range means body cursor range [begin..end] for non-array type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RespType {
     String(Range),
     Error(Range),
@@ -266,6 +266,26 @@ fn test_iter_bulk() {
     assert_eq!(iter.next(), None);
 }
 
+#[test]
+fn test_parse_cluster_slots() {
+    let data = b"*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n";
+    let mut src = BytesMut::from(&data[..]);
+    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+    assert_eq!(
+        msg,
+        Message {
+            data: Bytes::from("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n"),
+            rtype: RespType::Array(
+                Range::new(0, 4),
+                vec![
+                    RespType::Bulk(Range::new(4, 8), Range::new(8, 17)),
+                    RespType::Bulk(Range::new(17, 21), Range::new(21, 28)),
+                ],
+            ),
+        }
+    );
+}
+
 impl MessageMut {
     pub fn nth_mut(&mut self, index: usize) -> Option<&mut [u8]> {
         if let Some(range) = self.get_nth_data_range(index) {
@@ -348,7 +368,7 @@ impl<'a> Iterator for MessageIter<'a> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
     pub rtype: RespType,
     pub data: Bytes,
@@ -359,10 +379,10 @@ impl Message {
         Message {
             data: Bytes::from("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n"),
             rtype: RespType::Array(
-                Range::new(1, 2),
+                Range::new(0, 4),
                 vec![
-                    RespType::Bulk(Range::new(6, 7), Range::new(8, 15)),
-                    RespType::Bulk(Range::new(17, 18), Range::new(19, 24)),
+                    RespType::Bulk(Range::new(4, 8), Range::new(8, 17)),
+                    RespType::Bulk(Range::new(17, 21), Range::new(21, 28)),
                 ],
             ),
         }
@@ -378,11 +398,11 @@ impl Message {
         rdata.put_u8(BYTE_LF);
 
         let rtype = if resp_type == RESP_STRING {
-            RespType::String(Range::new(1, bytes.len() - 2))
+            RespType::String(Range::new(0, bytes.len()))
         } else if resp_type == RESP_INT {
-            RespType::Integer(Range::new(1, bytes.len() - 2))
+            RespType::Integer(Range::new(0, bytes.len()))
         } else if resp_type == RESP_ERROR {
-            RespType::Error(Range::new(1, bytes.len() - 2))
+            RespType::Error(Range::new(0, bytes.len()))
         } else {
             unreachable!("fail to create uon plain message");
         };

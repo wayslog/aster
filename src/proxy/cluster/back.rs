@@ -129,14 +129,17 @@ where
     }
 
     fn try_recv(&mut self) -> Result<Async<()>, AsError> {
+        let mut count = 0usize;
         for _ in 0..MAX_PIPELINE {
             if let Some(redirection) = self.redirect_store.take() {
                 match self.moved.start_send(redirection) {
                     Ok(AsyncSink::NotReady(red)) => {
                         self.redirect_store = Some(red);
-                        return Ok(Async::NotReady);
+                        break;
                     }
-                    Ok(AsyncSink::Ready) => {}
+                    Ok(AsyncSink::Ready) => {
+                        count += 1;
+                    }
                     Err(se) => {
                         let red: Redirection = se.into_inner();
                         error!("fail to redirect cmd {:?}", red);
@@ -147,7 +150,7 @@ where
             }
 
             if self.cmdq.is_empty() {
-                return Ok(Async::NotReady);
+                break;
             }
 
             let is_ask = self
@@ -157,12 +160,15 @@ where
                 .expect("front always have cmd");
 
             let msg = match self.recv.poll() {
-                Ok(Async::Ready(Some(msg))) => msg,
+                Ok(Async::Ready(Some(msg))) => {
+                    count += 1;
+                    msg
+                }
                 Ok(Async::Ready(None)) => {
                     return Err(AsError::BackendClosedError(self.addr.clone()));
                 }
                 Ok(Async::NotReady) => {
-                    return Ok(Async::NotReady);
+                    break;
                 }
                 Err(err) => {
                     error!("fail to recv from backend connection due {:?}", err);
@@ -198,8 +204,11 @@ where
                 cmd.set_reply(msg);
             }
         }
-
-        Ok(Async::Ready(()))
+        if count > 0 {
+            Ok(Async::Ready(()))
+        } else {
+            Ok(Async::NotReady)
+        }
     }
 
     fn on_closed(&mut self) {
@@ -223,37 +232,61 @@ where
     type Error = ();
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        let mut can_recv = true;
+        let mut can_forward = true;
         loop {
+            trace!("tracing backend calls");
             if self.state.is_closing() {
+                debug!("backend {} is closing", self.addr);
                 self.on_closed();
                 self.state = State::Closed;
             }
             if self.state.is_closed() {
+                debug!("backend {} is closed", self.addr);
                 return Ok(Async::Ready(()));
             }
 
-            match self.try_recv() {
-                Ok(Async::NotReady) => {
-                    return Ok(Async::NotReady);
-                }
-                Ok(Async::Ready(_)) => {}
-                Err(_err) => {
-                    self.state = State::Closing;
-                    continue;
+            if !can_recv && !can_forward {
+                return Ok(Async::NotReady);
+            }
+
+            if can_recv {
+                match self.try_recv() {
+                    Ok(Async::NotReady) => {
+                        trace!("backend recv is not ready");
+                        can_recv = false;
+                    }
+                    Ok(Async::Ready(_)) => {
+                        can_forward = true;
+                        trace!("backend recv is ready");
+                    }
+                    Err(err) => {
+                        trace!("backend recv is error {}", err);
+                        self.state = State::Closing;
+                        continue;
+                    }
                 }
             }
 
-            match self.try_forward() {
-                Ok(Async::NotReady) => {
-                    return Ok(Async::NotReady);
-                }
-                Ok(Async::Ready(State::ActiveClosing)) => {
-                    self.state = State::ActiveClosing;
-                }
-                Ok(Async::Ready(_)) => {}
-                Err(_err) => {
-                    self.state = State::Closing;
-                    continue;
+            if can_forward {
+                match self.try_forward() {
+                    Ok(Async::NotReady) => {
+                        trace!("backend forward is not ready");
+                        can_forward = false;
+                    }
+                    Ok(Async::Ready(State::ActiveClosing)) => {
+                        trace!("backend forward is active closing");
+                        self.state = State::ActiveClosing;
+                    }
+                    Ok(Async::Ready(_)) => {
+                        can_recv = true;
+                        trace!("backend forward is ready");
+                    }
+                    Err(err) => {
+                        trace!("backend forward is error {}", err);
+                        self.state = State::Closing;
+                        continue;
+                    }
                 }
             }
         }

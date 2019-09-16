@@ -1,3 +1,7 @@
+use net2::TcpBuilder;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+
 pub use failure::Error;
 
 #[derive(Debug, Fail)]
@@ -89,7 +93,7 @@ pub struct ClusterConfig {
     pub servers: Vec<String>,
 
     // cluster special
-    pub fetch: Option<u64>,
+    pub fetch_interval: Option<u64>,
     pub read_from_slave: Option<bool>,
 
     // proxy special
@@ -105,4 +109,32 @@ pub struct ClusterConfig {
 
     // dead option: always 1
     pub node_connections: Option<usize>,
+}
+
+#[cfg(windows)]
+pub(crate) fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io::Error> {
+    let builder = TcpBuilder::new_v4()?;
+    let std_listener = builder
+        .reuse_address(true)
+        .expect("os not support SO_REUSEADDR")
+        .bind(addr)?
+        .listen(std::i32::MAX)?;
+    let hd = tokio::reactor::Handle::current();
+    TcpListener::from_std(std_listener, &hd)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListener, std::io::Error> {
+    use net2::unix::UnixTcpBuilderExt;
+
+    let builder = TcpBuilder::new_v4()?;
+    let std_listener = builder
+        .reuse_address(true)
+        .expect("os not support SO_REUSEADDR")
+        .reuse_port(true)
+        .expect("os not support SO_REUSEPORT")
+        .bind(addr)?
+        .listen(std::i32::MAX)?;
+    let hd = tokio::reactor::Handle::default();
+    TcpListener::from_std(std_listener, &hd)
 }

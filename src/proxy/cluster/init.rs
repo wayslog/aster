@@ -1,12 +1,10 @@
-use std::rc::Rc;
-
-use futures::task::{self, Task};
-use futures::unsync::mpsc::{channel, Receiver, SendError, Sender};
+use futures::task;
+use futures::unsync::mpsc::{channel, Sender};
 use futures::{Async, AsyncSink, Future, Sink};
 
 use crate::com::AsError;
 use crate::com::ClusterConfig;
-use crate::protocol::redis::{new_cluster_slots_cmd, slots_reply_to_replicas, Cmd, ReplicaLayout};
+use crate::protocol::redis::{new_cluster_slots_cmd, slots_reply_to_replicas, Cmd};
 use crate::proxy::cluster::{connect, Cluster};
 
 enum State {
@@ -55,7 +53,7 @@ impl Future for Initializer {
                     match connect(tx, &addr) {
                         Ok(sender) => {
                             let cmd = new_cluster_slots_cmd();
-                            cmd.borrow().reregister(task::current());
+                            cmd.borrow_mut().reregister(task::current());
                             self.state = State::Fetching(sender, cmd);
                         }
                         Err(err) => {
@@ -67,9 +65,11 @@ impl Future for Initializer {
                 }
                 State::Fetching(ref mut sender, ref cmd) => match sender.start_send(cmd.clone()) {
                     Ok(AsyncSink::NotReady(_cmd)) => {
+                        trace!("init: backend is not ready");
                         return Ok(Async::NotReady);
                     }
                     Ok(AsyncSink::Ready) => {
+                        trace!("init: backend is not ready");
                         self.state = State::Waitting(sender.clone(), cmd.clone());
                     }
                     Err(err) => {

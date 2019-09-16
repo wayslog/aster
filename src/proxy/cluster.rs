@@ -1,8 +1,10 @@
 pub mod back;
+pub mod fetcher;
 pub mod front;
 pub mod init;
 pub mod redirect;
 
+use crate::com::create_reuse_port_listener;
 use crate::com::AsError;
 use crate::com::ClusterConfig;
 use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
@@ -11,21 +13,21 @@ use crate::utils::crc::crc16;
 
 // use failure::Error;
 use futures::future::*;
-use futures::task::Task;
 
 use futures::future::ok;
-use futures::unsync::mpsc::{channel, unbounded, Receiver, SendError, Sender};
+use futures::unsync::mpsc::{channel, Sender};
 use futures::AsyncSink;
 use futures::{Sink, Stream};
 
-use log::Level::{Debug, Trace};
+use log::Level::Trace;
 
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio::runtime::current_thread;
-use tokio_codec::{Decoder, Encoder};
+use tokio_codec::Decoder;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::net::SocketAddr;
 use std::rc::Rc;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -82,10 +84,19 @@ pub struct Cluster {
 
 impl Cluster {
     pub(crate) fn run(cc: ClusterConfig, replica: ReplicaLayout) -> Result<(), AsError> {
+        let addr = cc
+            .listen_addr
+            .clone()
+            .parse::<SocketAddr>()
+            .expect("parse socket never fail");
         let fut = ok::<ClusterConfig, AsError>(cc)
             .and_then(|mut cc| {
                 let read_from_slave = cc.read_from_slave.clone().unwrap_or(false);
-                let hash_tag = cc.hash_tag.clone().map(|x| x.as_bytes().to_vec()).unwrap_or(vec![]);
+                let hash_tag = cc
+                    .hash_tag
+                    .clone()
+                    .map(|x| x.as_bytes().to_vec())
+                    .unwrap_or(vec![]);
                 let mut slots = Slots::default();
                 slots.try_update_all(replica);
                 let (moved, moved_rx) = channel(10240);
@@ -106,7 +117,7 @@ impl Cluster {
                         conns.insert(&slave, conn);
                     }
                 }
-                let cluster = Cluster{
+                let cluster = Cluster {
                     cc,
                     hash_tag,
                     read_from_slave,
@@ -116,21 +127,47 @@ impl Cluster {
                 };
                 Ok((cluster, moved_rx))
             })
-            .and_then(|(cluster, moved_rx)|{
+            .and_then(|(cluster, moved_rx)| {
                 let rc_cluster = Rc::new(cluster);
                 let redirect_handler = redirect::RedirectHandler::new(rc_cluster.clone(), moved_rx);
                 current_thread::spawn(redirect_handler);
                 Ok(rc_cluster)
             })
-            // TODO: and_then add fetcher
-            .and_then(|_| Ok(()))
+            .and_then(|rc_cluster| {
+                let fetcher = fetcher::Fetcher::new(rc_cluster.clone());
+                current_thread::spawn(fetcher);
+                Ok(rc_cluster)
+            })
+            .and_then(move |cluster| {
+                let listen = create_reuse_port_listener(&addr).expect("bind never fail");
+                let service = listen
+                    .incoming()
+                    .for_each(move |sock| {
+                        let client = sock.peer_addr().expect("peer must have addr");
+                        let client_str = format!("{}", client);
+                        let codec = RedisHandleCodec {};
+                        let (output, input) = codec.framed(sock).split();
+                        let fut = front::Front::new(client_str, cluster.clone(), input, output);
+                        current_thread::spawn(fut);
+                        Ok(())
+                    })
+                    .map_err(|err| {
+                        error!("fail to accept incomming sock due {}", err);
+                    });
+                current_thread::spawn(service);
+                Ok(())
+            })
             .map_err(|_| AsError::None);
-        current_thread::block_on_all(fut)
+        current_thread::spawn(
+            fut.map_err(|err| error!("fail to create cluster server due to {}", err)),
+        );
+        Ok(())
     }
 }
 
 impl Cluster {
     fn get_addr(&self, slot: usize, is_read: bool) -> String {
+        trace!("get slot={} and is_read={}", slot, is_read);
         if self.read_from_slave && is_read {
             if let Some(replica) = self.slots.borrow().get_replica(slot) {
                 if replica != "" {
@@ -177,7 +214,7 @@ impl Cluster {
                 cmd.set_reply(AsError::ClusterFailDispatch);
                 continue;
             }
-            let slot = cmd.borrow().key_hash(self.hash_tag.as_ref(), crc16);
+            let slot = cmd.borrow().key_hash(self.hash_tag.as_ref(), crc16) % SLOTS_COUNT;
             let addr = self.get_addr(slot, cmd.borrow().is_read());
             let mut conns = self.conns.borrow_mut();
 
@@ -207,6 +244,10 @@ impl Cluster {
                 unreachable!("connection must be initial first");
             }
         }
+    }
+
+    pub(crate) fn try_update_all_slots(&self, layout: ReplicaLayout) -> bool {
+        self.slots.borrow_mut().try_update_all(layout)
     }
 
     pub(crate) fn update_slot(&self, slot: usize, addr: String) {
@@ -352,10 +393,11 @@ pub fn connect(moved: Sender<Redirection>, node: &str) -> Result<Sender<Cmd>, As
     let (tx, rx) = channel(1024 * 8);
     let amt = lazy(|| -> Result<(), ()> { Ok(()) })
         .and_then(move |_| {
+            let node_clone = node_addr.clone();
             node_addr
                 .as_str()
                 .parse()
-                .map_err(|err| error!("fail to parse addr {:?}", err))
+                .map_err(|err| error!("fail to parse addr {:?} to {}", err, node_clone))
         })
         .and_then(|addr| {
             TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
@@ -373,4 +415,11 @@ pub fn connect(moved: Sender<Redirection>, node: &str) -> Result<Sender<Cmd>, As
         });
     current_thread::spawn(amt);
     Ok(tx)
+}
+
+pub fn run(cc: ClusterConfig) {
+    current_thread::block_on_all(
+        init::Initializer::new(cc).map_err(|err| error!("fail to init cluster due to {}", err)),
+    )
+    .unwrap();
 }

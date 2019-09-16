@@ -27,6 +27,17 @@ pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
 }
 
+impl Drop for Cmd {
+    fn drop(&mut self) {
+        let strong_ref = Rc::strong_count(&self.cmd);
+        let expect = self.borrow().notify.expect();
+        trace!("cmd drop strong ref {} and expect {}", strong_ref, expect);
+        if strong_ref - 1 == expect {
+            self.borrow().notify.notify();
+        }
+    }
+}
+
 impl From<Command> for Cmd {
     fn from(cmd: Command) -> Self {
         Cmd {
@@ -204,13 +215,14 @@ impl Command {
 
     pub fn set_reply<T: IntoReply>(&mut self, reply: T) {
         self.reply = Some(reply.into_reply());
+        self.set_done();
     }
 
     pub fn subs(&self) -> Option<Vec<Cmd>> {
         self.subs.as_ref().cloned()
     }
 
-    pub fn reregister(&self, task: Task) {
+    pub fn reregister(&mut self, task: Task) {
         self.notify.set_task(task);
     }
 
@@ -487,7 +499,7 @@ pub fn slots_reply_to_replicas(cmd: Cmd) -> Result<Option<ReplicaLayout>, AsErro
             let get_addr = |each: &RespType| -> Result<String, AsError> {
                 if let RespType::Array(_, ref inner) = each {
                     let port = get_number(1, inner)?;
-                    let addr = String::from_utf8_lossy(get_data(2, inner)?);
+                    let addr = String::from_utf8_lossy(get_data(0, inner)?);
                     Ok(format!("{}:{}", addr, port))
                 } else {
                     Err(AsError::WrongClusterSlotsReplyType)
