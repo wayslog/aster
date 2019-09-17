@@ -39,7 +39,7 @@ impl Future for Initializer {
         loop {
             match &mut self.state {
                 State::Pending => {
-                    debug!("start initialing cluster {}", self.cc.name);
+                    // debug!("start initialing cluster {}", self.cc.name);
                     self.current = 0;
                     self.state = State::Connecting;
                 }
@@ -48,7 +48,7 @@ impl Future for Initializer {
                         return Err(AsError::ClusterAllSeedsDie(self.cc.name.clone()));
                     }
                     let addr = self.cc.servers[self.current].clone();
-                    debug!("start to create connection to backend {}", &addr);
+                    // debug!("start to create connection to backend {}", &addr);
                     let (tx, _rx) = channel(0); // mock moved channel for backend is never be moved
                     match connect(tx, &addr) {
                         Ok(sender) => {
@@ -87,14 +87,14 @@ impl Future for Initializer {
                 }
                 State::Done(cmd) => match slots_reply_to_replicas(cmd.clone()) {
                     Ok(Some(replica)) => {
-                        debug!(
-                            "success fetch all cluster info for cluster {}",
-                            self.cc.name
-                        );
+                        // debug!(
+                        //     "success fetch all cluster info for cluster {}",
+                        //     self.cc.name
+                        // );
                         let cluster = Cluster::run(self.cc.clone(), replica);
                         match cluster {
                             Ok(_) => {
-                                debug!("succeed to create cluster {}", self.cc.name);
+                                // debug!("succeed to create cluster {}", self.cc.name);
                                 return Ok(Async::Ready(()));
                             }
                             Err(err) => {

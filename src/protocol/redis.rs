@@ -138,7 +138,7 @@ impl Command {
                 }
                 return Ok(buf.len() - begin);
             } else {
-                debug!("subs is empty");
+                // debug!("subs is empty");
                 buf.extend_from_slice(BYTES_NULL_ARRAY);
                 return Ok(BYTES_NULL_ARRAY.len());
             }

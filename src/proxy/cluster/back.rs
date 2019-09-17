@@ -237,12 +237,12 @@ where
         loop {
             // trace!("tracing backend calls to {}", self.addr);
             if self.state.is_closing() {
-                debug!("backend {} is closing", self.addr);
+                // debug!("backend {} is closing", self.addr);
                 self.on_closed();
                 self.state = State::Closed;
             }
             if self.state.is_closed() {
-                debug!("backend {} is closed", self.addr);
+                // debug!("backend {} is closed", self.addr);
                 return Ok(Async::Ready(()));
             }
 
