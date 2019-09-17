@@ -4,6 +4,10 @@ use tokio::net::TcpListener;
 
 pub use failure::Error;
 
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
+
 #[derive(Debug, Fail)]
 pub enum AsError {
     #[fail(display = "invalid message")]
@@ -45,6 +49,9 @@ pub enum AsError {
     #[fail(display = "fail to init cluster {} due to all seed nodes is die", _0)]
     ClusterAllSeedsDie(String),
 
+    #[fail(display = "fail to load config toml error {}", _0)]
+    ConfigError(toml::de::Error),
+
     #[fail(display = "there is nothing happend")]
     None,
 }
@@ -61,9 +68,26 @@ impl From<btoi::ParseIntegerError> for AsError {
     }
 }
 
+impl From<toml::de::Error> for AsError {
+    fn from(oe: toml::de::Error) -> AsError {
+        AsError::ConfigError(oe)
+    }
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Config {
-    clusters: Vec<ClusterConfig>,
+    pub clusters: Vec<ClusterConfig>,
+}
+
+impl Config {
+    pub fn load<P: AsRef<Path>>(p: P) -> Result<Config, AsError> {
+        let path = p.as_ref();
+        let mut data = String::new();
+        let mut fd = File::open(path)?;
+        fd.read_to_string(&mut data)?;
+        let cfg = toml::from_str(&data)?;
+        Ok(cfg)
+    }
 }
 
 #[derive(Deserialize, Debug, Clone, Copy)]

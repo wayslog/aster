@@ -50,6 +50,7 @@ slab="0.4"
 bitflags = "1.0.4"
 aho-corasick = "0.7.6"
 rand = "0.7.1"
+clap = {version = "2.33.0", features = ["yaml"]}
 
 [profile.release]
 debug = true
