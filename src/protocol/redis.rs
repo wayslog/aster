@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::task::Task;
 use tokio::codec::{Decoder, Encoder};
 
@@ -8,7 +8,6 @@ use crate::utils::notify::Notify;
 use crate::utils::{myitoa, trim_hash_tag, upper};
 
 use std::cell::{Ref, RefCell, RefMut};
-use std::fmt::Display;
 use std::rc::Rc;
 
 use std::collections::{BTreeMap, HashSet};
@@ -19,8 +18,8 @@ pub mod cmd;
 pub mod resp;
 
 pub use cmd::CmdType;
-pub use resp::RESP_STRING;
 pub use resp::{Message, MessageIter, MessageMut, RespType};
+pub use resp::{RESP_ERROR, RESP_INT, RESP_STRING};
 
 #[derive(Clone, Debug)]
 pub struct Cmd {
@@ -56,6 +55,18 @@ impl Cmd {
     pub fn reregister(&mut self, task: Task) {
         self.notify.set_task(task);
     }
+
+    pub fn check_valid(&self) -> bool {
+        if self.borrow().ctype.is_not_support() {
+            self.borrow_mut().set_reply(AsError::RequestNotSupport);
+            return false;
+        }
+        if self.borrow().ctype.is_ctrl() {
+            return false;
+        }
+        // and other conditions
+        true
+    }
 }
 
 bitflags! {
@@ -82,6 +93,10 @@ pub struct Command {
 const BYTES_JUSTOK: &[u8] = b"+OK\r\n";
 const BYTES_NULL_ARRAY: &[u8] = b"*-1\r\n";
 const BYTES_ZERO_INT: &[u8] = b":0\r\n";
+const BYTES_CMD_PING: &[u8] = b"PING";
+const BYTES_CMD_COMMAND: &[u8] = b"COMMAND";
+const BYTES_REPLY_NULL_ARRAY: &[u8] = b"*-1\n";
+const STR_REPLY_PONG: &str = "PONG";
 
 const BYTES_CRLF: &[u8] = b"\r\n";
 
@@ -399,7 +414,6 @@ impl From<MessageMut> for Cmd {
 
         let msg = msg_mut.into();
         let ctype = CmdType::get_cmd_type(&msg);
-
         let flags = CFlags::empty();
 
         if ctype.is_exists() || ctype.is_del() || ctype.is_mget() {
@@ -408,14 +422,25 @@ impl From<MessageMut> for Cmd {
             return Command::mk_mset(flags, ctype, notify, msg);
         }
 
-        let cmd = Command {
+        let mut cmd = Command {
             flags,
             ctype,
             cycle: DEFAULT_CYCLE,
-            req: msg,
+            req: msg.clone(),
             reply: None,
             subs: None,
         };
+        if ctype.is_ctrl() {
+            if let Some(data) = msg.nth(COMMAND_POS) {
+                if data == BYTES_CMD_PING {
+                    cmd.set_reply(STR_REPLY_PONG);
+                } else if data == BYTES_CMD_COMMAND {
+                    cmd.set_reply(BYTES_REPLY_NULL_ARRAY)
+                } else {
+                    // unsupport commands
+                }
+            }
+        }
         cmd.into_cmd(notify)
     }
 }
@@ -563,9 +588,50 @@ impl IntoReply for Message {
     }
 }
 
-impl<T: Display> IntoReply for T {
+impl IntoReply for Bytes {
+    fn into_reply(self) -> Message {
+        unimplemented!()
+    }
+}
+
+impl IntoReply for AsError {
+    fn into_reply(self) -> Message {
+        let value = format!("{}", self);
+        Message::plain(value.as_bytes(), RESP_ERROR)
+    }
+}
+
+impl<'a> IntoReply for &'a AsError {
+    fn into_reply(self) -> Message {
+        let value = format!("{}", self);
+        Message::plain(value.as_bytes(), RESP_ERROR)
+    }
+}
+
+impl<'a> IntoReply for &'a str {
     fn into_reply(self) -> Message {
         let value = format!("{}", self);
         Message::plain(value.as_bytes(), RESP_STRING)
+    }
+}
+
+impl<'a> IntoReply for &'a [u8] {
+    fn into_reply(self) -> Message {
+        let bytes = Bytes::from(self);
+        Message::inline_raw(bytes)
+    }
+}
+
+impl<'a> IntoReply for &'a usize {
+    fn into_reply(self) -> Message {
+        let value = format!("{}", self);
+        Message::plain(value.as_bytes(), RESP_INT)
+    }
+}
+
+impl IntoReply for usize {
+    fn into_reply(self) -> Message {
+        let value = format!("{}", self);
+        Message::plain(value.as_bytes(), RESP_INT)
     }
 }

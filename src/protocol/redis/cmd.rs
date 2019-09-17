@@ -146,6 +146,7 @@ lazy_static! {
         hmap.insert(&b"SELECT"[..], CmdType::NotSupport);
         hmap.insert(&b"TIME"[..], CmdType::NotSupport);
         hmap.insert(&b"CONFIG"[..], CmdType::NotSupport);
+        hmap.insert(&b"CLUSTER"[..], CmdType::Ctrl);
 
         hmap
     };
@@ -193,6 +194,14 @@ impl CmdType {
 
     pub fn is_del(&self) -> bool {
         CmdType::Del == *self
+    }
+
+    pub fn is_not_support(&self) -> bool {
+        CmdType::NotSupport == *self
+    }
+
+    pub fn is_ctrl(&self) -> bool {
+        CmdType::Ctrl == *self
     }
 
     pub fn get_cmd_type(msg: &Message) -> CmdType {

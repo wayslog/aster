@@ -5,8 +5,6 @@ use crate::utils::simdfind;
 use aho_corasick::AhoCorasick;
 use bytes::{BufMut, Bytes, BytesMut};
 
-use std::usize;
-
 pub const RESP_STRING: u8 = b'+';
 pub const RESP_INT: u8 = b':';
 pub const RESP_ERROR: u8 = b'-';
@@ -56,6 +54,8 @@ pub enum RespType {
     Bulk(Range, Range),
     // contains head range and sub vecs
     Array(Range, Vec<RespType>),
+
+    Inline(Vec<Range>),
 }
 
 impl RespType {
@@ -74,8 +74,17 @@ pub struct MessageMut {
 }
 
 impl MessageMut {
-    fn try_parse_inline(cursor: usize, src: &[u8]) -> Result<Option<MsgPack>, AsError> {
-        unimplemented!()
+    fn try_parse_inline(src: &[u8]) -> Result<Option<MsgPack>, AsError> {
+        let mut cursor = 0;
+        let mut fields = Vec::new();
+        for data in src.split(|x| *x == BYTE_SPACE) {
+            fields.push(Range::new(cursor, cursor + data.len()));
+            cursor = cursor + data.len() + 1;
+        }
+        Ok(Some(MsgPack {
+            rtype: RespType::Inline(fields),
+            size: src.len(),
+        }))
     }
 
     fn parse_inner(cursor: usize, src: &[u8]) -> Result<Option<MsgPack>, AsError> {
@@ -92,7 +101,7 @@ impl MessageMut {
         // detect pos -1 is CR
         if src[cursor + pos - 1] != BYTE_CR {
             // should detect inline
-            return Err(AsError::BadMessage);
+            return Self::try_parse_inline(&src[cursor..cursor + pos + 1]);
         }
 
         match src[cursor] {
@@ -174,7 +183,7 @@ impl MessageMut {
             }
             _ => {
                 // inline command
-                return Err(AsError::BadMessage.into());
+                return Self::try_parse_inline(&src[cursor..cursor + pos + 1]);
             }
         }
 
@@ -293,6 +302,20 @@ fn test_parse_cluster_slots() {
     );
 }
 
+#[test]
+fn test_parse_inline() {
+    let data = b"GET a\n";
+    let mut src = BytesMut::from(&data[..]);
+    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+    assert_eq!(
+        msg,
+        Message {
+            data: Bytes::from(&data[..]),
+            rtype: RespType::Inline(vec![Range::new(0, 3), Range::new(4, 5),]),
+        }
+    )
+}
+
 impl MessageMut {
     pub fn nth_mut(&mut self, index: usize) -> Option<&mut [u8]> {
         if let Some(range) = self.get_nth_data_range(index) {
@@ -318,28 +341,44 @@ impl MessageMut {
                         return Some(Range {
                             begin: begin + 1,
                             end: end - 2,
-                        })
+                        });
                     }
                     RespType::Error(Range { begin, end }) => {
                         return Some(Range {
                             begin: begin + 1,
                             end: end - 2,
-                        })
+                        });
                     }
                     RespType::Integer(Range { begin, end }) => {
                         return Some(Range {
                             begin: begin + 1,
                             end: end - 2,
-                        })
+                        });
                     }
                     RespType::Bulk(_, Range { begin, end }) => {
                         return Some(Range {
                             begin: *begin,
                             end: end - 2,
-                        })
+                        });
                     }
                     _ => return None,
                 }
+            }
+        }
+        if let RespType::Inline(fields) = &self.rtype {
+            if let Some(rng) = fields.get(index) {
+                let mut end = rng.end();
+                let len = rng.range();
+                if len == 0 {
+                    return Some(rng.clone());
+                }
+                if len > 0 && self.data[len - 1] == BYTE_LF {
+                    end -= 1;
+                    if len > 1 && self.data[len - 2] == BYTE_CR {
+                        end -= 1;
+                    }
+                }
+                return Some(Range::new(rng.begin(), end));
             }
         }
         None
@@ -395,21 +434,30 @@ impl Message {
         }
     }
 
+    pub fn inline_raw(data: Bytes) -> Message {
+        let rngs = vec![Range::new(0, data.len())];
+        Message {
+            rtype: RespType::Inline(rngs),
+            data,
+        }
+    }
+
     pub fn plain<I: Into<Bytes>>(data: I, resp_type: u8) -> Message {
         let bytes = data.into();
         let mut rdata = BytesMut::new();
-        rdata.reserve(1 /* resp_type */ + bytes.len() + 2 /*\r\n*/);
+        let total_len = 1 /* resp_type */ + bytes.len() + 2 /*\r\n*/;
+        rdata.reserve(total_len);
         rdata.put_u8(resp_type);
         rdata.put(&bytes);
         rdata.put_u8(BYTE_CR);
         rdata.put_u8(BYTE_LF);
 
         let rtype = if resp_type == RESP_STRING {
-            RespType::String(Range::new(0, bytes.len()))
+            RespType::String(Range::new(0, total_len))
         } else if resp_type == RESP_INT {
-            RespType::Integer(Range::new(0, bytes.len()))
+            RespType::Integer(Range::new(0, total_len))
         } else if resp_type == RESP_ERROR {
-            RespType::Error(Range::new(0, bytes.len()))
+            RespType::Error(Range::new(0, total_len))
         } else {
             unreachable!("fail to create uon plain message");
         };
@@ -451,6 +499,13 @@ impl Message {
                 }
                 size
             }
+            RespType::Inline(fields) => {
+                let first_begin = fields.first().map(|x| x.begin()).unwrap_or(0);
+                let last_end = fields.last().map(|x| x.end()).unwrap_or(0);
+                debug_assert!(first_begin != last_end);
+                buf.extend_from_slice(&self.data.as_ref()[first_begin..last_end]);
+                last_end - first_begin
+            }
         }
     }
 
@@ -478,6 +533,22 @@ impl Message {
     fn get_nth_data_range(&self, index: usize) -> Option<Range> {
         if let RespType::Array(_, items) = &self.rtype {
             return self.get_range(items.get(index));
+        }
+        if let RespType::Inline(fields) = &self.rtype {
+            if let Some(rng) = fields.get(index) {
+                let mut end = rng.end();
+                let len = rng.range();
+                if rng.begin() == rng.end() {
+                    return Some(rng.clone());
+                }
+                if len > 0 && self.data[len - 1] == BYTE_LF {
+                    end -= 1;
+                    if len > 1 && self.data[len - 2] == BYTE_CR {
+                        end -= 1;
+                    }
+                }
+                return Some(Range::new(rng.begin(), end));
+            }
         }
         None
     }
