@@ -1,15 +1,12 @@
 #[macro_use]
 extern crate criterion;
 
-// use libaster::proxy::fnv::Fnv1a64;
-// use libaster::proxy::ketama::HashRing;
 use libaster::protocol::redis::resp::MessageMut;
 
 use bytes::BytesMut;
 use criterion::Criterion;
 
 fn bench_resp(c: &mut Criterion) {
-    // fn bench_parse_plain(b:&mut Bencher) {
     c.bench_function("resp parse plain", |b| {
         let sdata = "+baka for you\r\n".as_bytes();
         b.iter(|| {

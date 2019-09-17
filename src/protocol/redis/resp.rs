@@ -311,7 +311,7 @@ fn test_parse_inline() {
         msg,
         Message {
             data: Bytes::from(&data[..]),
-            rtype: RespType::Inline(vec![Range::new(0, 3), Range::new(4, 5),]),
+            rtype: RespType::Inline(vec![Range::new(0, 3), Range::new(4, 6),]),
         }
     )
 }
