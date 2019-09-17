@@ -29,6 +29,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::thread::{self, JoinHandle};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
@@ -167,7 +168,7 @@ impl Cluster {
 
 impl Cluster {
     fn get_addr(&self, slot: usize, is_read: bool) -> String {
-        trace!("get slot={} and is_read={}", slot, is_read);
+        // trace!("get slot={} and is_read={}", slot, is_read);
         if self.read_from_slave && is_read {
             if let Some(replica) = self.slots.borrow().get_replica(slot) {
                 if replica != "" {
@@ -221,9 +222,9 @@ impl Cluster {
             if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {
                 match sender.start_send(cmd) {
                     Ok(AsyncSink::Ready) => {
-                        if log_enabled!(Trace) {
-                            trace!("success start command into backend");
-                        }
+                        // if log_enabled!(Trace) {
+                        //     trace!("success start command into backend");
+                        // }
                         count += 1;
                     }
                     Ok(AsyncSink::NotReady(cmd)) => {
@@ -417,9 +418,24 @@ pub fn connect(moved: Sender<Redirection>, node: &str) -> Result<Sender<Cmd>, As
     Ok(tx)
 }
 
-pub fn run(cc: ClusterConfig) {
-    current_thread::block_on_all(
-        init::Initializer::new(cc).map_err(|err| error!("fail to init cluster due to {}", err)),
-    )
-    .unwrap();
+pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
+    let worker = cc.thread.unwrap_or(num_cpus::get());
+    (0..worker)
+        .into_iter()
+        .map(|index| {
+            let num = index + 1;
+            let builder = thread::Builder::new();
+            let cc = cc.clone();
+            builder
+                .name(format!("{}-worker-{}", cc.name, num))
+                .spawn(move || {
+                    current_thread::block_on_all(
+                        init::Initializer::new(cc)
+                            .map_err(|err| error!("fail to init cluster due to {}", err)),
+                    )
+                    .unwrap();
+                })
+                .expect("fail to spawn worker thread")
+        })
+        .collect()
 }

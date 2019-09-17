@@ -65,11 +65,11 @@ impl Future for Initializer {
                 }
                 State::Fetching(ref mut sender, ref cmd) => match sender.start_send(cmd.clone()) {
                     Ok(AsyncSink::NotReady(_cmd)) => {
-                        trace!("init: backend is not ready");
+                        // trace!("init: backend is not ready");
                         return Ok(Async::NotReady);
                     }
                     Ok(AsyncSink::Ready) => {
-                        trace!("init: backend is not ready");
+                        // trace!("init: backend is not ready");
                         self.state = State::Waitting(sender.clone(), cmd.clone());
                     }
                     Err(err) => {

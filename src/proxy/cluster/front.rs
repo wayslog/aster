@@ -146,7 +146,7 @@ where
             if can_reply {
                 match self.try_reply() {
                     Ok(Async::NotReady) => {
-                        trace!("front reply is not ready");
+                        // trace!("front reply is not ready");
                         can_reply = false;
                     }
                     Ok(Async::Ready(size)) => {
@@ -156,7 +156,7 @@ where
                             can_recv = self.state == State::Running;
                             can_send = true;
                         }
-                        trace!("front reply is ready and reply {}", size);
+                        // trace!("front reply is ready and reply {}", size);
                     }
                     Err(err) => {
                         error!(
@@ -178,7 +178,7 @@ where
                             can_reply = true;
                             can_recv = self.state == State::Running;
                         }
-                        trace!("front send is ready and send {}", size);
+                        // trace!("front send is ready and send {}", size);
                     }
                     Err(_) => {
                         // FIXME: fixed it.
@@ -193,7 +193,7 @@ where
                         can_send = true;
                         can_reply = true;
                         can_recv = 0 != size && self.state == State::Running;
-                        trace!("front recv is ready and recv {}", size);
+                        // trace!("front recv is ready and recv {}", size);
                     }
                     Err(err) => {
                         error!("fail to read from client {} due to {}", self.client, err);

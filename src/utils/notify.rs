@@ -24,10 +24,10 @@ impl Notify {
 
     pub fn notify(&self) {
         if let Some(task) = self.shared.task.borrow().as_ref() {
-            trace!("trace notify Some");
+            // trace!("trace notify Some");
             task.notify();
         } else {
-            trace!("trace notify None");
+            // trace!("trace notify None");
         }
     }
 

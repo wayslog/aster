@@ -26,7 +26,7 @@ pub fn run() -> Result<(), Error> {
         listen_addr: "127.0.0.1:7788".to_string(),
         hash_tag: Some("[]".to_string()),
 
-        thread: Some(1),
+        thread: Some(2),
         cache_type: com::CacheType::RedisCluster,
 
         read_timeout: None,
@@ -52,5 +52,9 @@ pub fn run() -> Result<(), Error> {
         // dead option: always 1
         node_connections: None,
     };
-    Ok(proxy::cluster::run(example))
+    let jhs = proxy::cluster::run(example);
+    for jh in jhs {
+        jh.join().unwrap();
+    }
+    Ok(())
 }
