@@ -7,7 +7,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 
 use std::usize;
 
-pub const RESP_INLINE: u8 = 0u8;
 pub const RESP_STRING: u8 = b'+';
 pub const RESP_INT: u8 = b':';
 pub const RESP_ERROR: u8 = b'-';
@@ -75,6 +74,10 @@ pub struct MessageMut {
 }
 
 impl MessageMut {
+    fn try_parse_inline(cursor: usize, src: &[u8]) -> Result<Option<MsgPack>, AsError> {
+        unimplemented!()
+    }
+
     fn parse_inner(cursor: usize, src: &[u8]) -> Result<Option<MsgPack>, AsError> {
         let pos = if let Some(p) = simdfind::find_lf_simd(&src[cursor..]) {
             p
@@ -170,6 +173,7 @@ impl MessageMut {
                 }));
             }
             _ => {
+                // inline command
                 return Err(AsError::BadMessage.into());
             }
         }

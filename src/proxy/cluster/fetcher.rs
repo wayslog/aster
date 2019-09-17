@@ -67,8 +67,8 @@ impl Future for Fetcher {
                 State::Random => {
                     let position = self.rng.gen_range(0, self.cluster.cc.servers.len());
                     let addr = self.cluster.cc.servers[position].clone();
-                    let cmd = new_cluster_slots_cmd();
-                    cmd.borrow_mut().reregister(task::current());
+                    let mut cmd = new_cluster_slots_cmd();
+                    cmd.reregister(task::current());
                     self.state = State::Sending(addr, cmd);
                 }
                 State::Sending(addr, cmd) => match self.cluster.dispatch_to(addr, cmd.clone()) {

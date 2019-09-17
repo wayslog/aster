@@ -52,8 +52,8 @@ impl Future for Initializer {
                     let (tx, _rx) = channel(0); // mock moved channel for backend is never be moved
                     match connect(tx, &addr) {
                         Ok(sender) => {
-                            let cmd = new_cluster_slots_cmd();
-                            cmd.borrow_mut().reregister(task::current());
+                            let mut cmd = new_cluster_slots_cmd();
+                            cmd.reregister(task::current());
                             self.state = State::Fetching(sender, cmd);
                         }
                         Err(err) => {

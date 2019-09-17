@@ -25,24 +25,17 @@ pub use resp::{Message, MessageIter, MessageMut, RespType};
 #[derive(Clone, Debug)]
 pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
+    notify: Notify,
 }
 
 impl Drop for Cmd {
     fn drop(&mut self) {
-        let strong_ref = Rc::strong_count(&self.cmd);
+        let expect = self.notify.expect();
+        let origin = self.notify.fetch_sub(1);
         // TODO: sub command maybe notify multiple
-        trace!("cmd drop strong ref {} and expect {}", strong_ref, 1);
-        if strong_ref - 1 == 1 {
-            self.cmd.borrow_mut().set_done();
-            self.borrow().notify.notify();
-        }
-    }
-}
-
-impl From<Command> for Cmd {
-    fn from(cmd: Command) -> Self {
-        Cmd {
-            cmd: Rc::new(RefCell::new(cmd)),
+        trace!("cmd drop strong ref {} and expect {}", origin, expect);
+        if origin - 1 == expect {
+            self.notify.notify();
         }
     }
 }
@@ -58,6 +51,10 @@ impl Cmd {
 
     pub fn set_reply<T: IntoReply>(&self, reply: T) {
         self.borrow_mut().set_reply(reply);
+    }
+
+    pub fn reregister(&mut self, task: Task) {
+        self.notify.set_task(task);
     }
 }
 
@@ -79,7 +76,6 @@ pub struct Command {
     req: Message,
     reply: Option<Message>,
 
-    notify: Notify,
     subs: Option<Vec<Cmd>>,
 }
 
@@ -97,7 +93,14 @@ const MAX_CYCLE: u8 = 0b11111111;
 
 // for front end
 impl Command {
-    pub fn parse_cmd(buf: &mut BytesMut) -> Result<Option<Command>, AsError> {
+    pub fn into_cmd(self, notify: Notify) -> Cmd {
+        Cmd {
+            cmd: Rc::new(RefCell::new(self)),
+            notify,
+        }
+    }
+
+    pub fn parse_cmd(buf: &mut BytesMut) -> Result<Option<Cmd>, AsError> {
         let msg = MessageMut::parse(buf)?;
         Ok(msg.map(Into::into))
     }
@@ -228,10 +231,6 @@ impl Command {
         self.subs.as_ref().cloned()
     }
 
-    pub fn reregister(&mut self, task: Task) {
-        self.notify.set_task(task);
-    }
-
     pub fn is_done(&self) -> bool {
         if self.subs.is_some() {
             return self
@@ -289,7 +288,7 @@ impl Command {
 }
 
 impl Command {
-    fn mk_mset(flags: CFlags, ctype: CmdType, notify: Notify, msg: Message) -> Command {
+    fn mk_mset(flags: CFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Cmd {
         let Message { rtype, data } = msg.clone();
         if let RespType::Array(head, array) = rtype {
             let array_len = array.len();
@@ -300,6 +299,7 @@ impl Command {
             }
 
             let cmd_count = array_len / 2;
+            notify.set_expect((cmd_count + 1) as u16);
             let mut subs = Vec::with_capacity(cmd_count / 2);
 
             for chunk in (&array[1..]).chunks(2) {
@@ -316,27 +316,26 @@ impl Command {
                     cycle: DEFAULT_CYCLE,
                     req: sub,
                     reply: None,
-                    notify: notify.clone(),
                     subs: None,
                 };
 
-                subs.push(subcmd.into());
+                subs.push(subcmd.into_cmd(notify.clone()));
             }
-            Command {
+            let command = Command {
                 flags,
                 ctype,
-                notify,
                 cycle: DEFAULT_CYCLE,
                 subs: Some(subs),
                 req: msg,
                 reply: None,
-            }
+            };
+            command.into_cmd(notify)
         } else {
             unreachable!()
         }
     }
 
-    fn mk_subs(flags: CFlags, ctype: CmdType, notify: Notify, msg: Message) -> Command {
+    fn mk_subs(flags: CFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Cmd {
         let Message { rtype, data } = msg.clone();
         if let RespType::Array(head, array) = rtype {
             let array_len = array.len();
@@ -345,6 +344,7 @@ impl Command {
                 unimplemented!();
             }
 
+            notify.set_expect((array_len - 1 + 1) as u16);
             let mut subs = Vec::with_capacity(array_len - 1);
             for key in &array[1..] {
                 let sub = Message {
@@ -358,22 +358,21 @@ impl Command {
                     cycle: DEFAULT_CYCLE,
                     req: sub,
                     reply: None,
-                    notify: notify.clone(),
                     subs: None,
                 };
 
-                subs.push(subcmd.into());
+                subs.push(subcmd.into_cmd(notify.clone()));
             }
 
-            Command {
+            let cmd = Command {
                 flags,
                 cycle: DEFAULT_CYCLE,
                 ctype,
                 req: msg,
                 reply: None,
-                notify,
                 subs: Some(subs),
-            }
+            };
+            cmd.into_cmd(notify)
         } else {
             unreachable!();
         }
@@ -386,9 +385,10 @@ const KEY_RAW_POS: usize = 1;
 
 const MAX_KEY_COUNT: usize = 10000;
 
-impl From<MessageMut> for Command {
-    fn from(mut msg_mut: MessageMut) -> Command {
-        let notify = Notify::empty();
+impl From<MessageMut> for Cmd {
+    fn from(mut msg_mut: MessageMut) -> Cmd {
+        let mut notify = Notify::empty();
+        notify.set_expect(1);
         // upper the given command
         if let Some(data) = msg_mut.nth_mut(COMMAND_POS) {
             upper(data);
@@ -408,15 +408,15 @@ impl From<MessageMut> for Command {
             return Command::mk_mset(flags, ctype, notify, msg);
         }
 
-        Command {
+        let cmd = Command {
             flags,
             ctype,
             cycle: DEFAULT_CYCLE,
             req: msg,
             reply: None,
-            notify,
             subs: None,
-        }
+        };
+        cmd.into_cmd(notify)
     }
 }
 
@@ -427,8 +427,7 @@ impl Decoder for RedisHandleCodec {
     type Item = Cmd;
     type Error = AsError;
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let command = Command::parse_cmd(src);
-        command.map(|x| x.map(|y| y.into()))
+        Command::parse_cmd(src)
     }
 }
 
@@ -464,19 +463,19 @@ impl Encoder for RedisNodeCodec {
 pub fn new_cluster_slots_cmd() -> Cmd {
     let msg = Message::new_cluster_slots();
     let flags = CFlags::empty();
-    let notify = Notify::empty();
+    let mut notify = Notify::empty();
+    notify.set_expect(1);
     let ctype = CmdType::get_cmd_type(&msg);
 
     let cmd = Command {
         flags,
         ctype,
-        notify,
         cycle: DEFAULT_CYCLE,
         req: msg,
         reply: None,
         subs: None,
     };
-    Cmd::from(cmd)
+    cmd.into_cmd(notify)
 }
 
 pub type ReplicaLayout = (Vec<String>, Vec<Vec<String>>);

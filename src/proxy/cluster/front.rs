@@ -101,10 +101,10 @@ where
                 Err(err) => return Err(err),
             };
 
-            if let Some(cmd) = cmd {
+            if let Some(mut cmd) = cmd {
                 count += 1;
                 let is_done = cmd.borrow().is_done();
-                cmd.borrow_mut().reregister(task::current());
+                cmd.reregister(task::current());
 
                 if !is_done {
                     // for done command, never send to backend
