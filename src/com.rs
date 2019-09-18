@@ -80,6 +80,18 @@ pub struct Config {
 }
 
 impl Config {
+    #[cfg(not(test))]
+    pub fn load<P: AsRef<Path>>(p: P) -> Result<Config, AsError> {
+        let path = p.as_ref();
+        let mut data = String::new();
+        let mut fd = File::open(path)?;
+        fd.read_to_string(&mut data)?;
+        let cfg = toml::from_str(&data)?;
+        Ok(cfg)
+    }
+
+    // for test default load
+    #[cfg(test)]
     pub fn load<P: AsRef<Path>>(p: P) -> Result<Config, AsError> {
         let path = p.as_ref();
         let mut data = String::new();

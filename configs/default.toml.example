@@ -1,8 +1,8 @@
-[clusters]
+[[clusters]]
 name = "test-cluster"
 listen_addr = "0.0.0.0:7788"
 hash_tag = "{}"
-thread = 1,
+thread = 1
 cache_type = "redis_cluster"
 servers = ["127.0.0.1:7000"]
 

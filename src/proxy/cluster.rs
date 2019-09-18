@@ -19,8 +19,6 @@ use futures::unsync::mpsc::{channel, Sender};
 use futures::AsyncSink;
 use futures::{Sink, Stream};
 
-use log::Level::Trace;
-
 use tokio::net::TcpStream;
 use tokio::runtime::current_thread;
 use tokio_codec::Decoder;

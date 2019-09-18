@@ -109,7 +109,6 @@ where
                     self.store = Some(cmd);
                 }
                 Ok(Async::Ready(None)) => {
-                    info!("connection exits to {}", self.addr);
                     ret_state = State::ActiveClosing;
                     break;
                 }
@@ -261,7 +260,7 @@ where
                         // trace!("backend recv is ready");
                     }
                     Err(err) => {
-                        // trace!("backend recv is error {}", err);
+                        warn!("backend {} recv is error {}", self.addr, err);
                         self.state = State::Closing;
                         continue;
                     }
@@ -283,7 +282,7 @@ where
                         // trace!("backend forward is ready");
                     }
                     Err(err) => {
-                        // trace!("backend forward is error {}", err);
+                        warn!("backend {} forward is error {}", self.addr, err);
                         self.state = State::Closing;
                         continue;
                     }

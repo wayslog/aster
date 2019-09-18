@@ -2,7 +2,7 @@
 name = "aster-proxy"
 version = "0.1.4"
 authors = ["wayslog"]
-description = "A light, fast and powerful cache proxy in Rust."
+description = "A light, fast and powerful cache proxy written in Rust."
 homepage = "https://github.com/wayslog/aster"
 repository = "https://github.com/wayslog/aster"
 documentation = "https://docs.rs/aster-proxy"
