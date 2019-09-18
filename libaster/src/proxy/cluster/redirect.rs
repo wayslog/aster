@@ -39,6 +39,10 @@ impl Future for RedirectHandler {
                     Redirect::Ask { slot, to } => (slot, to, false),
                 };
                 if is_move {
+                    debug!(
+                        "cluster {} slot {} was moved to {}",
+                        self.cluster.cc.name, slot, to
+                    );
                     self.cluster.update_slot(slot, to.clone());
                 }
                 let rc_cmd = cmd.clone();

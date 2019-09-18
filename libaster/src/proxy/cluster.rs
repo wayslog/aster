@@ -187,18 +187,22 @@ impl Cluster {
             return Ok(AsyncSink::Ready);
         }
         let mut conns = self.conns.borrow_mut();
-        if let Some(sender) = conns.get_mut(addr).map(|x| x.sender()) {
-            match sender.start_send(cmd) {
-                Ok(ret) => {
-                    return Ok(ret);
+        loop {
+            info!("dispatch to addr={}", &addr);
+            if let Some(sender) = conns.get_mut(addr).map(|x| x.sender()) {
+                match sender.start_send(cmd) {
+                    Ok(ret) => {
+                        return Ok(ret);
+                    }
+                    Err(se) => {
+                        let cmd = se.into_inner();
+                        return Ok(AsyncSink::NotReady(cmd));
+                    }
                 }
-                Err(se) => {
-                    let cmd = se.into_inner();
-                    return Ok(AsyncSink::NotReady(cmd));
-                }
+            } else {
+                let sender = connect(self.moved.clone(), &addr)?;
+                conns.insert(&addr, sender);
             }
-        } else {
-            unreachable!("connection must be initial first");
         }
     }
 
@@ -240,7 +244,10 @@ impl Cluster {
                     }
                 }
             } else {
-                unreachable!("connection must be initial first");
+                cmds.push_front(cmd);
+                let sender = connect(self.moved.clone(), &addr)?;
+                conns.insert(&addr, sender);
+                return Ok(count);
             }
         }
     }
