@@ -1,4 +1,5 @@
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
+use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{Bytes, BytesMut};
 
@@ -76,6 +77,13 @@ const MSG_TEXT_MAX_RESP_TYPE_SIZE: usize = 5; // VALUE
 
 const MSG_BIN_REQ: u8 = 0x80;
 const MSG_BIN_RESP: u8 = 0x81;
+
+bitflags! {
+    struct MCFlags: u8 {
+        const NOREPLY = 0b00000001;
+        const QUIET   = 0b00000010;
+    }
+}
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum TextCmd {
@@ -278,11 +286,52 @@ pub enum MsgType {
     },
 }
 
+impl MsgType {
+    pub(crate) fn is_quiet(&self) -> bool {
+        use BinMsgType::*;
+        match self {
+            MsgType::Binary { bmtype, .. } => match bmtype {
+                GetQ | GetKQ => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    pub(crate) fn into_noise(self) -> Self {
+        if self.is_quiet() {
+            return self;
+        }
+
+        match self {
+            MsgType::Binary { bmtype, btype, key } => match bmtype {
+                BinMsgType::GetQ => MsgType::Binary {
+                    btype,
+                    key,
+                    bmtype: BinMsgType::Get,
+                },
+
+                BinMsgType::GetKQ => MsgType::Binary {
+                    btype,
+                    key,
+                    bmtype: BinMsgType::GetK,
+                },
+                other => MsgType::Binary {
+                    btype,
+                    key,
+                    bmtype: other,
+                },
+            },
+            req => req,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageMut {
     data: BytesMut,
     mtype: MsgType,
-    noreply: bool,
+    flags: MCFlags,
 }
 
 impl MessageMut {
@@ -318,10 +367,6 @@ impl MessageMut {
         }
 
         Self::parse_text_inline(data, line_size)
-    }
-
-    pub fn mk_multi(&self) -> Option<Vec<MessageMut>> {
-        unimplemented!()
     }
 
     fn parse_text_req(
@@ -423,7 +468,7 @@ impl MessageMut {
         Ok(Some(MessageMut {
             data: data.split_to(line),
             mtype: MsgType::TextReq(cmd),
-            noreply: false,
+            flags: MCFlags::empty(),
         }))
     }
 
@@ -440,18 +485,16 @@ impl MessageMut {
                 cmd.set_key_range(cursor, cursor + key.len());
             }
         }
-
-        let noreply = {
-            if let Some(last) = iter.last() {
-                last == BYTES_NOREPLY
-            } else {
-                false
+        let mut flags = MCFlags::empty();
+        if let Some(last) = iter.last() {
+            if last == BYTES_NOREPLY {
+                flags |= MCFlags::NOREPLY;
             }
-        };
+        }
         Ok(Some(MessageMut {
             data: data.split_to(line),
             mtype: MsgType::TextReq(cmd),
-            noreply,
+            flags,
         }))
     }
 
@@ -476,7 +519,7 @@ impl MessageMut {
         Ok(Some(MessageMut {
             data: data.split_to(line),
             mtype: MsgType::TextReq(cmd),
-            noreply: false,
+            flags: MCFlags::empty(),
         }))
     }
 
@@ -511,13 +554,12 @@ impl MessageMut {
             };
             btoi::btoi::<usize>(bs)?
         };
-        let noreply = {
-            if let Some(last) = iter.last() {
-                last == BYTES_NOREPLY
-            } else {
-                false
+        let mut flags = MCFlags::empty();
+        if let Some(last) = iter.last() {
+            if last == BYTES_NOREPLY {
+                flags |= MCFlags::NOREPLY;
             }
-        };
+        }
         let total_size = line + len + BYTES_CRLF.len();
         if data.len() < total_size {
             return Ok(None);
@@ -526,7 +568,7 @@ impl MessageMut {
         Ok(Some(MessageMut {
             data: data.split_to(total_size),
             mtype: MsgType::TextReq(cmd),
-            noreply,
+            flags,
         }))
     }
 
@@ -534,7 +576,7 @@ impl MessageMut {
         Ok(Some(MessageMut {
             data: data.split_to(line),
             mtype: MsgType::TextInline,
-            noreply: false,
+            flags: MCFlags::empty(),
         }))
     }
 
@@ -547,7 +589,7 @@ impl MessageMut {
             return Ok(Some(MessageMut {
                 data: data.split_to(line),
                 mtype: MsgType::TextRespValue,
-                noreply: false,
+                flags: MCFlags::empty(),
             }));
         }
         let len =
@@ -565,7 +607,7 @@ impl MessageMut {
         Ok(Some(MessageMut {
             data: data.split_to(total_size),
             mtype: MsgType::TextRespValue,
-            noreply: false,
+            flags: MCFlags::empty(),
         }))
     }
 
@@ -603,7 +645,7 @@ impl MessageMut {
                     BIN_HEADER_LEN + extra_len + key_len,
                 ),
             },
-            noreply: false,
+            flags: MCFlags::empty(),
         }))
     }
 }
@@ -624,57 +666,57 @@ mod test {
         let items = vec![
             MessageMut {
                 data: BytesMut::from("set mykey 0 0 2\r\nab\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Set(Range::new(4, 9))),
             },
             MessageMut {
                 data: BytesMut::from("replace mykey 0 0 2\r\nab\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Replace(Range::new(8, 13))),
             },
             MessageMut {
                 data: BytesMut::from("replace mykey 0 0 2 noreply\r\nab\r\n".as_bytes()),
-                noreply: true,
+                flags: MCFlags::NOREPLY,
                 mtype: MsgType::TextReq(TextCmd::Replace(Range::new(8, 13))),
             },
             MessageMut {
                 data: BytesMut::from("cas mykey 0 0 2 47\r\nab\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Cas(Range::new(4, 9))),
             },
             MessageMut {
                 data: BytesMut::from("cas mykey 0 0 2 47 noreply\r\nab\r\n".as_bytes()),
-                noreply: true,
+                flags: MCFlags::NOREPLY,
                 mtype: MsgType::TextReq(TextCmd::Cas(Range::new(4, 9))),
             },
             MessageMut {
                 data: BytesMut::from("get mykey\r\n".as_bytes()),
                 mtype: MsgType::TextReq(TextCmd::Get(vec![Range::new(4, 9)])),
-                noreply: false,
+                flags: MCFlags::empty(),
             },
             MessageMut {
                 data: BytesMut::from("get mykey yourkey\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Get(vec![Range::new(4, 9), Range::new(10, 17)])),
             },
             MessageMut {
                 data: BytesMut::from("gets mykey yourkey\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Gets(vec![Range::new(5, 10), Range::new(11, 18)])),
             },
             MessageMut {
                 data: BytesMut::from("incr mykey 10\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Incr(Range::new(5, 10))),
             },
             MessageMut {
                 data: BytesMut::from("decr mykey 10\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Decr(Range::new(5, 10))),
             },
             MessageMut {
                 data: BytesMut::from("gat 10 mykey yourkey\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Gat(
                     Range::new(4, 6),
                     vec![Range::new(7, 12), Range::new(13, 20)],
@@ -682,18 +724,18 @@ mod test {
             },
             MessageMut {
                 data: BytesMut::from("quit\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Quit),
             },
             MessageMut {
                 data: BytesMut::from("version\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Version),
             },
             // next is for binary cases
             MessageMut {
                 data: BytesMut::from("version\r\n".as_bytes()),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Version),
             },
         ];
@@ -735,7 +777,7 @@ mod test {
         let items = vec![
             MessageMut {
                 data: BytesMut::from(&get_req_bin_data[..]),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::Binary {
                     btype: BinType::Req,
                     bmtype: BinMsgType::GetK,
@@ -745,7 +787,7 @@ mod test {
             // next is for binary cases
             MessageMut {
                 data: BytesMut::from(&get_resp_bin_data[..]),
-                noreply: false,
+                flags: MCFlags::empty(),
                 mtype: MsgType::Binary {
                     btype: BinType::Resp,
                     bmtype: BinMsgType::GetK,
@@ -764,7 +806,7 @@ mod test {
 pub struct Message {
     data: Bytes,
     mtype: MsgType,
-    noreply: bool,
+    flags: MCFlags,
 }
 
 impl Message {
@@ -777,7 +819,7 @@ impl Message {
                         subs.push(Message {
                             data: self.data.clone(),
                             mtype: MsgType::TextReq(TextCmd::Get(vec![rg.clone()])),
-                            noreply: self.noreply,
+                            flags: self.flags,
                         })
                     }
                 }
@@ -786,7 +828,7 @@ impl Message {
                         subs.push(Message {
                             data: self.data.clone(),
                             mtype: MsgType::TextReq(TextCmd::Gets(vec![rg.clone()])),
-                            noreply: self.noreply,
+                            flags: self.flags,
                         })
                     }
                 }
@@ -798,7 +840,7 @@ impl Message {
                                 expire.clone(),
                                 vec![rg.clone()],
                             )),
-                            noreply: self.noreply,
+                            flags: self.flags,
                         })
                     }
                 }
@@ -807,7 +849,7 @@ impl Message {
                         subs.push(Message {
                             data: self.data.clone(),
                             mtype: MsgType::TextReq(TextCmd::Gat(expire.clone(), vec![rg.clone()])),
-                            noreply: self.noreply,
+                            flags: self.flags,
                         })
                     }
                 }
@@ -821,15 +863,11 @@ impl Message {
 
 impl From<MessageMut> for Message {
     fn from(msg: MessageMut) -> Message {
-        let MessageMut {
-            data,
-            mtype,
-            noreply,
-        } = msg;
+        let MessageMut { data, mtype, flags } = msg;
         Message {
             data: data.freeze(),
-            mtype,
-            noreply,
+            mtype: mtype.into_noise(),
+            flags,
         }
     }
 }
