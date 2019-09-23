@@ -1,6 +1,7 @@
 use crate::com::*;
 use crate::proxy::cluster::Redirect;
 use crate::utils::simdfind;
+use crate::utils::Range;
 
 use aho_corasick::AhoCorasick;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -13,36 +14,6 @@ pub const RESP_ARRAY: u8 = b'*';
 
 pub const BYTE_CR: u8 = b'\r';
 pub const BYTE_LF: u8 = b'\n';
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Range {
-    pub begin: u32,
-    pub end: u32,
-}
-
-impl Range {
-    pub fn new(begin: usize, end: usize) -> Range {
-        Range {
-            begin: begin as u32,
-            end: end as u32,
-        }
-    }
-
-    #[inline(always)]
-    pub fn begin(&self) -> usize {
-        self.begin as usize
-    }
-
-    #[inline(always)]
-    pub fn end(&self) -> usize {
-        self.end as usize
-    }
-
-    #[inline]
-    pub fn range(&self) -> usize {
-        (self.end - self.begin) as usize
-    }
-}
 
 // contains Range means body cursor range [begin..end] for non-array type
 #[derive(Debug, Clone, PartialEq, Eq)]

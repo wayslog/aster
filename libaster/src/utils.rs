@@ -7,11 +7,7 @@ pub mod simdfind;
 
 const LOWER_BEGIN: u8 = b'a';
 const LOWER_END: u8 = b'z';
-// const UPPER_BEGIN: u8 = b'A';
-// const UPPER_END: u8 = b'Z';
 const UPPER_TO_LOWER: u8 = b'a' - b'A';
-
-// const ASCII_0: u8 = b'0';
 
 pub(crate) fn upper(input: &mut [u8]) {
     for b in input {
@@ -87,4 +83,50 @@ pub fn trim_hash_tag<'a, 'b>(key: &'a [u8], hash_tag: &'b [u8]) -> &'a [u8] {
         }
     }
     key
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Range {
+    pub begin: u32,
+    pub end: u32,
+}
+
+impl Range {
+    pub fn new(begin: usize, end: usize) -> Range {
+        Range {
+            begin: begin as u32,
+            end: end as u32,
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_begin(&mut self, begin: usize) {
+        self.begin = begin as u32;
+    }
+
+    #[inline(always)]
+    pub fn set_end(&mut self, end: usize) {
+        self.end = end as u32;
+    }
+
+    #[inline(always)]
+    pub fn begin(&self) -> usize {
+        self.begin as usize
+    }
+
+    #[inline(always)]
+    pub fn end(&self) -> usize {
+        self.end as usize
+    }
+
+    #[inline]
+    pub fn range(&self) -> usize {
+        (self.end - self.begin) as usize
+    }
+}
+
+impl Default for Range {
+    fn default() -> Range {
+        Range::new(0, 0)
+    }
 }
