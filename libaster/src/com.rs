@@ -10,6 +10,9 @@ use std::path::Path;
 
 #[derive(Debug, Fail)]
 pub enum AsError {
+    #[fail(display = "config is bad for fields {}", _0)]
+    BadConfig(String),
+
     #[fail(display = "invalid message")]
     BadMessage,
 

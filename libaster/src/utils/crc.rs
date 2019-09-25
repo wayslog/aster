@@ -27,12 +27,12 @@ const CRC16TAB: [u16; 256] = [
     0x5e74, 0x2e93, 0x3eb2, 0x0ed1, 0x1ef0,
 ];
 
-pub fn crc16(data: &[u8]) -> u16 {
+pub fn crc16(data: &[u8]) -> u64 {
     let mut crc = 0u16;
     for c in data {
         crc = (crc << 8) ^ CRC16TAB[0x00ff & (((crc >> 8) as u8) ^ c) as usize];
     }
-    crc
+    crc as u64
 }
 
 #[cfg(test)]

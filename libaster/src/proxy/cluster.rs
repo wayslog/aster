@@ -217,7 +217,11 @@ impl Cluster {
                 cmd.set_reply(AsError::ClusterFailDispatch);
                 continue;
             }
-            let slot = cmd.borrow().key_hash(self.hash_tag.as_ref(), crc16) % SLOTS_COUNT;
+            let slot = {
+                let hash_tag = self.hash_tag.as_ref();
+                let signed = cmd.borrow().key_hash(hash_tag, crc16) as usize;
+                signed % SLOTS_COUNT
+            };
             let addr = self.get_addr(slot, cmd.borrow().is_read());
             let mut conns = self.conns.borrow_mut();
 

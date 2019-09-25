@@ -4,6 +4,7 @@ use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{Bytes, BytesMut};
 
 use crate::com::AsError;
+use crate::protocol::IntoReply;
 use crate::utils::simdfind::find_lf_simd;
 use crate::utils::Range;
 
@@ -15,8 +16,11 @@ const BIN_HEADER_LEN: usize = 24;
 const BYTE_SPACE: u8 = b' ';
 
 const BYTES_CRLF: &[u8] = b"\r\n";
+const BYTES_SPACE: &[u8] = b" ";
 const BYTES_END: &[u8] = b"END\r\n";
 const BYTES_NOREPLY: &[u8] = b"noreply";
+
+const BIN_STATUS_KEY_NOT_FOUND: u16 = 0x0001u16;
 
 const TEXT_CMDS: &[&'static str] = &[
     "set", "add", "replace", "append", "prepend", "cas", // storage [0, 5]
@@ -114,6 +118,54 @@ pub enum TextCmd {
 }
 
 impl TextCmd {
+    fn key_range(&self) -> Range {
+        use TextCmd::*;
+
+        match self {
+            Set(rng) | Add(rng) | Replace(rng) | Append(rng) | Prepend(rng) | Cas(rng)
+            | Delete(rng) | Incr(rng) | Decr(rng) | Touch(rng) => rng.clone(),
+            Get(rngs) | Gets(rngs) | Gats(_, rngs) | Gat(_, rngs) => {
+                if rngs.is_empty() {
+                    return Range::new(0, 0);
+                }
+                if rngs.len() > 1 {
+                    return rngs.first().unwrap().clone();
+                }
+                rngs.first().unwrap().clone()
+            }
+            _ => Range::new(0, 0),
+        }
+    }
+
+    fn cmd_slice(&self) -> &'static [u8] {
+        use TextCmd::*;
+        match &self {
+            Set(_) => &b"set"[..],
+            Add(_) => &b"add"[..],
+            Replace(_) => &b"replace"[..],
+            Append(_) => &b"append"[..],
+            Prepend(_) => &b"prepend "[..],
+            Cas(_) => &b"cas"[..],
+            // retrieval commands
+            Get(_) => &b"get"[..],
+            Gets(_) => &b"gets"[..],
+            // Deleteion
+            Delete(_) => &b"delete"[..],
+            // Incr/Decr
+            Incr(_) => &b"incr"[..],
+            Decr(_) => &b"decr"[..],
+            // Touch
+            Touch(_) => &b"touch"[..],
+            // Get And Touch
+            // first range is the expire field range
+            // second range is the key range
+            Gat(_, _) => &b"gat"[..],
+            Gats(_, _) => &b"gats"[..],
+            Version => &b"version"[..],
+            Quit => &b"quit"[..],
+        }
+    }
+
     fn set_key_range(&mut self, begin: usize, end: usize) {
         match self {
             TextCmd::Set(ref mut rg)
@@ -205,6 +257,14 @@ pub enum BinMsgType {
 }
 
 impl BinMsgType {
+    pub(crate) fn is_quiet(&self) -> bool {
+        use BinMsgType::*;
+        match &self {
+            GetQ | GetKQ => true,
+            _ => false,
+        }
+    }
+
     fn from_u8(data: u8) -> Result<BinMsgType, AsError> {
         use BinMsgType::*;
 
@@ -277,7 +337,7 @@ impl BinType {
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum MsgType {
     TextReq(TextCmd),
-    TextInline,    // one line ends with \r\n, maybe one line resp or error MessageMut line
+    TextInline,    // one line ends with \r\n, maybe one line resp or error Message line
     TextRespValue, // VALUE <key> <flags> <bytes> [<cas unique>]\r\n<data block>\r\n[END\r\n]
     Binary {
         btype: BinType,
@@ -288,12 +348,8 @@ pub enum MsgType {
 
 impl MsgType {
     pub(crate) fn is_quiet(&self) -> bool {
-        use BinMsgType::*;
         match self {
-            MsgType::Binary { bmtype, .. } => match bmtype {
-                GetQ | GetKQ => true,
-                _ => false,
-            },
+            MsgType::Binary { bmtype, .. } => bmtype.is_quiet(),
             _ => false,
         }
     }
@@ -328,14 +384,14 @@ impl MsgType {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MessageMut {
-    data: BytesMut,
+pub struct Message {
+    data: Bytes,
     mtype: MsgType,
     flags: MCFlags,
 }
 
-impl MessageMut {
-    pub fn parse(data: &mut BytesMut) -> Result<Option<MessageMut>, AsError> {
+impl Message {
+    pub fn parse(data: &mut BytesMut) -> Result<Option<Message>, AsError> {
         if data.is_empty() {
             return Ok(None);
         }
@@ -373,7 +429,7 @@ impl MessageMut {
         data: &mut BytesMut,
         line: usize,
         pat: usize,
-    ) -> Result<Option<MessageMut>, AsError> {
+    ) -> Result<Option<Message>, AsError> {
         match pat {
             TEXT_PAT_SET => {
                 let cmd = TextCmd::Set(Range::default());
@@ -448,7 +504,7 @@ impl MessageMut {
         mut cmd: TextCmd,
         line: usize,
         pat: usize,
-    ) -> Result<Option<MessageMut>, AsError> {
+    ) -> Result<Option<Message>, AsError> {
         let mut iter = (&data[..line - 2]).split(|x| *x == BYTE_SPACE).skip(1); // skip cmd
         let mut cursor = TEXT_CMDS[pat].len() + 1;
         if let Some(expire) = iter.next() {
@@ -465,8 +521,8 @@ impl MessageMut {
             cursor += key.len() + 1;
         }
         cmd.set_multi_key_range(&mut ranges);
-        Ok(Some(MessageMut {
-            data: data.split_to(line),
+        Ok(Some(Message {
+            data: data.split_to(line).freeze(),
             mtype: MsgType::TextReq(cmd),
             flags: MCFlags::empty(),
         }))
@@ -477,7 +533,7 @@ impl MessageMut {
         mut cmd: TextCmd,
         line: usize,
         pat: usize,
-    ) -> Result<Option<MessageMut>, AsError> {
+    ) -> Result<Option<Message>, AsError> {
         let mut iter = (&data[..line - 2]).split(|x| *x == BYTE_SPACE).skip(1);
         {
             let cursor = TEXT_CMDS[pat].len() + 1;
@@ -491,8 +547,8 @@ impl MessageMut {
                 flags |= MCFlags::NOREPLY;
             }
         }
-        Ok(Some(MessageMut {
-            data: data.split_to(line),
+        Ok(Some(Message {
+            data: data.split_to(line).freeze(),
             mtype: MsgType::TextReq(cmd),
             flags,
         }))
@@ -503,7 +559,7 @@ impl MessageMut {
         mut cmd: TextCmd,
         line: usize,
         pat: usize,
-    ) -> Result<Option<MessageMut>, AsError> {
+    ) -> Result<Option<Message>, AsError> {
         let iter = (&data[..line - 2]).split(|x| *x == BYTE_SPACE).skip(1); // skip cmd
         let mut cursor = TEXT_CMDS[pat].len() + 1;
         let mut ranges = Vec::new();
@@ -516,8 +572,8 @@ impl MessageMut {
             return Err(AsError::BadMessage);
         }
         cmd.set_multi_key_range(&mut ranges);
-        Ok(Some(MessageMut {
-            data: data.split_to(line),
+        Ok(Some(Message {
+            data: data.split_to(line).freeze(),
             mtype: MsgType::TextReq(cmd),
             flags: MCFlags::empty(),
         }))
@@ -528,7 +584,7 @@ impl MessageMut {
         mut cmd: TextCmd,
         line: usize,
         pat: usize,
-    ) -> Result<Option<MessageMut>, AsError> {
+    ) -> Result<Option<Message>, AsError> {
         let key_begin = TEXT_CMDS[pat].len() + 1;
         let mut iter = (&data[..line - BYTES_CRLF.len()]).split(|x| *x == BYTE_SPACE);
         let key_end = {
@@ -565,16 +621,16 @@ impl MessageMut {
             return Ok(None);
         }
 
-        Ok(Some(MessageMut {
-            data: data.split_to(total_size),
+        Ok(Some(Message {
+            data: data.split_to(total_size).freeze(),
             mtype: MsgType::TextReq(cmd),
             flags,
         }))
     }
 
-    fn parse_text_inline(data: &mut BytesMut, line: usize) -> Result<Option<MessageMut>, AsError> {
-        Ok(Some(MessageMut {
-            data: data.split_to(line),
+    fn parse_text_inline(data: &mut BytesMut, line: usize) -> Result<Option<Message>, AsError> {
+        Ok(Some(Message {
+            data: data.split_to(line).freeze(),
             mtype: MsgType::TextInline,
             flags: MCFlags::empty(),
         }))
@@ -584,10 +640,10 @@ impl MessageMut {
         data: &mut BytesMut,
         line: usize,
         is_empty: bool,
-    ) -> Result<Option<MessageMut>, AsError> {
+    ) -> Result<Option<Message>, AsError> {
         if is_empty {
-            return Ok(Some(MessageMut {
-                data: data.split_to(line),
+            return Ok(Some(Message {
+                data: data.split_to(line).freeze(),
                 mtype: MsgType::TextRespValue,
                 flags: MCFlags::empty(),
             }));
@@ -604,14 +660,14 @@ impl MessageMut {
             return Ok(None);
         }
 
-        Ok(Some(MessageMut {
-            data: data.split_to(total_size),
+        Ok(Some(Message {
+            data: data.split_to(total_size).freeze(),
             mtype: MsgType::TextRespValue,
             flags: MCFlags::empty(),
         }))
     }
 
-    fn parse_binary(data: &mut BytesMut) -> Result<Option<MessageMut>, AsError> {
+    fn parse_binary(data: &mut BytesMut) -> Result<Option<Message>, AsError> {
         if data.len() < BIN_HEADER_LEN {
             return Ok(None);
         }
@@ -635,8 +691,13 @@ impl MessageMut {
         if data.len() < tlen {
             return Ok(None);
         }
-        Ok(Some(MessageMut {
-            data: data.split_to(tlen),
+        let flags = if bmtype.is_quiet() {
+            MCFlags::QUIET
+        } else {
+            MCFlags::empty()
+        };
+        Ok(Some(Message {
+            data: data.split_to(tlen).freeze(),
             mtype: MsgType::Binary {
                 btype,
                 bmtype,
@@ -645,7 +706,7 @@ impl MessageMut {
                     BIN_HEADER_LEN + extra_len + key_len,
                 ),
             },
-            flags: MCFlags::empty(),
+            flags,
         }))
     }
 }
@@ -654,9 +715,9 @@ impl MessageMut {
 mod test {
     use self::super::*;
 
-    fn test_mc_parse_ok(msg: MessageMut) {
+    fn test_mc_parse_ok(msg: Message) {
         let mut data = BytesMut::from(msg.data.clone());
-        let msg_opt = MessageMut::parse(&mut data).unwrap();
+        let msg_opt = Message::parse(&mut data).unwrap();
         assert!(msg_opt.is_some());
         assert_eq!(msg_opt.unwrap(), msg);
     }
@@ -664,77 +725,77 @@ mod test {
     #[test]
     fn test_parse_text_all_ok() {
         let items = vec![
-            MessageMut {
-                data: BytesMut::from("set mykey 0 0 2\r\nab\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("set mykey 0 0 2\r\nab\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Set(Range::new(4, 9))),
             },
-            MessageMut {
-                data: BytesMut::from("replace mykey 0 0 2\r\nab\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("replace mykey 0 0 2\r\nab\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Replace(Range::new(8, 13))),
             },
-            MessageMut {
-                data: BytesMut::from("replace mykey 0 0 2 noreply\r\nab\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("replace mykey 0 0 2 noreply\r\nab\r\n".as_bytes()),
                 flags: MCFlags::NOREPLY,
                 mtype: MsgType::TextReq(TextCmd::Replace(Range::new(8, 13))),
             },
-            MessageMut {
-                data: BytesMut::from("cas mykey 0 0 2 47\r\nab\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("cas mykey 0 0 2 47\r\nab\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Cas(Range::new(4, 9))),
             },
-            MessageMut {
-                data: BytesMut::from("cas mykey 0 0 2 47 noreply\r\nab\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("cas mykey 0 0 2 47 noreply\r\nab\r\n".as_bytes()),
                 flags: MCFlags::NOREPLY,
                 mtype: MsgType::TextReq(TextCmd::Cas(Range::new(4, 9))),
             },
-            MessageMut {
-                data: BytesMut::from("get mykey\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("get mykey\r\n".as_bytes()),
                 mtype: MsgType::TextReq(TextCmd::Get(vec![Range::new(4, 9)])),
                 flags: MCFlags::empty(),
             },
-            MessageMut {
-                data: BytesMut::from("get mykey yourkey\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("get mykey yourkey\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Get(vec![Range::new(4, 9), Range::new(10, 17)])),
             },
-            MessageMut {
-                data: BytesMut::from("gets mykey yourkey\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("gets mykey yourkey\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Gets(vec![Range::new(5, 10), Range::new(11, 18)])),
             },
-            MessageMut {
-                data: BytesMut::from("incr mykey 10\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("incr mykey 10\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Incr(Range::new(5, 10))),
             },
-            MessageMut {
-                data: BytesMut::from("decr mykey 10\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("decr mykey 10\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Decr(Range::new(5, 10))),
             },
-            MessageMut {
-                data: BytesMut::from("gat 10 mykey yourkey\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("gat 10 mykey yourkey\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Gat(
                     Range::new(4, 6),
                     vec![Range::new(7, 12), Range::new(13, 20)],
                 )),
             },
-            MessageMut {
-                data: BytesMut::from("quit\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("quit\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Quit),
             },
-            MessageMut {
-                data: BytesMut::from("version\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("version\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Version),
             },
             // next is for binary cases
-            MessageMut {
-                data: BytesMut::from("version\r\n".as_bytes()),
+            Message {
+                data: Bytes::from("version\r\n".as_bytes()),
                 flags: MCFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Version),
             },
@@ -775,8 +836,8 @@ mod test {
             0x41, 0x42, 0x43, 0x44, 0x45, // value: ABCDE
         ];
         let items = vec![
-            MessageMut {
-                data: BytesMut::from(&get_req_bin_data[..]),
+            Message {
+                data: Bytes::from(&get_req_bin_data[..]),
                 flags: MCFlags::empty(),
                 mtype: MsgType::Binary {
                     btype: BinType::Req,
@@ -785,8 +846,8 @@ mod test {
                 },
             },
             // next is for binary cases
-            MessageMut {
-                data: BytesMut::from(&get_resp_bin_data[..]),
+            Message {
+                data: Bytes::from(&get_resp_bin_data[..]),
                 flags: MCFlags::empty(),
                 mtype: MsgType::Binary {
                     btype: BinType::Resp,
@@ -800,13 +861,6 @@ mod test {
             test_mc_parse_ok(item);
         }
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Message {
-    data: Bytes,
-    mtype: MsgType,
-    flags: MCFlags,
 }
 
 impl Message {
@@ -859,15 +913,153 @@ impl Message {
         }
         subs
     }
+
+    pub(crate) fn version_request() -> Message {
+        Message {
+            data: Bytes::from("version\r\n".as_bytes()),
+            mtype: MsgType::TextReq(TextCmd::Version),
+            flags: MCFlags::empty(),
+        }
+    }
+
+    pub(crate) fn is_noreply(&self) -> bool {
+        self.flags & MCFlags::NOREPLY == MCFlags::NOREPLY
+    }
+
+    pub fn try_save_ends(&self, target: &mut BytesMut) {
+        match &self.mtype {
+            MsgType::TextReq(TextCmd::Get(_))
+            | MsgType::TextReq(TextCmd::Gets(_))
+            | MsgType::TextReq(TextCmd::Gat(_, _))
+            | MsgType::TextReq(TextCmd::Gats(_, _)) => {
+                target.extend_from_slice(BYTES_END);
+            }
+            _ => {}
+        }
+    }
+
+    pub(crate) fn get_key(&self) -> &[u8] {
+        let key = match &self.mtype {
+            MsgType::TextReq(cmd) => cmd.key_range(),
+            MsgType::Binary { key, .. } => key.clone(),
+            _ => unreachable!(),
+        };
+        debug_assert!(self.data.len() > key.begin());
+        debug_assert!(self.data.len() > key.end());
+        &self.data[key.begin()..key.end()]
+    }
+
+    pub fn save_reply(&self, reply: Message, target: &mut BytesMut) -> Result<(), AsError> {
+        if self.is_noreply() {
+            return Ok(());
+        }
+        match &self.mtype {
+            MsgType::TextReq(TextCmd::Get(_))
+            | MsgType::TextReq(TextCmd::Gets(_))
+            | MsgType::TextReq(TextCmd::Gat(_, _))
+            | MsgType::TextReq(TextCmd::Gats(_, _)) => {
+                let data = reply.data.as_ref();
+                if data.len() > BYTES_END.len() {
+                    if &data[data.len() - BYTES_END.len()..] == BYTES_END {
+                        target.extend_from_slice(
+                            &reply.data.as_ref()[..data.len() - BYTES_END.len()],
+                        );
+                        return Ok(());
+                    }
+                }
+            }
+
+            MsgType::Binary { bmtype, .. } => match bmtype {
+                BinMsgType::GetKQ | BinMsgType::GetQ => {
+                    let mut cursor = Cursor::new(&self.data[6..]);
+                    let status = match cursor.read_u16::<BigEndian>() {
+                        Ok(status) => status,
+                        Err(err) => {
+                            warn!("fail to parse status code {}", err);
+                            target.extend_from_slice(reply.data.as_ref());
+                            return Ok(());
+                        }
+                    };
+                    if status == BIN_STATUS_KEY_NOT_FOUND {
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+
+        target.extend_from_slice(reply.data.as_ref());
+        Ok(())
+    }
+
+    pub fn save_req(&self, target: &mut BytesMut) -> Result<(), AsError> {
+        match &self.mtype {
+            MsgType::TextReq(ref ttype) => match ttype {
+                TextCmd::Get(ref ranges) | TextCmd::Gets(ref ranges) => {
+                    target.extend_from_slice(ttype.cmd_slice());
+                    for rng in &ranges[..] {
+                        target.extend_from_slice(BYTES_SPACE);
+                        target.extend_from_slice(&self.data[rng.begin()..rng.end()]);
+                    }
+                    target.extend_from_slice(BYTES_CRLF);
+                    Ok(())
+                }
+                TextCmd::Gat(ref expire, ref ranges) | TextCmd::Gats(ref expire, ref ranges) => {
+                    target.extend_from_slice(ttype.cmd_slice());
+                    target.extend_from_slice(BYTES_SPACE);
+                    target.extend_from_slice(&self.data[expire.begin()..expire.end()]);
+                    for rng in &ranges[..] {
+                        target.extend_from_slice(BYTES_SPACE);
+                        target.extend_from_slice(&self.data[rng.begin()..rng.end()]);
+                    }
+                    target.extend_from_slice(BYTES_CRLF);
+                    Ok(())
+                }
+                _ => {
+                    target.extend_from_slice(self.data.as_ref());
+                    Ok(())
+                }
+            },
+            MsgType::TextInline => {
+                target.extend_from_slice(self.data.as_ref());
+                Ok(())
+            }
+            MsgType::Binary { btype, .. } if btype == &BinType::Req => {
+                target.extend_from_slice(self.data.as_ref());
+                Ok(())
+            }
+            _ => {
+                unreachable!();
+            }
+        }
+    }
 }
 
-impl From<MessageMut> for Message {
-    fn from(msg: MessageMut) -> Message {
-        let MessageMut { data, mtype, flags } = msg;
+impl From<AsError> for Message {
+    fn from(oe: AsError) -> Message {
+        (&oe).into()
+    }
+}
+
+impl<'a> Into<Message> for &'a AsError {
+    fn into(self) -> Message {
         Message {
-            data: data.freeze(),
-            mtype: mtype.into_noise(),
-            flags,
+            data: Bytes::from(format!("error {}", self).as_bytes()),
+            mtype: MsgType::TextInline,
+            flags: MCFlags::empty(),
         }
+    }
+}
+
+impl<'a> IntoReply<Message> for &'a AsError {
+    fn into_reply(self) -> Message {
+        self.into()
+    }
+}
+
+impl IntoReply<Message> for AsError {
+    fn into_reply(self) -> Message {
+        self.into()
     }
 }

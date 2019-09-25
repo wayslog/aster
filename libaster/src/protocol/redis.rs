@@ -4,6 +4,8 @@ use futures::task::Task;
 use tokio::codec::{Decoder, Encoder};
 
 use crate::com::AsError;
+use crate::protocol::IntoReply;
+use crate::proxy::standalone::Request;
 use crate::utils::notify::Notify;
 use crate::utils::{myitoa, trim_hash_tag, upper};
 
@@ -39,6 +41,57 @@ impl Drop for Cmd {
     }
 }
 
+impl Request for Cmd {
+    type Reply = Message;
+    type FrontCodec = RedisHandleCodec;
+    type BackCodec = RedisNodeCodec;
+
+    fn ping_request() -> Self {
+        unimplemented!()
+    }
+
+    fn reregister(&mut self, task: Task) {
+        self.notify.set_task(task);
+    }
+
+    fn key_hash(&self, hash_tag: &[u8], hasher: fn(&[u8]) -> u64) -> u64 {
+        self.cmd.borrow().key_hash(hash_tag, hasher)
+    }
+
+    fn subs(&self) -> Option<Vec<Self>> {
+        self.cmd.borrow().subs.clone()
+    }
+
+    fn is_done(&self) -> bool {
+        if let Some(subs) = self.subs() {
+            subs.into_iter().all(|x| x.is_done())
+        } else {
+            self.cmd.borrow().is_done()
+        }
+    }
+
+    fn is_error(&self) -> bool {
+        self.cmd.borrow().is_error()
+    }
+
+    fn valid(&self) -> bool {
+        self.check_valid()
+    }
+
+    fn set_reply<R: IntoReply<Message>>(&self, t: R) {
+        let reply = t.into_reply();
+        self.cmd.borrow_mut().reply = Some(reply);
+        self.cmd.borrow_mut().flags |= CFlags::DONE;
+    }
+
+    fn set_error(&self, t: &AsError) {
+        let reply: Message = t.into_reply();
+        self.cmd.borrow_mut().reply = Some(reply);
+        self.cmd.borrow_mut().flags |= CFlags::DONE;
+        self.cmd.borrow_mut().flags |= CFlags::ERROR;
+    }
+}
+
 impl Cmd {
     pub fn borrow(&self) -> Ref<Command> {
         self.cmd.borrow()
@@ -48,7 +101,7 @@ impl Cmd {
         self.cmd.borrow_mut()
     }
 
-    pub fn set_reply<T: IntoReply>(&self, reply: T) {
+    pub fn set_reply<T: IntoReply<Message>>(&self, reply: T) {
         self.borrow_mut().set_reply(reply);
     }
 
@@ -74,6 +127,7 @@ bitflags! {
         const DONE     = 0b00000001;
         const ASK      = 0b00000010;
         const MOVED    = 0b00000100;
+        const ERROR    = 0b10000000;
     }
 }
 
@@ -215,14 +269,14 @@ impl Command {
 }
 
 impl Command {
-    pub fn key_hash<T>(&self, hash_tag: &[u8], method: T) -> usize
+    pub fn key_hash<T>(&self, hash_tag: &[u8], method: T) -> u64
     where
-        T: Fn(&[u8]) -> u16,
+        T: Fn(&[u8]) -> u64,
     {
         let pos = self.key_pos();
 
         if let Some(key_data) = self.req.nth(pos) {
-            method(trim_hash_tag(key_data, hash_tag)) as usize
+            method(trim_hash_tag(key_data, hash_tag)) as u64
         } else {
             // TODO: set bad request error
             unreachable!()
@@ -237,7 +291,7 @@ impl Command {
         KEY_RAW_POS
     }
 
-    pub fn set_reply<T: IntoReply>(&mut self, reply: T) {
+    pub fn set_reply<T: IntoReply<Message>>(&mut self, reply: T) {
         self.reply = Some(reply.into_reply());
         self.set_done();
     }
@@ -295,6 +349,10 @@ impl Command {
 
     pub fn unset_moved(&mut self) {
         self.flags &= !CFlags::MOVED;
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.flags & CFlags::ERROR == CFlags::ERROR
     }
 
     pub fn is_read(&self) -> bool {
@@ -400,6 +458,13 @@ const KEY_RAW_POS: usize = 1;
 
 const MAX_KEY_COUNT: usize = 10000;
 
+impl From<Message> for Cmd {
+    fn from(_msg: Message) -> Cmd {
+        // TODO: impl it
+        unimplemented!()
+    }
+}
+
 impl From<MessageMut> for Cmd {
     fn from(mut msg_mut: MessageMut) -> Cmd {
         let mut notify = Notify::empty();
@@ -445,7 +510,7 @@ impl From<MessageMut> for Cmd {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RedisHandleCodec {}
 
 impl Decoder for RedisHandleCodec {
@@ -465,7 +530,7 @@ impl Encoder for RedisHandleCodec {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RedisNodeCodec {}
 
 impl Decoder for RedisNodeCodec {
@@ -578,58 +643,54 @@ pub fn slots_reply_to_replicas(cmd: Cmd) -> Result<Option<ReplicaLayout>, AsErro
     }
 }
 
-pub trait IntoReply {
-    fn into_reply(self) -> Message;
-}
-
-impl IntoReply for Message {
-    fn into_reply(self) -> Message {
-        self
+impl From<AsError> for Message {
+    fn from(err: AsError) -> Message {
+        err.into_reply()
     }
 }
 
-impl IntoReply for Bytes {
+impl IntoReply<Message> for Bytes {
     fn into_reply(self) -> Message {
         unimplemented!()
     }
 }
 
-impl IntoReply for AsError {
+impl IntoReply<Message> for AsError {
     fn into_reply(self) -> Message {
         let value = format!("{}", self);
         Message::plain(value.as_bytes(), RESP_ERROR)
     }
 }
 
-impl<'a> IntoReply for &'a AsError {
+impl<'a> IntoReply<Message> for &'a AsError {
     fn into_reply(self) -> Message {
         let value = format!("{}", self);
         Message::plain(value.as_bytes(), RESP_ERROR)
     }
 }
 
-impl<'a> IntoReply for &'a str {
+impl<'a> IntoReply<Message> for &'a str {
     fn into_reply(self) -> Message {
         let value = format!("{}", self);
         Message::plain(value.as_bytes(), RESP_STRING)
     }
 }
 
-impl<'a> IntoReply for &'a [u8] {
+impl<'a> IntoReply<Message> for &'a [u8] {
     fn into_reply(self) -> Message {
         let bytes = Bytes::from(self);
         Message::inline_raw(bytes)
     }
 }
 
-impl<'a> IntoReply for &'a usize {
+impl<'a> IntoReply<Message> for &'a usize {
     fn into_reply(self) -> Message {
         let value = format!("{}", self);
         Message::plain(value.as_bytes(), RESP_INT)
     }
 }
 
-impl IntoReply for usize {
+impl IntoReply<Message> for usize {
     fn into_reply(self) -> Message {
         let value = format!("{}", self);
         Message::plain(value.as_bytes(), RESP_INT)
