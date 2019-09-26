@@ -28,14 +28,13 @@ impl PartialOrd for NodeHash {
     }
 }
 
-pub struct HashRing<T: Hasher + Default> {
+pub struct HashRing {
     nodes: Vec<String>,
     spots: Vec<usize>,
     ticks: Vec<NodeHash>,
-    _hash: PhantomData<T>,
 }
 
-impl<T: Hasher + Default> HashRing<T> {
+impl HashRing {
     pub fn new(nodes: Vec<String>, spots: Vec<usize>) -> Result<Self, AsError> {
         if nodes.len() != spots.len() {
             return Err(AsError::BadConfig(
@@ -47,7 +46,6 @@ impl<T: Hasher + Default> HashRing<T> {
             nodes,
             spots,
             ticks: Vec::new(),
-            _hash: PhantomData,
         };
         ring.init();
         Ok(ring)
@@ -111,7 +109,7 @@ impl<T: Hasher + Default> HashRing<T> {
     }
 
     #[inline]
-    pub fn get_pos_by_hash(&self, hash: u64) -> usize {
+    fn get_pos_by_hash(&self, hash: u64) -> usize {
         let find = self.ticks.binary_search_by(|x| x.hash.cmp(&hash));
         match find {
             Ok(val) => val,
@@ -120,29 +118,20 @@ impl<T: Hasher + Default> HashRing<T> {
         }
     }
 
-    pub fn get_node_ref_by_pos(&self, pos: usize) -> &str {
+    pub fn get_node(&self, hash: u64) -> &str {
+        let pos = self.get_pos_by_hash(hash);
         &self.ticks.get(pos).unwrap().node
-    }
-
-    pub fn get_node<K: AsRef<[u8]>>(&self, key: K) -> &str {
-        let mut hash = T::default();
-        hash.write(key.as_ref());
-        let value = hash.finish();
-
-        let pos = self.get_pos_by_hash(value);
-
-        &self.ticks[pos].node
     }
 }
 
 #[cfg(test)]
 mod test_ketama {
-    use crate::proxy::fnv::Fnv1a64;
-    use crate::proxy::*;
+    use crate::proxy::standalone::fnv::fnv1a64;
+    use crate::proxy::standalone::ketama::*;
 
     #[test]
     fn ketama_dist() {
-        let ring = HashRing::<Fnv1a64>::new(
+        let ring = HashRing::new(
             vec![
                 "mc-1".to_owned(),
                 "mc-2".to_owned(),
@@ -158,8 +147,8 @@ mod test_ketama {
             vec![10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
         )
         .expect("create new hash ring success");
-        let node = ring.get_node("a");
+        let node = ring.get_node(fnv1a64("a".as_bytes()));
         assert_eq!(node, "mc-1");
-        assert_eq!(ring.get_node("memtier-102"), "mc-x")
+        assert_eq!(ring.get_node(fnv1a64("memtier-102".as_bytes())), "mc-x")
     }
 }

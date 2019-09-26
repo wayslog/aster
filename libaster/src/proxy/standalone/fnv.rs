@@ -25,6 +25,12 @@ impl Default for Fnv1a64 {
     }
 }
 
+pub fn fnv1a64(data: &[u8]) -> u64 {
+    let mut hasher = Fnv1a64::default();
+    hasher.write(data);
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod test_fnv1a {
     use super::*;
