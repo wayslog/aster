@@ -180,7 +180,7 @@ where
         let mut can_recv = true;
         let mut can_forward = true;
         loop {
-            // trace!("tracing backend calls to {}", self.addr);
+            trace!("tracing backend calls to {}", self.addr);
             if self.state.is_closing() {
                 // debug!("backend {} is closing", self.addr);
                 self.on_closed();
@@ -198,12 +198,12 @@ where
             if can_recv {
                 match self.try_recv() {
                     Ok(Async::NotReady) => {
-                        // trace!("backend recv is not ready");
+                        trace!("backend recv is not ready");
                         can_recv = false;
                     }
                     Ok(Async::Ready(_)) => {
                         can_forward = true;
-                        // trace!("backend recv is ready");
+                        trace!("backend recv is ready");
                     }
                     Err(err) => {
                         warn!("backend {} recv is error {}", self.addr, err);
@@ -216,16 +216,16 @@ where
             if can_forward {
                 match self.try_forward() {
                     Ok(Async::NotReady) => {
-                        // trace!("backend forward is not ready");
+                        trace!("backend forward is not ready");
                         can_forward = false;
                     }
                     Ok(Async::Ready(State::ActiveClosing)) => {
-                        // trace!("backend forward is active closing");
+                        trace!("backend forward is active closing");
                         self.state = State::ActiveClosing;
                     }
                     Ok(Async::Ready(_)) => {
                         can_recv = true;
-                        // trace!("backend forward is ready");
+                        trace!("backend forward is ready");
                     }
                     Err(err) => {
                         warn!("backend {} forward is error {}", self.addr, err);

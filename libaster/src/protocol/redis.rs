@@ -34,7 +34,7 @@ impl Drop for Cmd {
         let expect = self.notify.expect();
         let origin = self.notify.fetch_sub(1);
         // TODO: sub command maybe notify multiple
-        // trace!("cmd drop strong ref {} and expect {}", origin, expect);
+        trace!("cmd drop strong ref {} and expect {}", origin, expect);
         if origin - 1 == expect {
             self.notify.notify();
         }
@@ -72,6 +72,13 @@ impl Request for Cmd {
 
     fn is_error(&self) -> bool {
         self.cmd.borrow().is_error()
+    }
+
+    fn add_cycle(&self) {
+        self.borrow_mut().add_cycle()
+    }
+    fn can_cycle(&self) -> bool {
+        self.borrow().can_cycle()
     }
 
     fn valid(&self) -> bool {

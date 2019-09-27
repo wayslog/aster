@@ -3,34 +3,44 @@ pub mod fnv;
 pub mod front;
 pub mod ketama;
 
+use futures::future::ok;
+use futures::lazy;
 use futures::task::Task;
-use futures::unsync::mpsc::Sender;
-use futures::{Async, AsyncSink, Future, Sink, Stream};
+use futures::unsync::mpsc::{channel, Sender};
+use futures::{AsyncSink, Future, Sink, Stream};
 use tokio::codec::{Decoder, Encoder};
+use tokio::net::TcpStream;
+use tokio::runtime::current_thread;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::net::SocketAddr;
+use std::rc::Rc;
+use std::thread::{JoinHandle, Builder};
 
+use crate::protocol::{mc, redis};
+
+use crate::com::create_reuse_port_listener;
 use crate::com::AsError;
-use crate::com::ClusterConfig;
+use crate::com::{ClusterConfig, CacheType};
 use crate::protocol::IntoReply;
 
-use fnv::{fnv1a64, Fnv1a64};
+use fnv::{fnv1a64};
 use ketama::HashRing;
-
-const MAX_RETRY: u8 = 8;
 
 pub trait Request: Clone + Debug {
     type Reply: Clone + Debug + Into<Self> + IntoReply<Self::Reply> + From<AsError>;
 
     type FrontCodec: Decoder<Item = Self, Error = AsError>
         + Encoder<Item = Self, Error = AsError>
-        + Default;
+        + Default
+        + 'static;
     type BackCodec: Decoder<Item = Self::Reply, Error = AsError>
         + Encoder<Item = Self, Error = AsError>
-        + Default;
+        + Default
+        + 'static;
 
     fn ping_request() -> Self;
     fn reregister(&mut self, task: Task);
@@ -42,6 +52,9 @@ pub trait Request: Clone + Debug {
     fn is_done(&self) -> bool;
     fn is_error(&self) -> bool;
 
+    fn add_cycle(&self);
+    fn can_cycle(&self) -> bool;
+
     fn valid(&self) -> bool;
 
     fn set_reply<R: IntoReply<Self::Reply>>(&self, t: R);
@@ -51,23 +64,139 @@ pub trait Request: Clone + Debug {
 pub struct Cluster<T> {
     pub cc: ClusterConfig,
     hash_tag: Vec<u8>,
+    spots: HashMap<String, usize>,
+    alias: HashMap<String, String>,
+
     _maker: PhantomData<T>,
     ring: RefCell<HashRing>,
     conns: RefCell<Conns<T>>,
 }
 
-impl<T: Request> Cluster<T> {
+impl<T: Request + 'static> Cluster<T> {
+    pub(crate) fn run(cc: ClusterConfig) -> Result<(), AsError> {
+        let addr = cc
+            .listen_addr
+            .clone()
+            .parse::<SocketAddr>()
+            .expect("parse socket never fail");
+        let fut = ok::<ClusterConfig, AsError>(cc)
+            .and_then(|cc| {
+                let sls = ServerLine::parse_servers(&cc.servers).expect("parse server line failed");
+                let (nodes, alias, weights) = ServerLine::unwrap_spot(&sls);
+                let alias_map: HashMap<_, _> = alias
+                    .clone()
+                    .into_iter()
+                    .zip(nodes.clone().into_iter())
+                    .collect();
+                let spots_map: HashMap<_, _> = if alias.is_empty() {
+                    nodes
+                        .clone()
+                        .into_iter()
+                        .zip(weights.clone().into_iter())
+                        .collect()
+                } else {
+                    alias
+                        .clone()
+                        .into_iter()
+                        .zip(weights.clone().into_iter())
+                        .collect()
+                };
+                let hash_tag = cc.hash_tag.as_ref().map(|x| x.as_bytes().to_vec()).unwrap_or(vec![]);
+                let hash_ring = if alias.is_empty() {
+                    HashRing::new(nodes, weights)?
+                } else {
+                    HashRing::new(alias, weights)?
+                };
+                let ring = RefCell::new(hash_ring);
+                let conns: RefCell<Conns<T>> = RefCell::new(Conns::default());
+                let cluster = Cluster {
+                    cc,
+                    _maker: Default::default(),
+                    hash_tag,
+                    ring,
+                    conns,
+                    alias: alias_map,
+                    spots: spots_map,
+                };
+                Ok(Rc::new(cluster))
+            })
+            .and_then(|cluster|{
+                let addrs: Vec<_> = if cluster.has_alias() {
+                    cluster.alias.values().map(|x| x.to_string()).collect()
+                } else {
+                    cluster.spots.keys().map(|x| x.to_string()).collect()
+                };
+                {
+                    let mut conns = cluster.conns.borrow_mut();
+                    for addr in addrs {
+                        if let Ok(conn) = connect(&addr) {
+                            conns.insert(&addr, conn);
+                        } else {
+                            warn!("fail to connect to {}-{}", cluster.cc.name, addr);
+                        }
+                    }
+                }
+                
+                Ok(cluster)
+            })
+            // .and_then(|cluster| { SPAWN PING SERVERICE})
+            .and_then(|cluster|{
+                let listen = create_reuse_port_listener(&addr).expect("bind never fail");
+                let service = listen
+                    .incoming()
+                    .for_each(move |sock| {
+                        let client = sock.peer_addr().expect("peer must have addr");
+                        let client_str = format!("{}", client);
+                        let codec = T::FrontCodec::default();
+                        let (output, input) = codec.framed(sock).split();
+                        let fut = front::Front::new(client_str, cluster.clone(), input, output);
+                        current_thread::spawn(fut);
+                        Ok(())
+                    })
+                    .map_err(|err| {
+                        error!("fail to accept incomming sock due {}", err);
+                    });
+                current_thread::spawn(service);
+                Ok(())
+            })
+            .map_err(|err| {
+                error!("fail to start proxy service... due {:?}", err);
+            });
+        current_thread::block_on_all(fut).unwrap();
+        Ok(())
+    }
+
+    fn has_alias(&self) -> bool {
+        !self.alias.is_empty()
+    }
+
+    fn get_node(&self, name: String) -> String {
+        if !self.has_alias() {
+            return name;
+        }
+
+        self.alias
+            .get(&name)
+            .expect("alias name must exists")
+            .to_string()
+    }
+
     pub fn dispatch_to(&self, addr: &str, cmd: T) -> Result<AsyncSink<T>, AsError> {
+        if !cmd.can_cycle() {
+            cmd.set_error(&AsError::ProxyFail);
+            return Ok(AsyncSink::NotReady(cmd));
+        }
         let mut conns = self.conns.borrow_mut();
         loop {
-            info!("dispatch to addr={}", &addr);
             if let Some(sender) = conns.get_mut(addr).map(|x| x.sender()) {
                 match sender.start_send(cmd) {
                     Ok(ret) => {
+                        debug!("dispatch to addr={}", &addr);
                         return Ok(ret);
                     }
                     Err(se) => {
                         let cmd = se.into_inner();
+                        cmd.add_cycle();
                         return Ok(AsyncSink::NotReady(cmd));
                     }
                 }
@@ -85,8 +214,17 @@ impl<T: Request> Cluster<T> {
                 return Ok(count);
             }
             let cmd = cmds.pop_front().expect("cmds pop front never be empty");
+            if !cmd.can_cycle() {
+                debug!("can't cycle times");
+                cmd.set_error(&AsError::ProxyFail);
+                count += 1;
+                continue;
+            }
             let key_hash = cmd.key_hash(&self.hash_tag, fnv1a64);
             let addr = self.ring.borrow().get_node(key_hash).to_string();
+            info!("get ring name is {}", addr);
+            let addr = self.get_node(addr);
+            info!("get addr name is {}", addr);
             let mut conns = self.conns.borrow_mut();
 
             if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {
@@ -100,6 +238,7 @@ impl<T: Request> Cluster<T> {
                     }
                     Err(se) => {
                         let cmd = se.into_inner();
+                        cmd.add_cycle();
                         cmds.push_front(cmd);
                         let sender = connect(&addr)?;
                         conns.insert(&addr, sender);
@@ -163,7 +302,117 @@ impl<S> Drop for Conn<S> {
 
 fn connect<T>(node: &str) -> Result<Sender<T>, AsError>
 where
-    T: Request,
+    T: Request + 'static,
 {
-    unimplemented!()
+    let node_addr = node.to_string();
+    let node_new = node_addr.clone();
+    let (tx, rx) = channel(1024 * 8);
+    let amt = lazy(|| -> Result<(), ()> { Ok(()) })
+        .and_then(move |_| {
+            let node_clone = node_addr.clone();
+            node_addr
+                .as_str()
+                .parse()
+                .map_err(|err| error!("fail to parse addr {:?} to {}", err, node_clone))
+        })
+        .and_then(|addr| {
+            TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+        })
+        .and_then(|sock| {
+            sock.set_nodelay(true).expect("set nodelay must ok");
+            let codec = T::BackCodec::default();
+            let (sink, stream) = codec.framed(sock).split();
+            let backend = back::Back::new(node_new, rx, sink, stream);
+            current_thread::spawn(backend);
+            Ok(())
+        })
+        .and_then(|_| Ok(()));
+    current_thread::spawn(amt);
+    Ok(tx)
+}
+
+struct ServerLine {
+    addr: String,
+    weight: usize,
+    alias: Option<String>,
+}
+
+impl ServerLine {
+    fn parse_servers(servers: &[String]) -> Result<Vec<ServerLine>, AsError> {
+        // e.g.: 192.168.1.2:1074:10 redis-20
+        let mut sl = Vec::with_capacity(servers.len());
+        for server in servers {
+            let mut iter = server.split(' ');
+            let first_part = iter.next().expect("first partation must exists");
+            if first_part.chars().filter(|x| *x == ':').count() == 1 {
+                let alias = iter.next().map(|x| x.to_string());
+                sl.push(ServerLine {
+                    addr: first_part.to_string(),
+                    weight: 1,
+                    alias,
+                });
+            }
+
+            let mut fp_sp = first_part.rsplitn(2, ':').filter(|x| !x.is_empty());
+            let weight = {
+                let weight_str = fp_sp.next().unwrap_or("1");
+                weight_str.parse::<usize>()?
+            };
+            let addr = fp_sp.next().expect("addr never be absent").to_owned();
+            drop(fp_sp);
+            let alias = iter.next().map(|x| x.to_string());
+            sl.push(ServerLine {
+                addr,
+                weight,
+                alias,
+            });
+        }
+        Ok(sl)
+    }
+
+    fn unwrap_spot(sls: &[ServerLine]) -> (Vec<String>, Vec<String>, Vec<usize>) {
+        let mut nodes = Vec::new();
+        let mut alias = Vec::new();
+        let mut weights = Vec::new();
+        for sl in sls {
+            if sl.alias.is_some() {
+                alias.push(
+                    sl.alias
+                        .as_ref()
+                        .cloned()
+                        .expect("node addr can't be empty"),
+                );
+            }
+            nodes.push(sl.addr.clone());
+            weights.push(sl.weight);
+        }
+        (nodes, alias, weights)
+    }
+}
+
+
+pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
+    let worker = cc.thread.unwrap_or(num_cpus::get());
+    (0..worker).into_iter()
+        .map(|index|{
+            let num = index + 1;
+            let builder = Builder::new();
+            let cc = cc.clone();
+            builder
+                .name(format!("{}-worker-{}", cc.name, num))
+                .spawn(move || {
+                    match cc.cache_type {
+                        CacheType::Redis => {
+                            Cluster::<redis::Cmd>::run(cc).unwrap()
+                        }
+                        CacheType::Memcache | CacheType::MemcacheBinary => {
+                            Cluster::<mc::Cmd>::run(cc).unwrap()
+                        }
+                        _ => {
+                            unreachable!()
+                        }
+                    }
+                })
+                .expect("fail to spawn worker thread")
+        }).collect()
 }

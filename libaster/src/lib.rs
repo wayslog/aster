@@ -37,8 +37,17 @@ pub fn run() -> Result<(), Error> {
             "starting aster cluster {} in addr {}",
             cluster.name, cluster.listen_addr
         );
-        let jhs = proxy::cluster::run(cluster);
-        ths.extend(jhs);
+
+        match cluster.cache_type {
+            com::CacheType::RedisCluster => {
+                let jhs = proxy::cluster::run(cluster);
+                ths.extend(jhs);
+            }
+            _ => {
+                let jhs = proxy::standalone::run(cluster);
+                ths.extend(jhs);
+            }
+        }
     }
     for th in ths {
         th.join().unwrap();

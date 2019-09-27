@@ -6,12 +6,15 @@ pub use failure::Error;
 
 use std::fs::File;
 use std::io::Read;
+use std::num;
 use std::path::Path;
 
 #[derive(Debug, Fail)]
 pub enum AsError {
     #[fail(display = "config is bad for fields {}", _0)]
     BadConfig(String),
+    #[fail(display = "fail to parse int in config")]
+    StrParseIntError(num::ParseIntError),
 
     #[fail(display = "invalid message")]
     BadMessage,
@@ -25,7 +28,10 @@ pub enum AsError {
     #[fail(display = "message reply is bad")]
     BadReply,
 
-    #[fail(display = "fail due move/ask too much")]
+    #[fail(display = "proxy fail")]
+    ProxyFail,
+
+    #[fail(display = "fail due retry send too much")]
     RequestReachMaxCycle,
 
     #[fail(display = "fail to parse integer {}", _0)]
@@ -74,6 +80,12 @@ impl From<btoi::ParseIntegerError> for AsError {
 impl From<toml::de::Error> for AsError {
     fn from(oe: toml::de::Error) -> AsError {
         AsError::ConfigError(oe)
+    }
+}
+
+impl From<num::ParseIntError> for AsError {
+    fn from(oe: num::ParseIntError) -> AsError {
+        AsError::StrParseIntError(oe)
     }
 }
 

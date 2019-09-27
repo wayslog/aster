@@ -648,13 +648,16 @@ impl Message {
                 flags: MCFlags::empty(),
             }));
         }
-        let len =
-            if let Some(len_data) = (&data[..line]).as_ref().split(|x| *x == BYTE_SPACE).nth(2) {
-                btoi::btoi::<usize>(len_data)?
-            } else {
-                data.advance(line);
-                return Err(AsError::BadMessage);
-            };
+        let len = if let Some(len_data) = (&data[..line - 2])
+            .as_ref()
+            .split(|x| *x == BYTE_SPACE)
+            .nth(3)
+        {
+            btoi::btoi::<usize>(len_data)?
+        } else {
+            data.advance(line);
+            return Err(AsError::BadMessage);
+        };
         let total_size = line + len + BYTES_CRLF.len() + BYTES_END.len();
         if data.len() < total_size {
             return Ok(None);
@@ -714,6 +717,31 @@ impl Message {
 #[cfg(test)]
 mod test {
     use self::super::*;
+    #[test]
+    fn test_parse_twice() {
+        let sv = "VALUE a 0 2\r\nab\r\nEND\r\nVALUE a 0 3\r\ncde\r\nEND\r\n";
+        let size = sv.len() / 2;
+        let mut data = BytesMut::from(sv.as_bytes());
+
+        let msg_opt = Message::parse(&mut data).unwrap();
+        let first = Message {
+            data: Bytes::from(&sv.as_bytes()[..size]),
+            flags: MCFlags::empty(),
+            mtype: MsgType::TextRespValue,
+        };
+
+        assert!(msg_opt.is_some());
+        assert_eq!(msg_opt.unwrap(), first);
+
+        let second = Message {
+            data: Bytes::from(&sv.as_bytes()[size..]),
+            flags: MCFlags::empty(),
+            mtype: MsgType::TextRespValue,
+        };
+        let msg_opt = Message::parse(&mut data).unwrap();
+        assert!(msg_opt.is_some());
+        assert_eq!(msg_opt.unwrap(), second);
+    }
 
     fn test_mc_parse_ok(msg: Message) {
         let mut data = BytesMut::from(msg.data.clone());
@@ -922,6 +950,14 @@ impl Message {
         }
     }
 
+    pub(crate) fn raw_inline_reply() -> Message {
+        Message {
+            data: Bytes::new(),
+            mtype: MsgType::TextInline,
+            flags: MCFlags::empty(),
+        }
+    }
+
     pub(crate) fn is_noreply(&self) -> bool {
         self.flags & MCFlags::NOREPLY == MCFlags::NOREPLY
     }
@@ -959,7 +995,7 @@ impl Message {
             | MsgType::TextReq(TextCmd::Gat(_, _))
             | MsgType::TextReq(TextCmd::Gats(_, _)) => {
                 let data = reply.data.as_ref();
-                if data.len() > BYTES_END.len() {
+                if data.len() >= BYTES_END.len() {
                     if &data[data.len() - BYTES_END.len()..] == BYTES_END {
                         target.extend_from_slice(
                             &reply.data.as_ref()[..data.len() - BYTES_END.len()],

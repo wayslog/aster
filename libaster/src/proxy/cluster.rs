@@ -155,8 +155,7 @@ impl Cluster {
                     });
                 current_thread::spawn(service);
                 Ok(())
-            })
-            .map_err(|_| AsError::None);
+            });
         current_thread::spawn(
             fut.map_err(|err| error!("fail to create cluster server due to {}", err)),
         );
@@ -166,7 +165,7 @@ impl Cluster {
 
 impl Cluster {
     fn get_addr(&self, slot: usize, is_read: bool) -> String {
-        // trace!("get slot={} and is_read={}", slot, is_read);
+        trace!("get slot={} and is_read={}", slot, is_read);
         if self.read_from_slave && is_read {
             if let Some(replica) = self.slots.borrow().get_replica(slot) {
                 if replica != "" {
@@ -228,9 +227,7 @@ impl Cluster {
             if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {
                 match sender.start_send(cmd) {
                     Ok(AsyncSink::Ready) => {
-                        // if log_enabled!(Trace) {
-                        //     trace!("success start command into backend");
-                        // }
+                        // trace!("success start command into backend");
                         count += 1;
                     }
                     Ok(AsyncSink::NotReady(cmd)) => {
