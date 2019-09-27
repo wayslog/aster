@@ -1,8 +1,6 @@
 use md5;
 
 use std::cmp::Ordering;
-use std::hash::Hasher;
-use std::marker::PhantomData;
 
 use crate::com::AsError;
 

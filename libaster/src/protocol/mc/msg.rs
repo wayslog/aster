@@ -347,6 +347,7 @@ pub enum MsgType {
 }
 
 impl MsgType {
+    #[allow(unused)]
     pub(crate) fn is_quiet(&self) -> bool {
         match self {
             MsgType::Binary { bmtype, .. } => bmtype.is_quiet(),
@@ -354,6 +355,7 @@ impl MsgType {
         }
     }
 
+    #[allow(unused)]
     pub(crate) fn into_noise(self) -> Self {
         if self.is_quiet() {
             return self;

@@ -4,8 +4,6 @@ use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use crate::protocol::IntoReply;
-
 use crate::proxy::standalone::Cluster;
 use crate::proxy::standalone::Request;
 

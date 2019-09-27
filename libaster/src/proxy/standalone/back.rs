@@ -1,10 +1,8 @@
 use crate::com::AsError;
 
-use futures::unsync::mpsc::SendError;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
 
-use crate::protocol::IntoReply;
 use crate::proxy::standalone::Request;
 
 const MAX_PIPELINE: usize = 128;
