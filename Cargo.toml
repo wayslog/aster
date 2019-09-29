@@ -15,6 +15,7 @@ edition="2018"
 [workspace]
 members = [
     "libaster",
+    "a2/adam"
 ]
 default-members = ["libaster"]
 

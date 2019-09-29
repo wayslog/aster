@@ -135,7 +135,7 @@ where
         let mut can_recv = self.state == State::Running;
         loop {
             if self.state == State::Closed {
-                debug!("front drop of {}", self.client);
+                // debug!("front drop of {}", self.client);
                 return Ok(Async::Ready(()));
             }
 

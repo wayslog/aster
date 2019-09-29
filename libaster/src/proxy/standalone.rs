@@ -283,6 +283,7 @@ impl<T> Default for Conns<T> {
     }
 }
 
+#[allow(unused)]
 struct Conn<S> {
     addr: String,
     sender: S,
@@ -294,11 +295,11 @@ impl<S> Conn<S> {
     }
 }
 
-impl<S> Drop for Conn<S> {
-    fn drop(&mut self) {
-        info!("connection to backend {} is disconnected", self.addr);
-    }
-}
+// impl<S> Drop for Conn<S> {
+//     fn drop(&mut self) {
+//         info!("connection to backend {} is disconnected", self.addr);
+//     }
+// }
 
 fn connect<T>(node: &str) -> Result<Sender<T>, AsError>
 where
