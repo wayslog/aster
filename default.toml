@@ -10,8 +10,9 @@ servers = ["127.0.0.1:11211:10 mc-1"]
 fetch_interval = 3600000 
 read_from_slave = false
 
-ping_fail_limit = 10
-ping_interval = 300
+ping_fail_limit = 6 # 3 times
+ping_succ_interval = 1000 # 1 second
+ping_interval = 5000 # 5 seconds
 
 read_timeout = 1000
 write_timeout = 1000
@@ -43,22 +44,22 @@ dial_timeout = 500
 listen_proto = "tcp"
 node_connections = 1
 
-[[clusters]]
-name = "test-cluster"
-listen_addr = "0.0.0.0:7788"
-hash_tag = "{}"
-thread = 1
-cache_type = "redis_cluster"
-servers = ["127.0.0.1:7000"]
+# [[clusters]]
+# name = "test-cluster"
+# listen_addr = "0.0.0.0:7788"
+# hash_tag = "{}"
+# thread = 1
+# cache_type = "redis_cluster"
+# servers = ["127.0.0.1:7000"]
 
-fetch_interval = 3600000 
-read_from_slave = false
+# fetch_interval = 3600000 
+# read_from_slave = false
 
-ping_fail_limit = 10
-ping_interval = 300
+# ping_fail_limit = 10
+# ping_interval = 300
 
-read_timeout = 1000
-write_timeout = 1000
-dial_timeout = 500
-listen_proto = "tcp"
-node_connections = 1
+# read_timeout = 1000
+# write_timeout = 1000
+# dial_timeout = 500
+# listen_proto = "tcp"
+# node_connections = 1

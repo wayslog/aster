@@ -2,6 +2,7 @@ pub mod back;
 pub mod fnv;
 pub mod front;
 pub mod ketama;
+pub mod ping;
 
 use futures::future::ok;
 use futures::lazy;
@@ -18,20 +19,20 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::thread::{JoinHandle, Builder};
+use std::thread::{Builder, JoinHandle};
 
 use crate::protocol::{mc, redis};
 
 use crate::com::create_reuse_port_listener;
 use crate::com::AsError;
-use crate::com::{ClusterConfig, CacheType};
+use crate::com::{CacheType, ClusterConfig};
 use crate::protocol::IntoReply;
 
-use fnv::{fnv1a64};
+use fnv::fnv1a64;
 use ketama::HashRing;
 
 pub trait Request: Clone + Debug {
-    type Reply: Clone + Debug + Into<Self> + IntoReply<Self::Reply> + From<AsError>;
+    type Reply: Clone + Debug + IntoReply<Self::Reply> + From<AsError>;
 
     type FrontCodec: Decoder<Item = Self, Error = AsError>
         + Encoder<Item = Self, Error = AsError>
@@ -101,7 +102,11 @@ impl<T: Request + 'static> Cluster<T> {
                         .zip(weights.clone().into_iter())
                         .collect()
                 };
-                let hash_tag = cc.hash_tag.as_ref().map(|x| x.as_bytes().to_vec()).unwrap_or(vec![]);
+                let hash_tag = cc
+                    .hash_tag
+                    .as_ref()
+                    .map(|x| x.as_bytes().to_vec())
+                    .unwrap_or(vec![]);
                 let hash_ring = if alias.is_empty() {
                     HashRing::new(nodes, weights)?
                 } else {
@@ -120,7 +125,7 @@ impl<T: Request + 'static> Cluster<T> {
                 };
                 Ok(Rc::new(cluster))
             })
-            .and_then(|cluster|{
+            .and_then(|cluster| {
                 let addrs: Vec<_> = if cluster.has_alias() {
                     cluster.alias.values().map(|x| x.to_string()).collect()
                 } else {
@@ -136,11 +141,38 @@ impl<T: Request + 'static> Cluster<T> {
                         }
                     }
                 }
-                
                 Ok(cluster)
             })
-            // .and_then(|cluster| { SPAWN PING SERVERICE})
-            .and_then(|cluster|{
+            .and_then(|cluster| {
+                let rc_cluster = cluster.clone();
+                let ping_fail_limit = cluster.cc.ping_fail_limit.as_ref().cloned().unwrap_or(0);
+                if ping_fail_limit > 0 {
+                    let ping_interval =
+                        cluster.cc.ping_interval.as_ref().cloned().unwrap_or(300000);
+                    let ping_succ_interval = cluster
+                        .cc
+                        .ping_succ_interval
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or(1000);
+                    for (alias, node) in cluster.alias.iter() {
+                        let ping = ping::Ping::new(
+                            Rc::downgrade(&cluster),
+                            alias.to_string(),
+                            node.to_string(),
+                            ping_interval,
+                            ping_succ_interval,
+                            ping_fail_limit,
+                        );
+                        current_thread::spawn(ping);
+                    }
+                } else {
+                    info!("skip setup ping for {}", cluster.cc.name);
+                }
+                Ok(rc_cluster)
+            })
+            .and_then(|cluster| {
+                let rc_cluster = cluster.clone();
                 let listen = create_reuse_port_listener(&addr).expect("bind never fail");
                 let service = listen
                     .incoming()
@@ -157,7 +189,7 @@ impl<T: Request + 'static> Cluster<T> {
                         error!("fail to accept incomming sock due {}", err);
                     });
                 current_thread::spawn(service);
-                Ok(())
+                Ok(rc_cluster)
             })
             .map_err(|err| {
                 error!("fail to start proxy service... due {:?}", err);
@@ -181,26 +213,60 @@ impl<T: Request + 'static> Cluster<T> {
             .to_string()
     }
 
+    pub(crate) fn add_node(&self, name: String) -> Result<(), AsError> {
+        if let Some(weight) = self.spots.get(&name).cloned() {
+            let addr = self.get_node(name.clone());
+            let conn = connect(&addr)?;
+            self.conns.borrow_mut().insert(&addr, conn);
+            self.ring.borrow_mut().add_node(name, weight);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn remove_node(&self, name: String) {
+        self.ring.borrow_mut().del_node(&name);
+        let node = self.get_node(name);
+        if let Some(_) = self.conns.borrow_mut().remove(&node) {
+            info!("dropping backend connection of {} due active delete", node);
+        }
+    }
+
+    pub(crate) fn reconnect(&self, addr: &str) {
+        let mut conns = self.conns.borrow_mut();
+        debug!("trying to reconnect to {}", addr);
+        conns.remove(addr);
+        match connect(&addr) {
+            Ok(sender) => conns.insert(&addr, sender),
+            Err(err) => {
+                error!("fail to reconnect to {} due {:?}", addr, err);
+            }
+        }
+    }
+
     pub fn dispatch_to(&self, addr: &str, cmd: T) -> Result<AsyncSink<T>, AsError> {
         if !cmd.can_cycle() {
+            // debug!("unable retry due can't cycle");
             cmd.set_error(&AsError::ProxyFail);
             return Ok(AsyncSink::NotReady(cmd));
         }
+
         let mut conns = self.conns.borrow_mut();
         loop {
             if let Some(sender) = conns.get_mut(addr).map(|x| x.sender()) {
                 match sender.start_send(cmd) {
                     Ok(ret) => {
-                        debug!("dispatch to addr={}", &addr);
                         return Ok(ret);
                     }
                     Err(se) => {
+                        warn!("dispatch to meet error addr={}", &addr);
                         let cmd = se.into_inner();
                         cmd.add_cycle();
+                        conns.remove(addr);
                         return Ok(AsyncSink::NotReady(cmd));
                     }
                 }
             } else {
+                debug!("trying to reconnect to {}", addr);
                 let sender = connect(&addr)?;
                 conns.insert(&addr, sender);
             }
@@ -215,16 +281,13 @@ impl<T: Request + 'static> Cluster<T> {
             }
             let cmd = cmds.pop_front().expect("cmds pop front never be empty");
             if !cmd.can_cycle() {
-                debug!("can't cycle times");
                 cmd.set_error(&AsError::ProxyFail);
                 count += 1;
                 continue;
             }
             let key_hash = cmd.key_hash(&self.hash_tag, fnv1a64);
             let addr = self.ring.borrow().get_node(key_hash).to_string();
-            info!("get ring name is {}", addr);
             let addr = self.get_node(addr);
-            info!("get addr name is {}", addr);
             let mut conns = self.conns.borrow_mut();
 
             if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {
@@ -265,6 +328,10 @@ impl<T> Conns<T> {
         self.inner.get_mut(s)
     }
 
+    fn remove(&mut self, addr: &str) -> Option<Conn<Sender<T>>> {
+        self.inner.remove(addr)
+    }
+
     fn insert(&mut self, s: &str, sender: Sender<T>) {
         let conn = Conn {
             addr: s.to_string(),
@@ -295,12 +362,6 @@ impl<S> Conn<S> {
     }
 }
 
-// impl<S> Drop for Conn<S> {
-//     fn drop(&mut self) {
-//         info!("connection to backend {} is disconnected", self.addr);
-//     }
-// }
-
 fn connect<T>(node: &str) -> Result<Sender<T>, AsError>
 where
     T: Request + 'static,
@@ -319,12 +380,17 @@ where
         .and_then(|addr| {
             TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
         })
-        .and_then(|sock| {
-            sock.set_nodelay(true).expect("set nodelay must ok");
-            let codec = T::BackCodec::default();
-            let (sink, stream) = codec.framed(sock).split();
-            let backend = back::Back::new(node_new, rx, sink, stream);
-            current_thread::spawn(backend);
+        .then(|srslt: Result<TcpStream, ()>| {
+            if let Ok(sock) = srslt {
+                sock.set_nodelay(true).expect("set nodelay must ok");
+                let codec = T::BackCodec::default();
+                let (sink, stream) = codec.framed(sock).split();
+                let backend = back::Back::new(node_new, rx, sink, stream);
+                current_thread::spawn(backend);
+            } else {
+                let blackhole = back::Blackhole::new(node_new, rx);
+                current_thread::spawn(blackhole);
+            }
             Ok(())
         })
         .and_then(|_| Ok(()));
@@ -391,29 +457,24 @@ impl ServerLine {
     }
 }
 
-
 pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
     let worker = cc.thread.unwrap_or(num_cpus::get());
-    (0..worker).into_iter()
-        .map(|index|{
+    (0..worker)
+        .into_iter()
+        .map(|index| {
             let num = index + 1;
             let builder = Builder::new();
             let cc = cc.clone();
             builder
                 .name(format!("{}-worker-{}", cc.name, num))
-                .spawn(move || {
-                    match cc.cache_type {
-                        CacheType::Redis => {
-                            Cluster::<redis::Cmd>::run(cc).unwrap()
-                        }
-                        CacheType::Memcache | CacheType::MemcacheBinary => {
-                            Cluster::<mc::Cmd>::run(cc).unwrap()
-                        }
-                        _ => {
-                            unreachable!()
-                        }
+                .spawn(move || match cc.cache_type {
+                    CacheType::Redis => Cluster::<redis::Cmd>::run(cc).unwrap(),
+                    CacheType::Memcache | CacheType::MemcacheBinary => {
+                        Cluster::<mc::Cmd>::run(cc).unwrap()
                     }
+                    _ => unreachable!(),
                 })
                 .expect("fail to spawn worker thread")
-        }).collect()
+        })
+        .collect()
 }

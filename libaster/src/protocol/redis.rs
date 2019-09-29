@@ -34,7 +34,7 @@ impl Drop for Cmd {
         let expect = self.notify.expect();
         let origin = self.notify.fetch_sub(1);
         // TODO: sub command maybe notify multiple
-        trace!("cmd drop strong ref {} and expect {}", origin, expect);
+        // trace!("cmd drop strong ref {} and expect {}", origin, expect);
         if origin - 1 == expect {
             self.notify.notify();
         }
@@ -47,7 +47,21 @@ impl Request for Cmd {
     type BackCodec = RedisNodeCodec;
 
     fn ping_request() -> Self {
-        unimplemented!()
+        let msg = Message::new_ping_request();
+        let flags = CFlags::empty();
+        let mut notify = Notify::empty();
+        notify.set_expect(1);
+        let ctype = CmdType::get_cmd_type(&msg);
+
+        let cmd = Command {
+            flags,
+            ctype,
+            cycle: DEFAULT_CYCLE,
+            req: msg,
+            reply: None,
+            subs: None,
+        };
+        cmd.into_cmd(notify)
     }
 
     fn reregister(&mut self, task: Task) {
@@ -87,15 +101,17 @@ impl Request for Cmd {
 
     fn set_reply<R: IntoReply<Message>>(&self, t: R) {
         let reply = t.into_reply();
-        self.cmd.borrow_mut().reply = Some(reply);
-        self.cmd.borrow_mut().flags |= CFlags::DONE;
+        let mut cmd = self.cmd.borrow_mut();
+        cmd.set_reply(reply);
+        cmd.set_done();
     }
 
     fn set_error(&self, t: &AsError) {
         let reply: Message = t.into_reply();
-        self.cmd.borrow_mut().reply = Some(reply);
-        self.cmd.borrow_mut().flags |= CFlags::DONE;
-        self.cmd.borrow_mut().flags |= CFlags::ERROR;
+        let mut cmd = self.cmd.borrow_mut();
+        cmd.set_reply(reply);
+        cmd.set_done();
+        cmd.set_error();
     }
 }
 
@@ -322,6 +338,10 @@ impl Command {
         self.flags |= CFlags::DONE;
     }
 
+    pub fn set_error(&mut self) {
+        self.flags |= CFlags::ERROR;
+    }
+
     pub fn cycle(&self) -> u8 {
         self.cycle
     }
@@ -464,13 +484,6 @@ const KEY_EVAL_POS: usize = 3;
 const KEY_RAW_POS: usize = 1;
 
 const MAX_KEY_COUNT: usize = 10000;
-
-impl From<Message> for Cmd {
-    fn from(_msg: Message) -> Cmd {
-        // TODO: impl it
-        unimplemented!()
-    }
-}
 
 impl From<MessageMut> for Cmd {
     fn from(mut msg_mut: MessageMut) -> Cmd {
@@ -653,12 +666,6 @@ pub fn slots_reply_to_replicas(cmd: Cmd) -> Result<Option<ReplicaLayout>, AsErro
 impl From<AsError> for Message {
     fn from(err: AsError) -> Message {
         err.into_reply()
-    }
-}
-
-impl IntoReply<Message> for Bytes {
-    fn into_reply(self) -> Message {
-        unimplemented!()
     }
 }
 

@@ -16,7 +16,7 @@ use std::rc::Rc;
 pub mod msg;
 use self::msg::Message;
 
-const MAX_CYCLE: u8 = 8;
+const MAX_CYCLE: u8 = 1;
 
 #[derive(Clone, Debug)]
 pub struct Cmd {
@@ -29,7 +29,7 @@ impl Drop for Cmd {
         let expect = self.notify.expect();
         let origin = self.notify.fetch_sub(1);
         // TODO: sub command maybe notify multiple
-        trace!("cmd drop strong ref {} and expect {}", origin, expect);
+        // trace!("cmd drop strong ref {} and expect {}", origin, expect);
         if origin - 1 == expect {
             self.notify.notify();
         }
@@ -51,9 +51,11 @@ impl Request for Cmd {
             reply: None,
             subs: None,
         };
+        let mut notify = Notify::empty();
+        notify.set_expect(1);
         Cmd {
             cmd: Rc::new(RefCell::new(cmd)),
-            notify: Notify::empty(),
+            notify,
         }
     }
 

@@ -187,7 +187,6 @@ impl Cluster {
         }
         let mut conns = self.conns.borrow_mut();
         loop {
-            info!("dispatch to addr={}", &addr);
             if let Some(sender) = conns.get_mut(addr).map(|x| x.sender()) {
                 match sender.start_send(cmd) {
                     Ok(ret) => {
@@ -297,12 +296,6 @@ struct Conn<S> {
 impl<S> Conn<S> {
     fn sender(&mut self) -> &mut S {
         &mut self.sender
-    }
-}
-
-impl<S> Drop for Conn<S> {
-    fn drop(&mut self) {
-        info!("connection to backend {} is disconnected", self.addr);
     }
 }
 

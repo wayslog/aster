@@ -148,8 +148,9 @@ pub struct ClusterConfig {
     pub read_from_slave: Option<bool>,
 
     // proxy special
-    pub ping_fail_limit: Option<usize>,
-    pub ping_interval: Option<usize>,
+    pub ping_fail_limit: Option<u8>,
+    pub ping_interval: Option<u64>,
+    pub ping_succ_interval: Option<u64>,
 
     // dead codes
 

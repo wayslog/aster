@@ -980,6 +980,7 @@ impl Message {
         let key = match &self.mtype {
             MsgType::TextReq(cmd) => cmd.key_range(),
             MsgType::Binary { key, .. } => key.clone(),
+            MsgType::TextInline => Range::new(0, 0),
             _ => unreachable!(),
         };
         debug_assert!(self.data.len() > key.begin());
@@ -1083,7 +1084,7 @@ impl From<AsError> for Message {
 impl<'a> Into<Message> for &'a AsError {
     fn into(self) -> Message {
         Message {
-            data: Bytes::from(format!("error {}", self).as_bytes()),
+            data: Bytes::from(format!("error {}\r\n", self).as_bytes()),
             mtype: MsgType::TextInline,
             flags: MCFlags::empty(),
         }
