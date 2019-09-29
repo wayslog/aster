@@ -1,4 +1,4 @@
-// #![deny(warnings)]
+#![deny(warnings)]
 #![feature(cell_update)]
 #![feature(option_flattening)]
 

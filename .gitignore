@@ -1,5 +1,4 @@
 /target
 **/target
 **/*.rs.bk
-a2/adam
 **/settings.json

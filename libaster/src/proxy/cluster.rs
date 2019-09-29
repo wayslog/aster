@@ -288,6 +288,7 @@ impl Default for Conns {
     }
 }
 
+#[allow(unused)]
 struct Conn<S> {
     addr: String,
     sender: S,

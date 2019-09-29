@@ -15,10 +15,10 @@ edition="2018"
 [workspace]
 members = [
     "libaster",
-    "a2/adam"
+    "a2/adam",
+    "./",
 ]
-default-members = ["libaster"]
-
+default-members = ["libaster", "./"]
 
 [[bin]]
 name = "aster-proxy"
