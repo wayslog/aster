@@ -2,4 +2,4 @@
 **/target
 **/*.rs.bk
 a2/adam
-.vscode/settings.json
+**/settings.json
