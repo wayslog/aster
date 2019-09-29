@@ -22,9 +22,9 @@ matrix:
     - rust: stable
   fast_finish: true
 
-cache:
-  - cargo
-  - apt: true
+# cache:
+#   - cargo
+#   - apt: true
 
 script:
   - cargo test --verbose --all
