@@ -419,7 +419,7 @@ pub fn connect(moved: Sender<Redirection>, node: &str) -> Result<Sender<Cmd>, As
 }
 
 pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
-    let worker = cc.thread.unwrap_or(num_cpus::get());
+    let worker = cc.thread.unwrap_or(4);
     (0..worker)
         .into_iter()
         .map(|index| {
@@ -427,7 +427,7 @@ pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
             let builder = thread::Builder::new();
             let cc = cc.clone();
             builder
-                .name(format!("{}-worker-{}", cc.name, num))
+                .name(format!("{}-cluster-{}", cc.name, num))
                 .spawn(move || {
                     current_thread::block_on_all(
                         init::Initializer::new(cc)

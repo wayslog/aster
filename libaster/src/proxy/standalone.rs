@@ -458,7 +458,7 @@ impl ServerLine {
 }
 
 pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
-    let worker = cc.thread.unwrap_or(num_cpus::get());
+    let worker = cc.thread.unwrap_or(4);
     (0..worker)
         .into_iter()
         .map(|index| {
@@ -466,7 +466,7 @@ pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
             let builder = Builder::new();
             let cc = cc.clone();
             builder
-                .name(format!("{}-worker-{}", cc.name, num))
+                .name(format!("{}-standalone-{}", cc.name, num))
                 .spawn(move || match cc.cache_type {
                     CacheType::Redis => Cluster::<redis::Cmd>::run(cc).unwrap(),
                     CacheType::Memcache | CacheType::MemcacheBinary => {

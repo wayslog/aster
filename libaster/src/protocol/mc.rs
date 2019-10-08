@@ -280,25 +280,26 @@ fn test_mc_parse_error_in_path(prefix: &str) {
     use std::io::prelude::*;
     use std::io::BufReader;
 
-    let dir = fs::read_dir(prefix).unwrap();
-    for entry in dir {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        println!("parsing abs_path: {:?}", path);
-        let fd = File::open(path).unwrap();
-        let mut buffer = BufReader::new(fd);
-        let mut data = Vec::new();
-        buffer.read_to_end(&mut data).unwrap();
-        println!("data is {:?}", &data[..]);
-        let mut src = BytesMut::from(&data[..]);
-        let mut codec = FrontCodec::default();
+    if let Ok(dir) = fs::read_dir(prefix) {
+        for entry in dir {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            println!("parsing abs_path: {:?}", path);
+            let fd = File::open(path).unwrap();
+            let mut buffer = BufReader::new(fd);
+            let mut data = Vec::new();
+            buffer.read_to_end(&mut data).unwrap();
+            println!("data is {:?}", &data[..]);
+            let mut src = BytesMut::from(&data[..]);
+            let mut codec = FrontCodec::default();
 
-        loop {
-            let result = codec.decode(&mut src);
-            match result {
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(_err) => break,
+            loop {
+                let result = codec.decode(&mut src);
+                match result {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_err) => break,
+                }
             }
         }
     }

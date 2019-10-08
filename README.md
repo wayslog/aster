@@ -5,13 +5,13 @@ Aster is a light, fast and powerful cache proxy written by rust.
 
 It supports memcache/redis singleton/redis cluster protocol all in one. Aster can proxy with two models means:
 
-1. proxy mode: the same with [twemproxy](https://github.com/twitter/twemproxy) but support multi-threads.
-2. cluster mode: proxy for redis cluster. Make redis cluster can be used to simple redis client.(which means that you can use redis non-cluster client access the redis cluster api).(Inspired with [Corvus](https://github.com/eleme/corvus))
+1. proxy mode: the same as [twemproxy](https://github.com/twitter/twemproxy).
+2. cluster mode: proxy for redis cluster. You can use non-cluster redis client access the redis cluster.(Inspired with [Corvus](https://github.com/eleme/corvus))
 
 ## Usage
 
 ```bash
-cargo build --release && AS_CFG=as.toml RUST_LOG=libaster=info RUST_BACKTRACE=1 ./target/release/aster
+cargo build --release && RUST_LOG=libaster=info RUST_BACKTRACE=1 ./target/release/aster default.toml
 ```
 
 ## Configuration
