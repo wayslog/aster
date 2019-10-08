@@ -750,23 +750,25 @@ fn test_redis_parse_wrong_case() {
     use std::io::BufReader;
 
     let prefix = "../fuzz/corpus/fuzz_redis_parser/";
-    let dir = fs::read_dir(prefix).unwrap();
-    for entry in dir {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        println!("parsing abs_path: {:?}", path);
-        let fd = File::open(path).unwrap();
-        let mut buffer = BufReader::new(fd);
-        let mut data = Vec::new();
-        buffer.read_to_end(&mut data).unwrap();
-        let mut src = BytesMut::from(&data[..]);
 
-        loop {
-            let result = Command::parse_cmd(&mut src);
-            match result {
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(_err) => break,
+    if let Ok(dir) = fs::read_dir(prefix) {
+        for entry in dir {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            println!("parsing abs_path: {:?}", path);
+            let fd = File::open(path).unwrap();
+            let mut buffer = BufReader::new(fd);
+            let mut data = Vec::new();
+            buffer.read_to_end(&mut data).unwrap();
+            let mut src = BytesMut::from(&data[..]);
+
+            loop {
+                let result = Command::parse_cmd(&mut src);
+                match result {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_err) => break,
+                }
             }
         }
     }
