@@ -399,7 +399,14 @@ impl Message {
         }
         // detect binary
         if data[0] == MSG_BIN_REQ || data[0] == MSG_BIN_RESP {
-            return Self::parse_binary(data);
+            match Self::parse_binary(data) {
+                Ok(msg) => return Ok(msg),
+                Err(AsError::BadMessage) => {
+                    data.advance(BIN_HEADER_LEN);
+                    return Err(AsError::BadMessage);
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         let line_size = if let Some(pos) = find_lf_simd(&data) {
@@ -438,7 +445,7 @@ impl Message {
                 return Self::parse_text_storage(data, cmd, line, pat);
             }
             TEXT_PAT_ADD => {
-                let cmd = TextCmd::Set(Range::default());
+                let cmd = TextCmd::Add(Range::default());
                 return Self::parse_text_storage(data, cmd, line, pat);
             }
             TEXT_PAT_REPLACE => {
@@ -594,6 +601,7 @@ impl Message {
             if let Some(key) = iter.next() {
                 key_begin + key.len()
             } else {
+                data.advance(line);
                 return Err(AsError::BadMessage);
             }
         };
@@ -618,7 +626,7 @@ impl Message {
                 flags |= MCFlags::NOREPLY;
             }
         }
-        let total_size = line + len + BYTES_CRLF.len();
+        let total_size = line.wrapping_add(len).wrapping_add(BYTES_CRLF.len());
         if data.len() < total_size {
             return Ok(None);
         }
@@ -655,7 +663,13 @@ impl Message {
             .split(|x| *x == BYTE_SPACE)
             .nth(3)
         {
-            btoi::btoi::<usize>(len_data)?
+            match btoi::btoi::<usize>(len_data) {
+                Ok(len) => len,
+                Err(_err) => {
+                    data.advance(line);
+                    return Err(AsError::BadMessage);
+                }
+            }
         } else {
             data.advance(line);
             return Err(AsError::BadMessage);
@@ -672,10 +686,11 @@ impl Message {
         }))
     }
 
-    fn parse_binary(data: &mut BytesMut) -> Result<Option<Message>, AsError> {
+    pub(crate) fn parse_binary(data: &mut BytesMut) -> Result<Option<Message>, AsError> {
         if data.len() < BIN_HEADER_LEN {
             return Ok(None);
         }
+
         let btype = BinType::from_u8(data[0])?;
         let bmtype = BinMsgType::from_u8(data[1])?;
         let mut cursor = Cursor::new(&data[..BIN_HEADER_LEN]);
@@ -685,13 +700,16 @@ impl Message {
         let key_len = cursor
             .read_u16::<BigEndian>()
             .map_err(|_| AsError::BadMessage)? as usize;
+
         let extra_len = cursor.read_u8().map_err(|_| AsError::BadMessage)? as usize;
         cursor
             .seek(SeekFrom::Start(8))
             .map_err(|_| AsError::BadMessage)?;
+
         let body_len = cursor
             .read_u32::<BigEndian>()
             .map_err(|_| AsError::BadMessage)? as usize;
+
         let tlen = BIN_HEADER_LEN + body_len;
         if data.len() < tlen {
             return Ok(None);
@@ -890,6 +908,22 @@ mod test {
         for item in items {
             test_mc_parse_ok(item);
         }
+    }
+
+    #[test]
+    fn test_parser_error() {
+        let fuzz_data = vec![
+            0x61, 0x64, 0x64, 0x20, 0x20, 0x20, 0x64, 0xa0, 0x20, 0x30, 0x30, 0x30, 0x30, 0x30,
+            0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+            0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30,
+            0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x31, 0x38, 0x34, 0x34,
+            0x36, 0x37, 0x34, 0x34, 0x30, 0x37, 0x33, 0x37, 0x30, 0x39, 0x35, 0x35, 0x31, 0x36,
+            0x31, 0x35, 0x20, 0x10, 0x20, 0x94, 0x20, 0x64, 0x0a,
+        ];
+        assert!(fuzz_data.len() >= 24);
+        let mut data = BytesMut::from(fuzz_data.clone());
+        let msg_rslt = Message::parse_binary(&mut data);
+        assert!(msg_rslt.is_err());
     }
 }
 

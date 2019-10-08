@@ -25,6 +25,9 @@ pub enum AsError {
     #[fail(display = "request not spport")]
     RequestNotSupport,
 
+    #[fail(display = "inline request don't support multi keys")]
+    RequestInlineWithMultiKeys,
+
     #[fail(display = "message reply is bad")]
     BadReply,
 

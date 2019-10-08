@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 pub mod msg;
-use self::msg::Message;
+pub use self::msg::Message;
 
 const MAX_CYCLE: u8 = 1;
 
@@ -265,5 +265,41 @@ impl Encoder for BackCodec {
     type Error = AsError;
     fn encode(&mut self, item: Self::Item, dst: &mut BytesMut) -> Result<(), Self::Error> {
         item.cmd.borrow().req.save_req(dst)
+    }
+}
+
+#[test]
+fn test_mc_parse_wrong_case() {
+    test_mc_parse_error_in_path("../fuzz/corpus/fuzz_mc_parser/");
+    test_mc_parse_error_in_path("../fuzz/artifacts/fuzz_mc_parser/");
+}
+
+#[cfg(test)]
+fn test_mc_parse_error_in_path(prefix: &str) {
+    use std::fs::{self, File};
+    use std::io::prelude::*;
+    use std::io::BufReader;
+
+    let dir = fs::read_dir(prefix).unwrap();
+    for entry in dir {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        println!("parsing abs_path: {:?}", path);
+        let fd = File::open(path).unwrap();
+        let mut buffer = BufReader::new(fd);
+        let mut data = Vec::new();
+        buffer.read_to_end(&mut data).unwrap();
+        println!("data is {:?}", &data[..]);
+        let mut src = BytesMut::from(&data[..]);
+        let mut codec = FrontCodec::default();
+
+        loop {
+            let result = codec.decode(&mut src);
+            match result {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_err) => break,
+            }
+        }
     }
 }

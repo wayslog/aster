@@ -431,7 +431,17 @@ impl Command {
             };
             command.into_cmd(notify)
         } else {
-            unreachable!()
+            let cmd = Command {
+                flags,
+                cycle: DEFAULT_CYCLE,
+                ctype,
+                req: msg,
+                reply: None,
+                subs: None,
+            };
+            let cmd = cmd.into_cmd(notify);
+            cmd.set_reply(&AsError::RequestInlineWithMultiKeys);
+            cmd
         }
     }
 
@@ -439,10 +449,10 @@ impl Command {
         let Message { rtype, data } = msg.clone();
         if let RespType::Array(head, array) = rtype {
             let array_len = array.len();
-            if array.len() > MAX_KEY_COUNT {
-                // TODO: forbidden large request
-                unimplemented!();
-            }
+            // if array.len() > MAX_KEY_COUNT {
+            //     // TODO: forbidden large request
+            //     unimplemented!();
+            // }
 
             notify.set_expect((array_len - 1 + 1) as u16);
             let mut subs = Vec::with_capacity(array_len - 1);
@@ -474,7 +484,17 @@ impl Command {
             };
             cmd.into_cmd(notify)
         } else {
-            unreachable!();
+            let cmd = Command {
+                flags,
+                cycle: DEFAULT_CYCLE,
+                ctype,
+                req: msg,
+                reply: None,
+                subs: None,
+            };
+            let cmd = cmd.into_cmd(notify);
+            cmd.set_reply(&AsError::RequestInlineWithMultiKeys);
+            cmd
         }
     }
 }
@@ -493,8 +513,20 @@ impl From<MessageMut> for Cmd {
         if let Some(data) = msg_mut.nth_mut(COMMAND_POS) {
             upper(data);
         } else {
-            // TODO: add error message
-            unimplemented!();
+            let msg = msg_mut.into();
+            let ctype = CmdType::NotSupport;
+            let flags = CFlags::empty();
+            let command = Command {
+                flags,
+                ctype,
+                cycle: DEFAULT_CYCLE,
+                req: msg,
+                reply: None,
+                subs: None,
+            };
+            let cmd: Cmd = command.into_cmd(notify);
+            cmd.set_reply(AsError::RequestNotSupport);
+            return cmd;
         }
 
         let msg = msg_mut.into();
@@ -708,5 +740,34 @@ impl IntoReply<Message> for usize {
     fn into_reply(self) -> Message {
         let value = format!("{}", self);
         Message::plain(value.as_bytes(), RESP_INT)
+    }
+}
+
+#[test]
+fn test_redis_parse_wrong_case() {
+    use std::fs::{self, File};
+    use std::io::prelude::*;
+    use std::io::BufReader;
+
+    let prefix = "../fuzz/corpus/fuzz_redis_parser/";
+    let dir = fs::read_dir(prefix).unwrap();
+    for entry in dir {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        println!("parsing abs_path: {:?}", path);
+        let fd = File::open(path).unwrap();
+        let mut buffer = BufReader::new(fd);
+        let mut data = Vec::new();
+        buffer.read_to_end(&mut data).unwrap();
+        let mut src = BytesMut::from(&data[..]);
+
+        loop {
+            let result = Command::parse_cmd(&mut src);
+            match result {
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_err) => break,
+            }
+        }
     }
 }
