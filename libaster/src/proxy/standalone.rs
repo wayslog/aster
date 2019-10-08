@@ -23,8 +23,8 @@ use std::thread::{Builder, JoinHandle};
 
 use crate::protocol::{mc, redis};
 
-use crate::com::create_reuse_port_listener;
 use crate::com::AsError;
+use crate::com::{create_reuse_port_listener, set_read_write_timeout};
 use crate::com::{CacheType, ClusterConfig};
 use crate::protocol::IntoReply;
 
@@ -134,7 +134,11 @@ impl<T: Request + 'static> Cluster<T> {
                 {
                     let mut conns = cluster.conns.borrow_mut();
                     for addr in addrs {
-                        if let Ok(conn) = connect(&addr) {
+                        if let Ok(conn) = connect(
+                            &addr,
+                            cluster.cc.read_timeout.clone(),
+                            cluster.cc.write_timeout.clone(),
+                        ) {
                             conns.insert(&addr, conn);
                         } else {
                             warn!("fail to connect to {}-{}", cluster.cc.name, addr);
@@ -216,7 +220,11 @@ impl<T: Request + 'static> Cluster<T> {
     pub(crate) fn add_node(&self, name: String) -> Result<(), AsError> {
         if let Some(weight) = self.spots.get(&name).cloned() {
             let addr = self.get_node(name.clone());
-            let conn = connect(&addr)?;
+            let conn = connect(
+                &addr,
+                self.cc.read_timeout.clone(),
+                self.cc.write_timeout.clone(),
+            )?;
             self.conns.borrow_mut().insert(&addr, conn);
             self.ring.borrow_mut().add_node(name, weight);
         }
@@ -235,7 +243,11 @@ impl<T: Request + 'static> Cluster<T> {
         let mut conns = self.conns.borrow_mut();
         debug!("trying to reconnect to {}", addr);
         conns.remove(addr);
-        match connect(&addr) {
+        match connect(
+            &addr,
+            self.cc.read_timeout.clone(),
+            self.cc.write_timeout.clone(),
+        ) {
             Ok(sender) => conns.insert(&addr, sender),
             Err(err) => {
                 error!("fail to reconnect to {} due {:?}", addr, err);
@@ -267,7 +279,11 @@ impl<T: Request + 'static> Cluster<T> {
                 }
             } else {
                 debug!("trying to reconnect to {}", addr);
-                let sender = connect(&addr)?;
+                let sender = connect(
+                    &addr,
+                    self.cc.read_timeout.clone(),
+                    self.cc.write_timeout.clone(),
+                )?;
                 conns.insert(&addr, sender);
             }
         }
@@ -303,14 +319,22 @@ impl<T: Request + 'static> Cluster<T> {
                         let cmd = se.into_inner();
                         cmd.add_cycle();
                         cmds.push_front(cmd);
-                        let sender = connect(&addr)?;
+                        let sender = connect(
+                            &addr,
+                            self.cc.read_timeout.clone(),
+                            self.cc.write_timeout.clone(),
+                        )?;
                         conns.insert(&addr, sender);
                         return Ok(count);
                     }
                 }
             } else {
                 cmds.push_front(cmd);
-                let sender = connect(&addr)?;
+                let sender = connect(
+                    &addr,
+                    self.cc.read_timeout.clone(),
+                    self.cc.write_timeout.clone(),
+                )?;
                 conns.insert(&addr, sender);
                 return Ok(count);
             }
@@ -362,7 +386,7 @@ impl<S> Conn<S> {
     }
 }
 
-fn connect<T>(node: &str) -> Result<Sender<T>, AsError>
+fn connect<T>(node: &str, rt: Option<u64>, wt: Option<u64>) -> Result<Sender<T>, AsError>
 where
     T: Request + 'static,
 {
@@ -380,8 +404,9 @@ where
         .and_then(|addr| {
             TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
         })
-        .then(|srslt: Result<TcpStream, ()>| {
+        .then(move |srslt: Result<TcpStream, ()>| {
             if let Ok(sock) = srslt {
+                let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
                 sock.set_nodelay(true).expect("set nodelay must ok");
                 let codec = T::BackCodec::default();
                 let (sink, stream) = codec.framed(sock).split();

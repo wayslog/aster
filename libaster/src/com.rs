@@ -1,6 +1,7 @@
 use net2::TcpBuilder;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tokio::net::TcpStream;
 
 pub use failure::Error;
 
@@ -192,4 +193,36 @@ pub(crate) fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListene
         .listen(std::i32::MAX)?;
     let hd = tokio::reactor::Handle::default();
     TcpListener::from_std(std_listener, &hd)
+}
+
+#[cfg(not(linux))]
+#[inline]
+pub fn set_read_write_timeout(
+    sock: TcpStream,
+    _rt: Option<u64>,
+    _wt: Option<u64>,
+) -> Result<TcpStream, AsError> {
+    Ok(sock)
+}
+
+#[cfg(linux)]
+#[inline]
+pub fn set_read_write_timeout(
+    mut sock: TcpStream,
+    rt: Option<u64>,
+    wt: Option<u64>,
+) -> Result<TcpStream, AsError> {
+    use std::os::unix::AsRawFd;
+    use std::os::unix::FromRawFd;
+    use std::time::Duration;
+
+    let nrt = rt.map(Duration::from_millis);
+    let nwt = wt.map(Duration::from_millis);
+    let fd = sock.as_raw_fd();
+    let mut nsock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+    nsock.set_read_timeout(nrt)?;
+    nsock.set_write_timeout(nwt)?;
+    let hd = tokio::reactor::Handle::default();
+    let stream = TcpStream::from_std(nsock, &hd)?;
+    return Ok(stream);
 }

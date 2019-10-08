@@ -50,7 +50,12 @@ impl Future for Initializer {
                     let addr = self.cc.servers[self.current].clone();
                     // debug!("start to create connection to backend {}", &addr);
                     let (tx, _rx) = channel(0); // mock moved channel for backend is never be moved
-                    match connect(tx, &addr) {
+                    match connect(
+                        tx,
+                        &addr,
+                        self.cc.read_timeout.clone(),
+                        self.cc.write_timeout.clone(),
+                    ) {
                         Ok(sender) => {
                             let mut cmd = new_cluster_slots_cmd();
                             cmd.reregister(task::current());

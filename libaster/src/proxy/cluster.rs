@@ -5,6 +5,7 @@ pub mod init;
 pub mod redirect;
 
 use crate::com::create_reuse_port_listener;
+use crate::com::set_read_write_timeout;
 use crate::com::AsError;
 use crate::com::ClusterConfig;
 use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
@@ -105,14 +106,24 @@ impl Cluster {
                 let all_servers = cc.servers.clone();
                 let mut conns = Conns::default();
                 for master in all_servers.into_iter() {
-                    let conn = connect(moved.clone(), &master)?;
+                    let conn = connect(
+                        moved.clone(),
+                        &master,
+                        cc.read_timeout.clone(),
+                        cc.write_timeout.clone(),
+                    )?;
                     conns.insert(&master, conn);
                 }
 
                 if read_from_slave {
                     let all_slaves = slots.get_all_slaves();
                     for slave in all_slaves.into_iter() {
-                        let conn = connect(moved.clone(), &slave)?;
+                        let conn = connect(
+                            moved.clone(),
+                            &slave,
+                            cc.read_timeout.clone(),
+                            cc.write_timeout.clone(),
+                        )?;
                         conns.insert(&slave, conn);
                     }
                 }
@@ -198,7 +209,12 @@ impl Cluster {
                     }
                 }
             } else {
-                let sender = connect(self.moved.clone(), &addr)?;
+                let sender = connect(
+                    self.moved.clone(),
+                    &addr,
+                    self.cc.read_timeout.clone(),
+                    self.cc.write_timeout.clone(),
+                )?;
                 conns.insert(&addr, sender);
             }
         }
@@ -238,14 +254,24 @@ impl Cluster {
                         let cmd = se.into_inner();
                         cmd.borrow_mut().add_cycle();
                         cmds.push_front(cmd);
-                        let sender = connect(self.moved.clone(), &addr)?;
+                        let sender = connect(
+                            self.moved.clone(),
+                            &addr,
+                            self.cc.read_timeout.clone(),
+                            self.cc.write_timeout.clone(),
+                        )?;
                         conns.insert(&addr, sender);
                         return Ok(count);
                     }
                 }
             } else {
                 cmds.push_front(cmd);
-                let sender = connect(self.moved.clone(), &addr)?;
+                let sender = connect(
+                    self.moved.clone(),
+                    &addr,
+                    self.cc.read_timeout.clone(),
+                    self.cc.write_timeout.clone(),
+                )?;
                 conns.insert(&addr, sender);
                 return Ok(count);
             }
@@ -388,7 +414,12 @@ impl Default for Replica {
     }
 }
 
-pub fn connect(moved: Sender<Redirection>, node: &str) -> Result<Sender<Cmd>, AsError> {
+pub fn connect(
+    moved: Sender<Redirection>,
+    node: &str,
+    rt: Option<u64>,
+    wt: Option<u64>,
+) -> Result<Sender<Cmd>, AsError> {
     let node_addr = node.to_string();
     let node_addr_clone = node_addr.clone();
     let (tx, rx) = channel(1024 * 8);
@@ -405,7 +436,7 @@ pub fn connect(moved: Sender<Redirection>, node: &str) -> Result<Sender<Cmd>, As
         })
         .and_then(move |sock| {
             // TODO:
-            // let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
+            let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
 
             sock.set_nodelay(true).expect("set nodelay must ok");
             let codec = RedisNodeCodec {};
