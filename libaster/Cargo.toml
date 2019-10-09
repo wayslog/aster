@@ -2,7 +2,15 @@
 name = "libaster"
 version = "1.0.0"
 authors = ["wayslog <zxs867179@gmail.com>"]
-edition = "2018"
+description = "A light, fast and powerful cache proxy written in Rust."
+homepage = "https://github.com/wayslog/aster"
+repository = "https://github.com/wayslog/aster"
+documentation = "https://docs.rs/libaster"
+license = "MIT"
+readme = "README.md"
+categories = ["asynchronous", "network-programming", "caching", "database"]
+keywords = [ "cache", "redis", "memcache", "twemproxy"]
+edition="2018"
 
 [features]
 default = []
