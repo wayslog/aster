@@ -8,3 +8,6 @@ release:
 
 clean:
 	cargo clean
+
+metrics:
+	cargo build --manifest-path ./libaster/Cargo.toml --features metrics

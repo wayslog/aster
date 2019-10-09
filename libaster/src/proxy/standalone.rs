@@ -15,13 +15,15 @@ use tokio::runtime::current_thread;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::thread::{Builder, JoinHandle};
 
 use crate::protocol::{mc, redis};
+
+#[cfg(feature = "metrics")]
+use crate::metrics::front_conn_incr;
 
 use crate::com::AsError;
 use crate::com::{create_reuse_port_listener, set_read_write_timeout};
@@ -31,8 +33,8 @@ use crate::protocol::IntoReply;
 use fnv::fnv1a64;
 use ketama::HashRing;
 
-pub trait Request: Clone + Debug {
-    type Reply: Clone + Debug + IntoReply<Self::Reply> + From<AsError>;
+pub trait Request: Clone {
+    type Reply: Clone + IntoReply<Self::Reply> + From<AsError>;
 
     type FrontCodec: Decoder<Item = Self, Error = AsError>
         + Encoder<Item = Self, Error = AsError>
@@ -49,6 +51,11 @@ pub trait Request: Clone + Debug {
     fn key_hash(&self, hash_tag: &[u8], hasher: fn(&[u8]) -> u64) -> u64;
 
     fn subs(&self) -> Option<Vec<Self>>;
+
+    #[cfg(feature = "metrics")]
+    fn mark_total(&self, cluster: &str);
+    #[cfg(feature = "metrics")]
+    fn mark_remote(&self, cluster: &str);
 
     fn is_done(&self) -> bool;
     fn is_error(&self) -> bool;
@@ -135,6 +142,7 @@ impl<T: Request + 'static> Cluster<T> {
                     let mut conns = cluster.conns.borrow_mut();
                     for addr in addrs {
                         if let Ok(conn) = connect(
+                            &cluster.cc.name,
                             &addr,
                             cluster.cc.read_timeout.clone(),
                             cluster.cc.write_timeout.clone(),
@@ -185,6 +193,8 @@ impl<T: Request + 'static> Cluster<T> {
                         let client_str = format!("{}", client);
                         let codec = T::FrontCodec::default();
                         let (output, input) = codec.framed(sock).split();
+                        #[cfg(feature = "metrics")]
+                        front_conn_incr(&cluster.cc.name);
                         let fut = front::Front::new(client_str, cluster.clone(), input, output);
                         current_thread::spawn(fut);
                         Ok(())
@@ -221,6 +231,7 @@ impl<T: Request + 'static> Cluster<T> {
         if let Some(weight) = self.spots.get(&name).cloned() {
             let addr = self.get_node(name.clone());
             let conn = connect(
+                &self.cc.name,
                 &addr,
                 self.cc.read_timeout.clone(),
                 self.cc.write_timeout.clone(),
@@ -244,6 +255,7 @@ impl<T: Request + 'static> Cluster<T> {
         debug!("trying to reconnect to {}", addr);
         conns.remove(addr);
         match connect(
+            &self.cc.name,
             &addr,
             self.cc.read_timeout.clone(),
             self.cc.write_timeout.clone(),
@@ -280,6 +292,7 @@ impl<T: Request + 'static> Cluster<T> {
             } else {
                 debug!("trying to reconnect to {}", addr);
                 let sender = connect(
+                    &self.cc.name,
                     &addr,
                     self.cc.read_timeout.clone(),
                     self.cc.write_timeout.clone(),
@@ -320,6 +333,7 @@ impl<T: Request + 'static> Cluster<T> {
                         cmd.add_cycle();
                         cmds.push_front(cmd);
                         let sender = connect(
+                            &self.cc.name,
                             &addr,
                             self.cc.read_timeout.clone(),
                             self.cc.write_timeout.clone(),
@@ -331,6 +345,7 @@ impl<T: Request + 'static> Cluster<T> {
             } else {
                 cmds.push_front(cmd);
                 let sender = connect(
+                    &self.cc.name,
                     &addr,
                     self.cc.read_timeout.clone(),
                     self.cc.write_timeout.clone(),
@@ -386,12 +401,18 @@ impl<S> Conn<S> {
     }
 }
 
-fn connect<T>(node: &str, rt: Option<u64>, wt: Option<u64>) -> Result<Sender<T>, AsError>
+fn connect<T>(
+    cluster: &str,
+    node: &str,
+    rt: Option<u64>,
+    wt: Option<u64>,
+) -> Result<Sender<T>, AsError>
 where
     T: Request + 'static,
 {
     let node_addr = node.to_string();
     let node_new = node_addr.clone();
+    let cluster = cluster.to_string();
     let (tx, rx) = channel(1024 * 8);
     let amt = lazy(|| -> Result<(), ()> { Ok(()) })
         .and_then(move |_| {
@@ -410,7 +431,7 @@ where
                 sock.set_nodelay(true).expect("set nodelay must ok");
                 let codec = T::BackCodec::default();
                 let (sink, stream) = codec.framed(sock).split();
-                let backend = back::Back::new(node_new, rx, sink, stream);
+                let backend = back::Back::new(cluster, node_new, rx, sink, stream);
                 current_thread::spawn(backend);
             } else {
                 let blackhole = back::Blackhole::new(node_new, rx);

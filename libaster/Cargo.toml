@@ -1,8 +1,13 @@
 [package]
 name = "libaster"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["wayslog <zxs867179@gmail.com>"]
 edition = "2018"
+
+[features]
+default = []
+
+metrics = ["prometheus", "actix-web", "actix-rt"]
 
 [[bench]]
 name="aster_bench"
@@ -35,3 +40,7 @@ bitflags = "1.0.4"
 aho-corasick = "0.7.6"
 rand = "0.7.1"
 clap = {version = "2.33.0", features = ["yaml"]}
+
+prometheus = {version = "0.7.0", optional=true}
+actix-web = {version = "1.0", optional=true}
+actix-rt = {version = "0.2.5", optional=true}

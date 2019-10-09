@@ -52,7 +52,6 @@ where
             batch_max: 2048,
         }
     }
-
     fn try_reply(&mut self) -> Result<Async<usize>, AsError> {
         let mut count = 0usize;
         loop {
@@ -106,9 +105,16 @@ where
             if let Some(mut cmd) = cmd {
                 count += 1;
                 cmd.reregister(task::current());
+                #[cfg(feature = "metrics")]
+                cmd.mark_total(&self.cluster.cc.name);
                 if cmd.valid() && !cmd.is_done() {
                     // for done command, never send to backend
                     if let Some(subs) = cmd.subs() {
+                        #[allow(unused)]
+                        for sub in &subs[..] {
+                            #[cfg(feature = "metrics")]
+                            sub.mark_total(&self.cluster.cc.name);
+                        }
                         self.sendq.extend(subs.into_iter());
                     } else {
                         self.sendq.push_back(cmd.clone());

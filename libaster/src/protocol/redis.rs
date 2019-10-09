@@ -3,6 +3,11 @@ use bytes::{Bytes, BytesMut};
 use futures::task::Task;
 use tokio::codec::{Decoder, Encoder};
 
+#[cfg(feature = "metrics")]
+use crate::metrics::*;
+#[cfg(feature = "metrics")]
+use prometheus::HistogramTimer;
+
 use crate::com::AsError;
 use crate::protocol::IntoReply;
 use crate::proxy::standalone::Request;
@@ -23,7 +28,7 @@ pub use cmd::CmdType;
 pub use resp::{Message, MessageIter, MessageMut, RespType};
 pub use resp::{RESP_ERROR, RESP_INT, RESP_STRING};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
     notify: Notify,
@@ -60,6 +65,10 @@ impl Request for Cmd {
             req: msg,
             reply: None,
             subs: None,
+            #[cfg(feature = "metrics")]
+            total_timer: None,
+            #[cfg(feature = "metrics")]
+            remote_timer: None,
         };
         cmd.into_cmd(notify)
     }
@@ -112,10 +121,38 @@ impl Request for Cmd {
         cmd.set_reply(reply);
         cmd.set_done();
         cmd.set_error();
+        #[cfg(feature = "metrics")]
+        global_error_incr();
+    }
+
+    #[cfg(feature = "metrics")]
+    fn mark_total(&self, cluster: &str) {
+        let timer = total_timer(cluster);
+        self.cmd.borrow_mut().total_timer.replace(timer);
+    }
+
+    #[cfg(feature = "metrics")]
+    fn mark_remote(&self, cluster: &str) {
+        let timer = remote_timer(cluster);
+        self.cmd.borrow_mut().remote_timer.replace(timer);
     }
 }
 
 impl Cmd {
+    #[cfg(feature = "metrics")]
+    pub fn cluster_mark_total(&self, cluster: &str) {
+        let timer = total_timer(cluster);
+        self.cmd.borrow_mut().total_timer.replace(timer);
+    }
+
+    #[cfg(feature = "metrics")]
+    pub fn cluster_mark_remote(&self, cluster: &str) {
+        let timer = remote_timer(cluster);
+        if self.cmd.borrow().remote_timer.is_none() {
+            self.cmd.borrow_mut().remote_timer.replace(timer);
+        }
+    }
+
     pub fn borrow(&self) -> Ref<Command> {
         self.cmd.borrow()
     }
@@ -154,7 +191,6 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct Command {
     flags: CFlags,
     ctype: CmdType,
@@ -165,6 +201,11 @@ pub struct Command {
     reply: Option<Message>,
 
     subs: Option<Vec<Cmd>>,
+
+    #[cfg(feature = "metrics")]
+    total_timer: Option<HistogramTimer>,
+    #[cfg(feature = "metrics")]
+    remote_timer: Option<HistogramTimer>,
 }
 
 const BYTES_JUSTOK: &[u8] = b"+OK\r\n";
@@ -317,6 +358,9 @@ impl Command {
     pub fn set_reply<T: IntoReply<Message>>(&mut self, reply: T) {
         self.reply = Some(reply.into_reply());
         self.set_done();
+
+        #[cfg(feature = "metrics")]
+        let _ = self.remote_timer.take();
     }
 
     pub fn subs(&self) -> Option<Vec<Cmd>> {
@@ -417,6 +461,10 @@ impl Command {
                     req: sub,
                     reply: None,
                     subs: None,
+                    #[cfg(feature = "metrics")]
+                    total_timer: None,
+                    #[cfg(feature = "metrics")]
+                    remote_timer: None,
                 };
 
                 subs.push(subcmd.into_cmd(notify.clone()));
@@ -428,6 +476,10 @@ impl Command {
                 subs: Some(subs),
                 req: msg,
                 reply: None,
+                #[cfg(feature = "metrics")]
+                total_timer: None,
+                #[cfg(feature = "metrics")]
+                remote_timer: None,
             };
             command.into_cmd(notify)
         } else {
@@ -438,6 +490,10 @@ impl Command {
                 req: msg,
                 reply: None,
                 subs: None,
+                #[cfg(feature = "metrics")]
+                total_timer: None,
+                #[cfg(feature = "metrics")]
+                remote_timer: None,
             };
             let cmd = cmd.into_cmd(notify);
             cmd.set_reply(&AsError::RequestInlineWithMultiKeys);
@@ -469,6 +525,10 @@ impl Command {
                     req: sub,
                     reply: None,
                     subs: None,
+                    #[cfg(feature = "metrics")]
+                    total_timer: None,
+                    #[cfg(feature = "metrics")]
+                    remote_timer: None,
                 };
 
                 subs.push(subcmd.into_cmd(notify.clone()));
@@ -481,6 +541,10 @@ impl Command {
                 req: msg,
                 reply: None,
                 subs: Some(subs),
+                #[cfg(feature = "metrics")]
+                total_timer: None,
+                #[cfg(feature = "metrics")]
+                remote_timer: None,
             };
             cmd.into_cmd(notify)
         } else {
@@ -491,6 +555,10 @@ impl Command {
                 req: msg,
                 reply: None,
                 subs: None,
+                #[cfg(feature = "metrics")]
+                total_timer: None,
+                #[cfg(feature = "metrics")]
+                remote_timer: None,
             };
             let cmd = cmd.into_cmd(notify);
             cmd.set_reply(&AsError::RequestInlineWithMultiKeys);
@@ -523,6 +591,10 @@ impl From<MessageMut> for Cmd {
                 req: msg,
                 reply: None,
                 subs: None,
+                #[cfg(feature = "metrics")]
+                total_timer: None,
+                #[cfg(feature = "metrics")]
+                remote_timer: None,
             };
             let cmd: Cmd = command.into_cmd(notify);
             cmd.set_reply(AsError::RequestNotSupport);
@@ -546,6 +618,10 @@ impl From<MessageMut> for Cmd {
             req: msg.clone(),
             reply: None,
             subs: None,
+            #[cfg(feature = "metrics")]
+            total_timer: None,
+            #[cfg(feature = "metrics")]
+            remote_timer: None,
         };
         if ctype.is_ctrl() {
             if let Some(data) = msg.nth(COMMAND_POS) {
@@ -616,6 +692,10 @@ pub fn new_cluster_slots_cmd() -> Cmd {
         req: msg,
         reply: None,
         subs: None,
+        #[cfg(feature = "metrics")]
+        total_timer: None,
+        #[cfg(feature = "metrics")]
+        remote_timer: None,
     };
     cmd.into_cmd(notify)
 }

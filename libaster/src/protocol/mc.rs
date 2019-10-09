@@ -4,6 +4,11 @@ use futures::task::Task;
 
 use tokio::codec::{Decoder, Encoder};
 
+#[cfg(feature = "metrics")]
+use crate::metrics::*;
+#[cfg(feature = "metrics")]
+use prometheus::HistogramTimer;
+
 use crate::com::AsError;
 use crate::protocol::IntoReply;
 use crate::proxy::standalone::Request;
@@ -18,7 +23,7 @@ pub use self::msg::Message;
 
 const MAX_CYCLE: u8 = 1;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
     notify: Notify,
@@ -50,6 +55,10 @@ impl Request for Cmd {
             req: Message::version_request(),
             reply: None,
             subs: None,
+            #[cfg(feature = "metrics")]
+            total_timer: None,
+            #[cfg(feature = "metrics")]
+            remote_timer: None,
         };
         let mut notify = Notify::empty();
         notify.set_expect(1);
@@ -108,6 +117,18 @@ impl Request for Cmd {
         self.cmd.borrow_mut().set_done();
         self.cmd.borrow_mut().set_error();
     }
+
+    #[cfg(feature = "metrics")]
+    fn mark_total(&self, cluster: &str) {
+        let timer = total_timer(cluster);
+        self.cmd.borrow_mut().total_timer.replace(timer);
+    }
+
+    #[cfg(feature = "metrics")]
+    fn mark_remote(&self, cluster: &str) {
+        let timer = remote_timer(cluster);
+        self.cmd.borrow_mut().remote_timer.replace(timer);
+    }
 }
 
 impl Cmd {
@@ -127,6 +148,10 @@ impl Cmd {
                     req: sub_msg,
                     reply: None,
                     subs: None,
+                    #[cfg(feature = "metrics")]
+                    total_timer: None,
+                    #[cfg(feature = "metrics")]
+                    remote_timer: None,
                 };
                 Cmd {
                     notify: notify.clone(),
@@ -142,6 +167,10 @@ impl Cmd {
             req: msg,
             reply: None,
             subs,
+            #[cfg(feature = "metrics")]
+            total_timer: None,
+            #[cfg(feature = "metrics")]
+            remote_timer: None,
         };
         Cmd {
             cmd: Rc::new(RefCell::new(command)),
@@ -170,7 +199,7 @@ pub enum CmdType {
     NotSupport,
 }
 
-#[derive(Clone, Debug)]
+#[allow(unused)]
 pub struct Command {
     ctype: CmdType,
     flags: Flags,
@@ -180,6 +209,10 @@ pub struct Command {
     reply: Option<Message>,
 
     subs: Option<Vec<Cmd>>,
+    #[cfg(feature = "metrics")]
+    total_timer: Option<HistogramTimer>,
+    #[cfg(feature = "metrics")]
+    remote_timer: Option<HistogramTimer>,
 }
 
 impl Command {
@@ -201,6 +234,8 @@ impl Command {
 
     pub fn set_reply(&mut self, reply: Message) {
         self.reply = Some(reply);
+        #[cfg(feature = "metrics")]
+        let _ = self.remote_timer.take();
     }
 
     pub fn set_done(&mut self) {

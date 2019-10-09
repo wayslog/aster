@@ -45,7 +45,7 @@ impl Redirect {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Redirection {
     pub target: Redirect,
     pub cmd: Cmd,
@@ -108,6 +108,7 @@ impl Cluster {
                 for master in all_servers.into_iter() {
                     let conn = connect(
                         moved.clone(),
+                        &cc.name,
                         &master,
                         cc.read_timeout.clone(),
                         cc.write_timeout.clone(),
@@ -120,6 +121,7 @@ impl Cluster {
                     for slave in all_slaves.into_iter() {
                         let conn = connect(
                             moved.clone(),
+                            &cc.name,
                             &slave,
                             cc.read_timeout.clone(),
                             cc.write_timeout.clone(),
@@ -211,6 +213,7 @@ impl Cluster {
             } else {
                 let sender = connect(
                     self.moved.clone(),
+                    &self.cc.name,
                     &addr,
                     self.cc.read_timeout.clone(),
                     self.cc.write_timeout.clone(),
@@ -256,6 +259,7 @@ impl Cluster {
                         cmds.push_front(cmd);
                         let sender = connect(
                             self.moved.clone(),
+                            &self.cc.name,
                             &addr,
                             self.cc.read_timeout.clone(),
                             self.cc.write_timeout.clone(),
@@ -268,6 +272,7 @@ impl Cluster {
                 cmds.push_front(cmd);
                 let sender = connect(
                     self.moved.clone(),
+                    &self.cc.name,
                     &addr,
                     self.cc.read_timeout.clone(),
                     self.cc.write_timeout.clone(),
@@ -416,12 +421,14 @@ impl Default for Replica {
 
 pub fn connect(
     moved: Sender<Redirection>,
+    cluster: &str,
     node: &str,
     rt: Option<u64>,
     wt: Option<u64>,
 ) -> Result<Sender<Cmd>, AsError> {
     let node_addr = node.to_string();
     let node_addr_clone = node_addr.clone();
+    let cluster = cluster.to_string();
     let (tx, rx) = channel(1024 * 8);
     let amt = lazy(|| -> Result<(), ()> { Ok(()) })
         .and_then(move |_| {
@@ -441,7 +448,7 @@ pub fn connect(
             sock.set_nodelay(true).expect("set nodelay must ok");
             let codec = RedisNodeCodec {};
             let (sink, stream) = codec.framed(sock).split();
-            let backend = back::Back::new(node_addr_clone, rx, sink, stream, moved);
+            let backend = back::Back::new(cluster, node_addr_clone, rx, sink, stream, moved);
             current_thread::spawn(backend);
             Ok(())
         });

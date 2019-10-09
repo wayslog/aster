@@ -30,6 +30,7 @@ impl State {
     }
 }
 
+#[allow(unused)]
 pub struct Back<I, O, R, M>
 where
     I: Stream<Item = Cmd, Error = ()>,
@@ -37,6 +38,7 @@ where
     R: Stream<Item = Message, Error = AsError>,
     M: Sink<SinkItem = Redirection, SinkError = SendError<Redirection>>,
 {
+    cluster: String,
     addr: String,
     state: State,
 
@@ -58,8 +60,16 @@ where
     R: Stream<Item = Message, Error = AsError>,
     M: Sink<SinkItem = Redirection, SinkError = SendError<Redirection>>,
 {
-    pub fn new(addr: String, input: I, output: O, recv: R, moved: M) -> Back<I, O, R, M> {
+    pub fn new(
+        cluster: String,
+        addr: String,
+        input: I,
+        output: O,
+        recv: R,
+        moved: M,
+    ) -> Back<I, O, R, M> {
         Back {
+            cluster,
             addr,
             input,
             output,
@@ -87,6 +97,8 @@ where
                     }
                     Ok(AsyncSink::Ready) => {
                         count += 1;
+                        #[cfg(feature = "metrics")]
+                        rcmd.cluster_mark_remote(&self.cluster);
                         self.cmdq.push_back(rcmd);
                     }
                     Err(err) => {
@@ -141,7 +153,7 @@ where
                     }
                     Err(se) => {
                         let red: Redirection = se.into_inner();
-                        error!("fail to redirect cmd {:?}", red);
+                        error!("fail to redirect cmd {:?}", red.target);
                         red.cmd.set_reply(AsError::RedirectFailError);
                         return Err(AsError::RedirectFailError);
                     }

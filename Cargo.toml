@@ -29,7 +29,7 @@ name = "aster"
 path = "src/lib.rs"
 
 [dependencies]
-libaster = {path = "libaster"}
+libaster = {path = "libaster", features=["metrics"]}
 
 [profile.release]
 debug = true

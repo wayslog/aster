@@ -1,4 +1,4 @@
-#![deny(warnings)]
+// #![deny(warnings)]
 #![feature(cell_update)]
 #![feature(option_flattening)]
 
@@ -13,7 +13,15 @@ extern crate failure;
 #[macro_use]
 extern crate clap;
 
+#[cfg(feature = "metrics")]
+#[macro_use]
+extern crate prometheus;
+#[cfg(feature = "metrics")]
+pub mod metrics;
+
 use clap::App;
+
+pub const ASTER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod com;
 pub mod protocol;
@@ -49,8 +57,26 @@ pub fn run() -> Result<(), Error> {
             }
         }
     }
+
+    #[cfg(feature = "metrics")]
+    {
+        let port_str = matches.value_of("metrics").unwrap_or("2110");
+        let port = port_str.parse::<usize>().unwrap_or(2110);
+        spwan_metrics(port);
+    }
+
     for th in ths {
         th.join().unwrap();
     }
     Ok(())
+}
+
+#[cfg(feature = "metrics")]
+use std::thread;
+#[cfg(feature = "metrics")]
+fn spwan_metrics(port: usize) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("aster-metrics-thread".to_string())
+        .spawn(move || metrics::init(port).unwrap())
+        .unwrap()
 }

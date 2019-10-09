@@ -52,6 +52,7 @@ impl Future for Initializer {
                     let (tx, _rx) = channel(0); // mock moved channel for backend is never be moved
                     match connect(
                         tx,
+                        &self.cc.name,
                         &addr,
                         self.cc.read_timeout.clone(),
                         self.cc.write_timeout.clone(),

@@ -31,6 +31,8 @@ where
     O: Sink<SinkItem = T, SinkError = AsError>,
     R: Stream<Item = T::Reply, Error = AsError>,
 {
+    #[allow(unused)]
+    cluster: String,
     addr: String,
     state: State,
 
@@ -49,8 +51,9 @@ where
     O: Sink<SinkItem = T, SinkError = AsError>,
     R: Stream<Item = T::Reply, Error = AsError>,
 {
-    pub fn new(addr: String, input: I, output: O, recv: R) -> Back<T, I, O, R> {
+    pub fn new(cluster: String, addr: String, input: I, output: O, recv: R) -> Back<T, I, O, R> {
         Back {
+            cluster,
             addr,
             input,
             output,
@@ -75,6 +78,8 @@ where
                     }
                     Ok(AsyncSink::Ready) => {
                         count += 1;
+                        #[cfg(feature = "metrics")]
+                        rcmd.mark_remote(&self.cluster);
                         self.cmdq.push_back(rcmd);
                     }
                     Err(err) => {
