@@ -25,7 +25,7 @@ lazy_static! {
             "aster_total_timer",
             "set up each cluster command proxy total timer",
             &["cluster"],
-            vec![10_000.0, 20_000.0, 100_000.0]
+            vec![0.010, 0.400, 0.100, 0.200]
         )
         .unwrap()
     };
@@ -34,7 +34,7 @@ lazy_static! {
             "aster_remote_timer",
             "set up each cluster command proxy remote timer",
             &["cluster"],
-            vec![1_000.0, 4_000.0, 10_000.0, 20_000.0]
+            vec![0.001, 0.010, 0.100]
         )
         .unwrap()
     };
