@@ -12,6 +12,9 @@ use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
 use crate::protocol::redis::{RedisHandleCodec, RedisNodeCodec};
 use crate::utils::crc::crc16;
 
+#[cfg(feature = "metrics")]
+use crate::metrics::{front_conn_incr, thread_incr};
+
 // use failure::Error;
 use futures::future::*;
 
@@ -155,11 +158,15 @@ impl Cluster {
                 let service = listen
                     .incoming()
                     .for_each(move |sock| {
+                        let cluster = cluster.clone();
+                        #[cfg(feature = "metrics")]
+                        front_conn_incr(&cluster.cc.name);
+
                         let client = sock.peer_addr().expect("peer must have addr");
                         let client_str = format!("{}", client);
                         let codec = RedisHandleCodec {};
                         let (output, input) = codec.framed(sock).split();
-                        let fut = front::Front::new(client_str, cluster.clone(), input, output);
+                        let fut = front::Front::new(client_str, cluster, input, output);
                         current_thread::spawn(fut);
                         Ok(())
                     })
@@ -465,8 +472,11 @@ pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
             let builder = thread::Builder::new();
             let cc = cc.clone();
             builder
-                .name(format!("{}-cluster-{}", cc.name, num))
+                .name(format!("aster-{}-cluster-{}", cc.name, num))
                 .spawn(move || {
+                    #[cfg(feature = "metrics")]
+                    thread_incr();
+
                     current_thread::block_on_all(
                         init::Initializer::new(cc)
                             .map_err(|err| error!("fail to init cluster due to {}", err)),

@@ -15,7 +15,7 @@ edition="2018"
 [features]
 default = []
 
-metrics = ["prometheus", "actix-web", "actix-rt"]
+metrics = ["prometheus", "actix-web", "actix-rt", "sysinfo"]
 
 [[bench]]
 name="aster_bench"
@@ -52,3 +52,4 @@ clap = {version = "2.33.0", features = ["yaml"]}
 prometheus = {version = "0.7.0", optional=true}
 actix-web = {version = "1.0", optional=true}
 actix-rt = {version = "0.2.5", optional=true}
+sysinfo = {version = "0.9.5", optional=true}

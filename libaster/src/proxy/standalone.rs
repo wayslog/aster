@@ -23,7 +23,7 @@ use std::thread::{Builder, JoinHandle};
 use crate::protocol::{mc, redis};
 
 #[cfg(feature = "metrics")]
-use crate::metrics::front_conn_incr;
+use crate::metrics::{front_conn_incr, thread_incr};
 
 use crate::com::AsError;
 use crate::com::{create_reuse_port_listener, set_read_write_timeout};
@@ -512,13 +512,17 @@ pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
             let builder = Builder::new();
             let cc = cc.clone();
             builder
-                .name(format!("{}-standalone-{}", cc.name, num))
-                .spawn(move || match cc.cache_type {
-                    CacheType::Redis => Cluster::<redis::Cmd>::run(cc).unwrap(),
-                    CacheType::Memcache | CacheType::MemcacheBinary => {
-                        Cluster::<mc::Cmd>::run(cc).unwrap()
+                .name(format!("aster-{}-standalone-{}", cc.name, num))
+                .spawn(move || {
+                    #[cfg(feature = "metrics")]
+                    thread_incr();
+                    match cc.cache_type {
+                        CacheType::Redis => Cluster::<redis::Cmd>::run(cc).unwrap(),
+                        CacheType::Memcache | CacheType::MemcacheBinary => {
+                            Cluster::<mc::Cmd>::run(cc).unwrap()
+                        }
+                        _ => unreachable!(),
                     }
-                    _ => unreachable!(),
                 })
                 .expect("fail to spawn worker thread")
         })

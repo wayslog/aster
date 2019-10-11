@@ -1,8 +1,14 @@
 use crate::com::AsError;
 use crate::ASTER_VERSION as VERSION;
 
+use std::thread;
+use std::time::Duration;
+
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
-use prometheus::{self, Encoder, GaugeVec, HistogramTimer, HistogramVec, IntCounter, TextEncoder};
+use prometheus::{
+    self, Encoder, Gauge, GaugeVec, HistogramTimer, HistogramVec, IntCounter, TextEncoder,
+};
+use sysinfo::{ProcessExt, SystemExt};
 
 lazy_static! {
     static ref ASTER_FRONT_CONNECTIONS: GaugeVec = {
@@ -16,6 +22,22 @@ lazy_static! {
         let opt = opts!("aster_version", "aster current running version");
         register_gauge_vec!(opt, &["version"]).unwrap()
     };
+    // static ref ASTER_PID: GaugeVec = {
+    //     let opt = opts!("aster_pid", "aster current processs id");
+    //     register_gauge_vec!(opt, &["pid"]).unwrap()
+    // };
+    static ref ASTER_MEMORY: Gauge = {
+        let opt = opts!("aster_memory_usage", "aster current memory usage");
+        register_gauge!(opt).unwrap()
+    };
+    static ref ASTER_CPU: Gauge = {
+        let opt = opts!("aster_cpu_usage", "aster current cpu usage");
+        register_gauge!(opt).unwrap()
+    };
+    static ref ASTER_THREADS: IntCounter = {
+        let opt = opts!("aster_thread_count", "aster thread count counter");
+        register_int_counter!(opt).unwrap()
+    };
     static ref ASTER_GLOBAL_ERROR: IntCounter = {
         let opt = opts!("aster_global_error", "aster global error counter");
         register_int_counter!(opt).unwrap()
@@ -25,7 +47,7 @@ lazy_static! {
             "aster_total_timer",
             "set up each cluster command proxy total timer",
             &["cluster"],
-            vec![0.010, 0.400, 0.100, 0.200]
+            vec![0.010, 0.040, 0.100, 0.200]
         )
         .unwrap()
     };
@@ -68,8 +90,46 @@ fn show_metrics() -> impl Responder {
     HttpResponse::Ok().body(buffer)
 }
 
+pub(crate) fn thread_incr() {
+    ASTER_THREADS.inc();
+}
+
+pub(crate) fn measure_system() -> Result<(), AsError> {
+    thread_incr();
+    let pid = match sysinfo::get_current_pid() {
+        Ok(pid) => pid,
+        Err(err) => {
+            warn!("fail get pid of current aster due {}", err);
+            return Err(AsError::SystemError);
+        }
+    };
+
+    // ASTER_PID
+    //     .with_label_values(&[&format!("{}", pid.as_u32())])
+    //     .set(1.0);
+    let sleep_interval = Duration::from_secs(30); // 30s to sleep;
+    let mut system = sysinfo::System::new();
+    system.refresh_all();
+    loop {
+        // First we update all information of our system struct.
+        if !system.refresh_process(pid) {
+            return Ok(());
+        }
+        if let Some(process) = system.get_process(pid) {
+            let cpu_usage = process.cpu_usage() as f64;
+            let memory_usage = process.memory() as f64;
+            ASTER_MEMORY.set(memory_usage);
+            ASTER_CPU.set(cpu_usage);
+            thread::sleep(sleep_interval);
+        } else {
+            return Ok(());
+        }
+    }
+}
+
 pub(crate) fn init(port: usize) -> Result<(), AsError> {
     ASTER_VERSION.with_label_values(&[VERSION]).set(1.0);
+    thread_incr();
     let addr = format!("0.0.0.0:{}", port);
     info!("listen http metrics port in addr {}", port);
     HttpServer::new(|| App::new().route("/metrics", web::get().to(show_metrics)))

@@ -74,9 +74,15 @@ pub fn run() -> Result<(), Error> {
 #[cfg(feature = "metrics")]
 use std::thread;
 #[cfg(feature = "metrics")]
-fn spwan_metrics(port: usize) -> thread::JoinHandle<()> {
-    thread::Builder::new()
-        .name("aster-metrics-thread".to_string())
-        .spawn(move || metrics::init(port).unwrap())
-        .unwrap()
+fn spwan_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
+    vec![
+        thread::Builder::new()
+            .name("aster-metrics-thread".to_string())
+            .spawn(move || metrics::init(port).unwrap())
+            .unwrap(),
+        thread::Builder::new()
+            .name("aster-metrics-thread".to_string())
+            .spawn(move || metrics::measure_system().unwrap())
+            .unwrap(),
+    ]
 }

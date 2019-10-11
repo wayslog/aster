@@ -65,6 +65,9 @@ pub enum AsError {
     #[fail(display = "fail to load config toml error {}", _0)]
     ConfigError(toml::de::Error),
 
+    #[fail(display = "fail to load system info")]
+    SystemError,
+
     #[fail(display = "there is nothing happend")]
     None,
 }
