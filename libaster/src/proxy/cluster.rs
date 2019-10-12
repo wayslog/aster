@@ -410,9 +410,11 @@ impl Replica {
         if self.addrs.is_empty() {
             return "";
         }
+
         let current = self.current.get();
         let len = self.addrs.len();
-        self.current.update(|x| (x + 1) % len);
+        let now = self.current.get();
+        self.current.set((now + 1) % len);
         &self.addrs[current]
     }
 }

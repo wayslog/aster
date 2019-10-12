@@ -1,7 +1,4 @@
 // #![deny(warnings)]
-#![feature(cell_update)]
-#![feature(option_flattening)]
-
 #[macro_use]
 extern crate log;
 #[macro_use]

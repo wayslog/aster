@@ -181,8 +181,6 @@ impl MessageMut {
     }
 }
 
-
-
 #[test]
 fn test_parse() {
     let data = b"*2\r\n$3\r\nget\r\n$4\r\nab\nc\r\n";
@@ -586,7 +584,10 @@ impl Message {
             RespType::Error(_) => {}
             _ => return None,
         }
-        self.data().map(|data| parse_redirect(data)).flatten()
+        if let Some(data) = self.data().as_ref() {
+            return parse_redirect(data);
+        }
+        None
     }
 }
 
