@@ -282,7 +282,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "aster-proxy"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "libaster 1.0.1",
 ]
