@@ -1,6 +1,6 @@
 [package]
 name = "libaster"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["wayslog <zxs867179@gmail.com>"]
 description = "A light, fast and powerful cache proxy written in Rust."
 homepage = "https://github.com/wayslog/aster"
