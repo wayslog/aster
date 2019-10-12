@@ -2,6 +2,7 @@ import redis
 import random
 import string
 import click
+import memcache
 
 CHARS = string.ascii_uppercase + string.ascii_lowercase + string.digits
 
@@ -30,7 +31,7 @@ def gen_random_kvs(n, key_size=8, value_size=4):
     KEYS = list(KVS.keys())
 
 
-def gen_commands(n):
+def gen_redis_commands(n):
     for _ in range(n):
         cmd, arg_count = random.choices(COMMANDS, k=1)[0]
         keys = random.choices(KEYS, k=1)
@@ -42,17 +43,32 @@ def gen_commands(n):
         yield " ".join([cmd] + [keys[0], val])
 
 
-def longlive_checker(host, port, pipeline):
+def longlive_rc_checker(host, port, pipeline):
     rc = redis.StrictRedis(host=host, port=port,
                            socket_timeout=1)  # default 1s timeout
     while True:
         with rc.pipeline(transaction=False) as p:
-            for cmd in gen_commands(pipeline):
+            for cmd in gen_redis_commands(pipeline):
                 p.execute_command(cmd)
             try:
                 p.execute()
             except Exception as e:
                 print("fail to do execute for redis due %s" % (e))
+
+
+def longlive_mc_checker(host, port):
+    mc = memcache.Client(["{}:{}".format(host, port)])
+    count = 0
+    while True:
+        count += 1
+        key = random.choices(KEYS, k=1)[0]
+        val = KVS[key]
+        if count % 2 == 0:
+            mc.set(key, val)
+        else:
+            nval = mc.get(key)
+            if nval:
+                assert val == nval
 
 
 @click.command()
@@ -63,14 +79,15 @@ def longlive_checker(host, port, pipeline):
               "--rand",
               default=10000,
               help="default random key-value count")
-@click.option("-m",
-              "--mode",
-              default="longlive",
-              help="avaliable mode is longlive|features")
-def main(server, port, pipeline, rand, mode):
-    gen_random_kvs(rand)
-    if mode == "longlive":
-        longlive_checker(server, port, pipeline)
+@click.option("-m", "--mode", default="redis", help="support only mc|redis")
+@click.option("-d", "--dsize", default=32, help="data size, default is 32")
+def main(server, port, pipeline, rand, mode, dsize):
+    gen_random_kvs(rand, value_size=dsize)
+
+    if mode == "redis":
+        longlive_rc_checker(server, port, pipeline)
+    elif mode == "mc":
+        longlive_mc_checker(server, port)
 
 
 if __name__ == "__main__":
