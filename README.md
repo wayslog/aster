@@ -1,9 +1,9 @@
 Aster [![Build Status](https://travis-ci.org/wayslog/aster.svg?branch=master)](https://travis-ci.org/wayslog/aster) [![LOC](https://tokei.rs/b1/github/wayslog/aster)](https://github.com/wayslog/aster)
 ======================
 
-Aster is a light, fast and powerful cache proxy written by rust.
+Aster is a lightweight, fast but powerful cache proxy written in rust.
 
-It supports memcache/redis singleton/redis cluster protocol all in one. Aster can proxy with two models means:
+It supports memcache/redis singleton/redis cluster protocol all in one. Aster can proxy with two models:
 
 1. proxy mode: the same as [twemproxy](https://github.com/twitter/twemproxy).
 2. cluster mode: proxy for redis cluster. You can use non-cluster redis client access the redis cluster.(Inspired with [Corvus](https://github.com/eleme/corvus))
@@ -11,7 +11,7 @@ It supports memcache/redis singleton/redis cluster protocol all in one. Aster ca
 ## Usage
 
 ```bash
-cargo build --release && RUST_LOG=libaster=info RUST_BACKTRACE=1 ./target/release/aster default.toml
+cargo build --all --release && RUST_LOG=libaster=info RUST_BACKTRACE=1 ./target/release/aster default.toml
 ```
 
 ## Configuration
