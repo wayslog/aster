@@ -214,3 +214,14 @@ where
         }
     }
 }
+
+impl<I, O> Drop for Front<I, O>
+where
+    I: Stream<Item = Cmd, Error = AsError>,
+    O: Sink<SinkItem = Cmd, SinkError = AsError>,
+{
+    fn drop(&mut self) {
+        #[cfg(feature = "metrics")]
+        crate::metrics::front_conn_decr(&self.cluster.cc.name);
+    }
+}

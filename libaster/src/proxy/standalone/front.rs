@@ -7,6 +7,9 @@ use std::rc::Rc;
 use crate::proxy::standalone::Cluster;
 use crate::proxy::standalone::Request;
 
+#[cfg(feature = "metrics")]
+use crate::metrics::front_conn_decr;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Running,
@@ -212,5 +215,17 @@ where
                 }
             }
         }
+    }
+}
+
+impl<T, I, O> Drop for Front<T, I, O>
+where
+    T: Request + 'static,
+    I: Stream<Item = T, Error = AsError>,
+    O: Sink<SinkItem = T, SinkError = AsError>,
+{
+    fn drop(&mut self) {
+        #[cfg(feature = "metrics")]
+        front_conn_decr(&self.cluster.cc.name);
     }
 }

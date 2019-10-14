@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use prometheus::{
-    self, Encoder, Gauge, GaugeVec, HistogramTimer, HistogramVec, IntCounter, TextEncoder,
+    self, Encoder, Gauge, GaugeVec, HistogramTimer, HistogramVec, IntCounter, IntCounterVec,
+    TextEncoder,
 };
 use sysinfo::{ProcessExt, SystemExt};
 
@@ -17,6 +18,14 @@ lazy_static! {
             "each front nodes connections gauge"
         );
         register_gauge_vec!(opt, &["cluster"]).unwrap()
+    };
+
+    static ref ASTER_FRONT_INCR: IntCounterVec = {
+        let opt = opts!(
+            "aster_front_connection_incr",
+            "each front nodes connections gauge"
+        );
+        register_int_counter_vec!(opt, &["cluster"]).unwrap()
     };
     static ref ASTER_VERSION: GaugeVec = {
         let opt = opts!("aster_version", "aster current running version");
@@ -63,7 +72,12 @@ lazy_static! {
 }
 
 pub(crate) fn front_conn_incr(cluster: &str) {
+    ASTER_FRONT_INCR.with_label_values(&[cluster]).inc();
     ASTER_FRONT_CONNECTIONS.with_label_values(&[cluster]).inc()
+}
+
+pub(crate) fn front_conn_decr(cluster: &str) {
+    ASTER_FRONT_CONNECTIONS.with_label_values(&[cluster]).dec()
 }
 
 pub(crate) fn global_error_incr() {
