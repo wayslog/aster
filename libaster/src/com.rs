@@ -136,7 +136,13 @@ pub enum CacheType {
     RedisCluster,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+impl Default for CacheType {
+    fn default() -> CacheType {
+        CacheType::RedisCluster
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Default)]
 pub struct ClusterConfig {
     pub name: String,
     pub listen_addr: String,

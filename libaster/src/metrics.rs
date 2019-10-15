@@ -1,3 +1,5 @@
+pub mod slowlog;
+
 use crate::com::AsError;
 use crate::ASTER_VERSION as VERSION;
 
