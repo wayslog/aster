@@ -147,6 +147,7 @@ lazy_static! {
         hmap.insert(&b"TIME"[..], CmdType::NotSupport);
         hmap.insert(&b"CONFIG"[..], CmdType::NotSupport);
         hmap.insert(&b"CLUSTER"[..], CmdType::Ctrl);
+        hmap.insert(&b"READONLY"[..], CmdType::Ctrl);
 
         hmap
     };

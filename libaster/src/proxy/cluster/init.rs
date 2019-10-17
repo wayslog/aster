@@ -5,7 +5,7 @@ use futures::{Async, AsyncSink, Future, Sink};
 use crate::com::AsError;
 use crate::com::ClusterConfig;
 use crate::protocol::redis::{new_cluster_slots_cmd, slots_reply_to_replicas, Cmd};
-use crate::proxy::cluster::{connect, Cluster};
+use crate::proxy::cluster::{Cluster, ConnBuilder};
 
 enum State {
     Pending,
@@ -44,19 +44,21 @@ impl Future for Initializer {
                     self.state = State::Connecting;
                 }
                 State::Connecting => {
-                    if self.current > self.cc.servers.len() {
+                    if self.current >= self.cc.servers.len() {
                         return Err(AsError::ClusterAllSeedsDie(self.cc.name.clone()));
                     }
                     let addr = self.cc.servers[self.current].clone();
                     // debug!("start to create connection to backend {}", &addr);
                     let (tx, _rx) = channel(0); // mock moved channel for backend is never be moved
-                    match connect(
-                        tx,
-                        &self.cc.name,
-                        &addr,
-                        self.cc.read_timeout.clone(),
-                        self.cc.write_timeout.clone(),
-                    ) {
+                    let conn = ConnBuilder::new()
+                        .moved(tx)
+                        .cluster(self.cc.name.clone())
+                        .node(addr.to_string())
+                        .read_timeout(self.cc.read_timeout.clone())
+                        .write_timeout(self.cc.write_timeout.clone())
+                        .connect();
+
+                    match conn {
                         Ok(sender) => {
                             let mut cmd = new_cluster_slots_cmd();
                             cmd.reregister(task::current());

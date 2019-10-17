@@ -83,6 +83,7 @@ where
             cmdq: VecDeque::with_capacity(MAX_PIPELINE),
         }
     }
+
     fn try_forward(&mut self) -> Result<Async<State>, AsError> {
         let mut count = 0;
         let mut ret_state = State::Running;
@@ -230,6 +231,10 @@ where
             cmd.set_reply(AsError::BackendClosedError(self.addr.clone()));
         }
     }
+
+    fn has_cmd(&mut self) -> bool {
+        self.store.is_some() && self.cmdq.is_empty()
+    }
 }
 
 impl<I, O, R, M> Future for Back<I, O, R, M>
@@ -251,10 +256,6 @@ where
                 // debug!("backend {} is closing", self.addr);
                 self.on_closed();
                 self.state = State::Closed;
-            }
-            if self.state.is_closed() {
-                // debug!("backend {} is closed", self.addr);
-                return Ok(Async::Ready(()));
             }
 
             if !can_recv && !can_forward {
@@ -298,6 +299,59 @@ where
                         self.state = State::Closing;
                         continue;
                     }
+                }
+            }
+
+            if self.state.is_closed() {
+                // debug!("backend {} is closed", self.addr);
+                if !self.has_cmd() {
+                    return Ok(Async::Ready(()));
+                } else {
+                    self.state = State::Closing;
+                }
+            }
+        }
+    }
+}
+
+pub struct Blackhole<S>
+where
+    S: Stream<Item = Cmd>,
+{
+    addr: String,
+    input: S,
+}
+
+impl<S> Blackhole<S>
+where
+    S: Stream<Item = Cmd>,
+{
+    pub fn new(addr: String, input: S) -> Blackhole<S> {
+        Blackhole { addr, input }
+    }
+}
+
+impl<S> Future for Blackhole<S>
+where
+    S: Stream<Item = Cmd>,
+{
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
+        loop {
+            match self.input.poll() {
+                Ok(Async::Ready(Some(cmd))) => {
+                    cmd.set_reply(&AsError::BackendClosedError(self.addr.clone()));
+                }
+                Ok(Async::Ready(None)) => {
+                    return Ok(Async::Ready(()));
+                }
+                Ok(Async::NotReady) => {
+                    return Ok(Async::NotReady);
+                }
+                Err(_) => {
+                    unreachable!("rx chan is never be fail");
                 }
             }
         }

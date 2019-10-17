@@ -678,6 +678,28 @@ impl Encoder for RedisNodeCodec {
     }
 }
 
+pub fn new_read_only_cmd() -> Cmd {
+    let msg = Message::new_read_only();
+    let flags = CFlags::empty();
+    let mut notify = Notify::empty();
+    notify.set_expect(1);
+    let ctype = CmdType::get_cmd_type(&msg);
+
+    let cmd = Command {
+        flags,
+        ctype,
+        cycle: DEFAULT_CYCLE,
+        req: msg,
+        reply: None,
+        subs: None,
+        #[cfg(feature = "metrics")]
+        total_timer: None,
+        #[cfg(feature = "metrics")]
+        remote_timer: None,
+    };
+    cmd.into_cmd(notify)
+}
+
 pub fn new_cluster_slots_cmd() -> Cmd {
     let msg = Message::new_cluster_slots();
     let flags = CFlags::empty();

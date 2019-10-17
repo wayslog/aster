@@ -8,23 +8,24 @@ use crate::com::create_reuse_port_listener;
 use crate::com::set_read_write_timeout;
 use crate::com::AsError;
 use crate::com::ClusterConfig;
+use crate::protocol::redis::{new_read_only_cmd, RedisHandleCodec, RedisNodeCodec};
 use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
-use crate::protocol::redis::{RedisHandleCodec, RedisNodeCodec};
 use crate::utils::crc::crc16;
 
 #[cfg(feature = "metrics")]
 use crate::metrics::{front_conn_incr, thread_incr};
 
 // use failure::Error;
-use futures::future::*;
-
 use futures::future::ok;
+use futures::future::*;
+use futures::task;
 use futures::unsync::mpsc::{channel, Sender};
 use futures::AsyncSink;
 use futures::{Sink, Stream};
 
 use tokio::net::TcpStream;
 use tokio::runtime::current_thread;
+use tokio::timer::Interval;
 use tokio_codec::Decoder;
 
 use std::cell::{Cell, RefCell};
@@ -32,6 +33,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
@@ -83,6 +85,7 @@ pub struct Cluster {
     read_from_slave: bool,
 
     moved: Sender<Redirection>,
+    fetch: RefCell<Option<Sender<Instant>>>,
 }
 
 impl Cluster {
@@ -105,31 +108,35 @@ impl Cluster {
                 let (moved, moved_rx) = channel(10240);
 
                 let all_masters = slots.get_all_masters();
+                let mut all_lived = HashSet::new();
                 cc.servers = all_masters.iter().map(|x| x.clone()).collect();
                 let all_servers = cc.servers.clone();
                 let mut conns = Conns::default();
                 for master in all_servers.into_iter() {
-                    let conn = connect(
-                        moved.clone(),
-                        &cc.name,
-                        &master,
-                        cc.read_timeout.clone(),
-                        cc.write_timeout.clone(),
-                    )?;
+                    let conn = ConnBuilder::new()
+                        .moved(moved.clone())
+                        .cluster(cc.name.clone())
+                        .node(master.clone())
+                        .read_timeout(cc.read_timeout.clone())
+                        .write_timeout(cc.write_timeout.clone())
+                        .connect()?;
                     conns.insert(&master, conn);
+                    all_lived.insert(master.clone());
                 }
 
                 if read_from_slave {
-                    let all_slaves = slots.get_all_slaves();
+                    let all_slaves = slots.get_all_replicas();
                     for slave in all_slaves.into_iter() {
-                        let conn = connect(
-                            moved.clone(),
-                            &cc.name,
-                            &slave,
-                            cc.read_timeout.clone(),
-                            cc.write_timeout.clone(),
-                        )?;
+                        let conn = ConnBuilder::new()
+                            .moved(moved.clone())
+                            .cluster(cc.name.clone())
+                            .node(slave.clone())
+                            .read_timeout(cc.read_timeout.clone())
+                            .write_timeout(cc.write_timeout.clone())
+                            .replica(true)
+                            .connect()?;
                         conns.insert(&slave, conn);
+                        all_lived.insert(slave.clone());
                     }
                 }
                 let cluster = Cluster {
@@ -139,6 +146,7 @@ impl Cluster {
                     moved,
                     slots: RefCell::new(slots),
                     conns: RefCell::new(conns),
+                    fetch: RefCell::new(None),
                 };
                 Ok((cluster, moved_rx))
             })
@@ -149,8 +157,18 @@ impl Cluster {
                 Ok(rc_cluster)
             })
             .and_then(|rc_cluster| {
-                let fetcher = fetcher::Fetcher::new(rc_cluster.clone());
-                current_thread::spawn(fetcher);
+                let interval_millis = rc_cluster.cc.fetch_interval.unwrap_or(60 * 30 * 1000);
+                let interval =
+                    Interval::new(Instant::now(), Duration::from_millis(interval_millis));
+                let fetch =
+                    fetcher::Fetch::new(rc_cluster.clone(), interval.map_err(|_err| AsError::None));
+                current_thread::spawn(fetch);
+
+                let (tx, rx) = channel(1024);
+                let _ = rc_cluster.fetch.borrow_mut().replace(tx);
+                let trigger = rx.map_err(|_| AsError::None);
+                let fetch = fetcher::Fetch::new(rc_cluster.clone(), trigger);
+                current_thread::spawn(fetch);
                 Ok(rc_cluster)
             })
             .and_then(move |cluster| {
@@ -185,7 +203,7 @@ impl Cluster {
 
 impl Cluster {
     fn get_addr(&self, slot: usize, is_read: bool) -> String {
-        trace!("get slot={} and is_read={}", slot, is_read);
+        // trace!("get slot={} and is_read={}", slot, is_read);
         if self.read_from_slave && is_read {
             if let Some(replica) = self.slots.borrow().get_replica(slot) {
                 if replica != "" {
@@ -218,14 +236,7 @@ impl Cluster {
                     }
                 }
             } else {
-                let sender = connect(
-                    self.moved.clone(),
-                    &self.cc.name,
-                    &addr,
-                    self.cc.read_timeout.clone(),
-                    self.cc.write_timeout.clone(),
-                )?;
-                conns.insert(&addr, sender);
+                self.connect(&addr, &mut conns)?;
             }
         }
     }
@@ -264,43 +275,47 @@ impl Cluster {
                         let cmd = se.into_inner();
                         cmd.borrow_mut().add_cycle();
                         cmds.push_front(cmd);
-                        let sender = connect(
-                            self.moved.clone(),
-                            &self.cc.name,
-                            &addr,
-                            self.cc.read_timeout.clone(),
-                            self.cc.write_timeout.clone(),
-                        )?;
-                        conns.insert(&addr, sender);
+                        self.connect(&addr, &mut conns)?;
                         return Ok(count);
                     }
                 }
             } else {
                 cmds.push_front(cmd);
-                let sender = connect(
-                    self.moved.clone(),
-                    &self.cc.name,
-                    &addr,
-                    self.cc.read_timeout.clone(),
-                    self.cc.write_timeout.clone(),
-                )?;
-                conns.insert(&addr, sender);
+                self.connect(&addr, &mut conns)?;
                 return Ok(count);
             }
         }
     }
 
     pub(crate) fn try_update_all_slots(&self, layout: ReplicaLayout) -> bool {
-        self.slots.borrow_mut().try_update_all(layout)
+        let updated = self.slots.borrow_mut().try_update_all(layout);
+
+        updated
     }
 
     pub(crate) fn update_slot(&self, slot: usize, addr: String) {
         debug_assert!(slot <= SLOTS_COUNT);
-        self.slots.borrow_mut().masters[slot] = addr;
+        self.slots.borrow_mut().update_slot(slot, addr);
+    }
+
+    pub(crate) fn connect(&self, addr: &str, conns: &mut Conns) -> Result<(), AsError> {
+        let is_replica = !self.slots.borrow().is_master(addr);
+
+        let sender = ConnBuilder::new()
+            .moved(self.moved.clone())
+            .cluster(self.cc.name.clone())
+            .node(addr.to_string())
+            .read_timeout(self.cc.read_timeout.clone())
+            .write_timeout(self.cc.write_timeout.clone())
+            .fetch(self.fetch.borrow().clone())
+            .replica(is_replica)
+            .connect()?;
+        conns.insert(&addr, sender);
+        Ok(())
     }
 }
 
-struct Conns {
+pub(crate) struct Conns {
     inner: HashMap<String, Conn<Sender<Cmd>>>,
 }
 
@@ -341,6 +356,9 @@ impl<S> Conn<S> {
 struct Slots {
     masters: Vec<String>,
     replicas: Vec<Replica>,
+
+    all_masters: HashSet<String>,
+    all_replicas: HashSet<String>,
 }
 
 impl Slots {
@@ -350,7 +368,12 @@ impl Slots {
         for i in 0..SLOTS_COUNT {
             if self.masters[i] != masters[i] {
                 changed = true;
+                debug!(
+                    "replaceing slot={} addr={} by new_addr={}",
+                    i, self.masters[i], masters[i]
+                );
                 self.masters[i] = masters[i].clone();
+                self.all_masters.insert(masters[i].clone());
             }
         }
 
@@ -361,11 +384,17 @@ impl Slots {
                     addrs: replicas[i].clone(),
                     current: Cell::new(0),
                 };
+                self.all_replicas.extend(replicas[i].clone().into_iter());
                 changed = true;
             }
         }
 
         changed
+    }
+
+    fn update_slot(&mut self, slot: usize, addr: String) {
+        self.masters[slot] = addr.clone();
+        self.all_masters.insert(addr);
     }
 
     fn get_master(&self, slot: usize) -> Option<&str> {
@@ -377,15 +406,15 @@ impl Slots {
     }
 
     fn get_all_masters(&self) -> HashSet<String> {
-        self.masters.iter().map(|x| x.clone()).collect()
+        self.all_masters.clone()
     }
 
-    fn get_all_slaves(&self) -> HashSet<String> {
-        self.replicas
-            .iter()
-            .map(|x| x.addrs.clone())
-            .flatten()
-            .collect()
+    fn get_all_replicas(&self) -> HashSet<String> {
+        self.all_replicas.clone()
+    }
+
+    fn is_master(&self, addr: &str) -> bool {
+        self.all_masters.contains(addr)
     }
 }
 
@@ -395,7 +424,12 @@ impl Default for Slots {
         masters.resize(SLOTS_COUNT, "".to_string());
         let mut replicas = Vec::with_capacity(SLOTS_COUNT);
         replicas.resize(SLOTS_COUNT, Replica::default());
-        Slots { masters, replicas }
+        Slots {
+            masters,
+            replicas,
+            all_masters: HashSet::new(),
+            all_replicas: HashSet::new(),
+        }
     }
 }
 
@@ -428,41 +462,148 @@ impl Default for Replica {
     }
 }
 
-pub fn connect(
-    moved: Sender<Redirection>,
-    cluster: &str,
-    node: &str,
+pub(crate) struct ConnBuilder {
+    cluster: Option<String>,
+    node: Option<String>,
+    moved: Option<Sender<Redirection>>,
     rt: Option<u64>,
     wt: Option<u64>,
-) -> Result<Sender<Cmd>, AsError> {
-    let node_addr = node.to_string();
-    let node_addr_clone = node_addr.clone();
-    let cluster = cluster.to_string();
-    let (tx, rx) = channel(1024 * 8);
-    let amt = lazy(|| -> Result<(), ()> { Ok(()) })
-        .and_then(move |_| {
-            let node_clone = node_addr.clone();
-            node_addr
-                .as_str()
-                .parse()
-                .map_err(|err| error!("fail to parse addr {:?} to {}", err, node_clone))
-        })
-        .and_then(|addr| {
-            TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
-        })
-        .and_then(move |sock| {
-            // TODO:
-            let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
+    replica: bool,
+    fetch: Option<Sender<Instant>>,
+}
 
-            sock.set_nodelay(true).expect("set nodelay must ok");
-            let codec = RedisNodeCodec {};
-            let (sink, stream) = codec.framed(sock).split();
-            let backend = back::Back::new(cluster, node_addr_clone, rx, sink, stream, moved);
-            current_thread::spawn(backend);
-            Ok(())
-        });
-    current_thread::spawn(amt);
-    Ok(tx)
+impl ConnBuilder {
+    pub(crate) fn new() -> ConnBuilder {
+        ConnBuilder {
+            cluster: None,
+            node: None,
+            moved: None,
+            rt: Some(1000),
+            wt: Some(1000),
+            replica: false,
+            fetch: None,
+        }
+    }
+
+    pub(crate) fn fetch(self, fetch: Option<Sender<Instant>>) -> Self {
+        let mut cb = self;
+        cb.fetch = fetch;
+        cb
+    }
+
+    pub(crate) fn cluster(self, cluster: String) -> Self {
+        let mut cb = self;
+        cb.cluster = Some(cluster);
+        cb
+    }
+
+    pub(crate) fn moved(self, moved: Sender<Redirection>) -> Self {
+        let mut cb = self;
+        cb.moved = Some(moved);
+        cb
+    }
+
+    pub(crate) fn read_timeout(self, rt: Option<u64>) -> Self {
+        let mut cb = self;
+        cb.rt = rt;
+        cb
+    }
+
+    pub(crate) fn write_timeout(self, wt: Option<u64>) -> Self {
+        let mut cb = self;
+        cb.wt = wt;
+        cb
+    }
+
+    pub(crate) fn node(self, node: String) -> Self {
+        let mut cb = self;
+        cb.node = Some(node);
+        cb
+    }
+
+    pub(crate) fn replica(self, is_replica: bool) -> Self {
+        let mut cb = self;
+        cb.replica = is_replica;
+        cb
+    }
+
+    pub(crate) fn check_valid(&self) -> bool {
+        true && self.node.is_some() && self.cluster.is_some() && self.moved.is_some()
+    }
+
+    pub(crate) fn connect(self) -> Result<Sender<Cmd>, AsError> {
+        if !self.check_valid() {
+            error!("fail to open connection to backend due param is valid");
+            return Err(AsError::BadConfig("backend connection config".to_string()));
+        }
+
+        let node_addr = self.node.expect("must be checked first");
+        let node_addr_clone = node_addr.clone();
+        let cluster = self.cluster.expect("must be checked first").to_string();
+        let rt = self.rt.clone();
+        let wt = self.wt.clone();
+        let moved = self.moved.expect("must be checked first");
+        let fetch = self.fetch.clone();
+
+        let (mut tx, rx) = channel(1024 * 8);
+        let amt = lazy(|| -> Result<(), ()> { Ok(()) })
+            .and_then(move |_| {
+                let node_clone = node_addr.clone();
+                node_addr
+                    .as_str()
+                    .parse()
+                    .map_err(|err| error!("fail to parse addr {:?} to {}", err, node_clone))
+            })
+            .and_then(|addr| {
+                TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+            })
+            .then(move |sock| {
+                if let Ok(sock) = sock {
+                    let sock =
+                        set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
+                    sock.set_nodelay(true).expect("set nodelay must ok");
+                    let codec = RedisNodeCodec {};
+                    let (sink, stream) = codec.framed(sock).split();
+                    let backend =
+                        back::Back::new(cluster, node_addr_clone, rx, sink, stream, moved);
+                    current_thread::spawn(backend);
+                } else {
+                    error!("fail to conenct to backend");
+                    let blackhole = back::Blackhole::new(node_addr_clone, rx);
+                    current_thread::spawn(blackhole);
+                    if let Some(mut fetch) = fetch {
+                        let now = Instant::now();
+                        fetch.start_send(now).unwrap();
+                        fetch.poll_complete().unwrap();
+                    }
+                }
+                Ok(())
+            });
+        current_thread::spawn(amt);
+        if self.replica {
+            let mut cmd = new_read_only_cmd();
+            cmd.reregister(task::current());
+            Self::silence_send_req(cmd, &mut tx);
+        }
+        Ok(tx)
+    }
+
+    fn silence_send_req(cmd: Cmd, tx: &mut Sender<Cmd>) {
+        match tx.start_send(cmd) {
+            Ok(AsyncSink::Ready) => {
+                debug!("success dispatch to read only replica node");
+            }
+            Ok(AsyncSink::NotReady(_)) => {
+                warn!("fail to initial backend connection of replica due to send fail");
+            }
+            Err(err) => {
+                warn!(
+                    "fail to initial backend connection of replica due to {}",
+                    err
+                );
+            }
+        }
+    }
 }
 
 pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {

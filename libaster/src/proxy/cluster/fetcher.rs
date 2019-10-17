@@ -1,12 +1,12 @@
 use futures::{Async, AsyncSink, Future, Stream};
 use rand::rngs::ThreadRng;
 use rand::{thread_rng, Rng};
-use tokio::timer::Interval;
 
 use futures::task;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use crate::com::AsError;
 use crate::protocol::redis::{new_cluster_slots_cmd, slots_reply_to_replicas, Cmd};
 use crate::proxy::cluster::Cluster;
 
@@ -18,30 +18,34 @@ enum State {
     Done(String, Cmd),
 }
 
-pub struct Fetcher {
+pub struct Fetch<R>
+where
+    R: Stream<Item = Instant, Error = AsError>,
+{
     cluster: Rc<Cluster>,
     rng: ThreadRng,
     state: State,
-    interval: Interval,
+    trigger: R,
 }
 
-impl Fetcher {
-    pub fn new(cluster: Rc<Cluster>) -> Fetcher {
-        let interval_millis = cluster.cc.fetch_interval.unwrap_or(60 * 30 * 1000);
-        let interval = Interval::new(
-            Instant::now() + Duration::from_secs(1),
-            Duration::from_millis(interval_millis),
-        );
-        Fetcher {
+impl<R> Fetch<R>
+where
+    R: Stream<Item = Instant, Error = AsError>,
+{
+    pub fn new(cluster: Rc<Cluster>, trigger: R) -> Fetch<R> {
+        Fetch {
             cluster,
-            interval,
+            trigger,
             rng: thread_rng(),
             state: State::Interval,
         }
     }
 }
 
-impl Future for Fetcher {
+impl<R> Future for Fetch<R>
+where
+    R: Stream<Item = Instant, Error = AsError>,
+{
     type Item = ();
     type Error = ();
 
@@ -51,7 +55,7 @@ impl Future for Fetcher {
         }
         loop {
             match &self.state {
-                State::Interval => match self.interval.poll() {
+                State::Interval => match self.trigger.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Ok(Async::Ready(Some(_))) => {
                         self.state = State::Random;
@@ -66,7 +70,14 @@ impl Future for Fetcher {
                 },
                 State::Random => {
                     let position = self.rng.gen_range(0, self.cluster.cc.servers.len());
-                    let addr = self.cluster.cc.servers[position].clone();
+                    let addr = self
+                        .cluster
+                        .cc
+                        .servers
+                        .iter()
+                        .nth(position)
+                        .cloned()
+                        .unwrap();
                     let mut cmd = new_cluster_slots_cmd();
                     cmd.reregister(task::current());
                     self.state = State::Sending(addr, cmd);

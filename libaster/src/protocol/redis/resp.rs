@@ -405,6 +405,16 @@ impl Message {
         }
     }
 
+    pub fn new_read_only() -> Message {
+        Message {
+            data: Bytes::from("*1\r\n$8\r\nREADONLY\r\n"),
+            rtype: RespType::Array(
+                Range::new(0, 4),
+                vec![RespType::Bulk(Range::new(4, 8), Range::new(8, 18))],
+            ),
+        }
+    }
+
     pub fn new_ping_request() -> Message {
         Message {
             data: Bytes::from("*1\r\n$4\r\nPING\r\n"),
