@@ -368,10 +368,6 @@ impl Slots {
         for i in 0..SLOTS_COUNT {
             if self.masters[i] != masters[i] {
                 changed = true;
-                debug!(
-                    "replaceing slot={} addr={} by new_addr={}",
-                    i, self.masters[i], masters[i]
-                );
                 self.masters[i] = masters[i].clone();
                 self.all_masters.insert(masters[i].clone());
             }
