@@ -1,5 +1,5 @@
 name: aster
-version: "1.0.3"
+version: "1.0.4"
 author: Wayslog. <zxs867179@gmail.com>
 about: Aster is a light, fast and powerful cache proxy written in rust.
 args:
@@ -8,6 +8,10 @@ args:
         help: Sets a custom config file
         takes_value: true
         required: true
+    - ip:
+        short: i
+        long: ip
+        help: expose given ip for CLUSTER SLOTS/NODES command(may be used by jedis cluster connection)
     - metrics:
         short: m
         long: metrics

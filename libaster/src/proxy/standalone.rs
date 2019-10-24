@@ -25,6 +25,7 @@ use crate::protocol::{mc, redis};
 #[cfg(feature = "metrics")]
 use crate::metrics::{front_conn_incr, thread_incr};
 
+use crate::com::meta::meta_init;
 use crate::com::AsError;
 use crate::com::{create_reuse_port_listener, set_read_write_timeout};
 use crate::com::{CacheType, ClusterConfig};
@@ -503,7 +504,7 @@ impl ServerLine {
     }
 }
 
-pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
+pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
     let worker = cc.thread.unwrap_or(4);
     (0..worker)
         .into_iter()
@@ -511,9 +512,11 @@ pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
             let num = index + 1;
             let builder = Builder::new();
             let cc = cc.clone();
+            let ip = ip.clone();
             builder
                 .name(format!("aster-{}-standalone-{}", cc.name, num))
                 .spawn(move || {
+                    meta_init(cc.clone(), ip);
                     #[cfg(feature = "metrics")]
                     thread_incr();
                     match cc.cache_type {

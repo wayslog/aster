@@ -5,6 +5,7 @@ pub mod init;
 pub mod redirect;
 
 use crate::com::create_reuse_port_listener;
+use crate::com::meta::meta_init;
 use crate::com::set_read_write_timeout;
 use crate::com::AsError;
 use crate::com::ClusterConfig;
@@ -602,7 +603,7 @@ impl ConnBuilder {
     }
 }
 
-pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
+pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
     let worker = cc.thread.unwrap_or(4);
     (0..worker)
         .into_iter()
@@ -610,9 +611,12 @@ pub fn run(cc: ClusterConfig) -> Vec<JoinHandle<()>> {
             let num = index + 1;
             let builder = thread::Builder::new();
             let cc = cc.clone();
+            let ip = ip.clone();
             builder
                 .name(format!("aster-{}-cluster-{}", cc.name, num))
                 .spawn(move || {
+                    meta_init(cc.clone(), ip);
+
                     #[cfg(feature = "metrics")]
                     thread_incr();
 

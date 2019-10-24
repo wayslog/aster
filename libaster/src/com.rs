@@ -10,6 +10,8 @@ use std::io::Read;
 use std::num;
 use std::path::Path;
 
+pub mod meta;
+
 #[derive(Debug, Fail)]
 pub enum AsError {
     #[fail(display = "config is bad for fields {}", _0)]

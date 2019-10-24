@@ -5,6 +5,10 @@ libaster is the library for aster proxy.
 
 ## change log
 
+## 1.0.4
+
+* add CLUSTER SLOTS and CLUSTER NODES command support
+
 ## 1.0.3
 * fixed client hang of redis cluster mode
 * add read_from_slave feature

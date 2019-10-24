@@ -15,6 +15,9 @@ pub const RESP_ARRAY: u8 = b'*';
 pub const BYTE_CR: u8 = b'\r';
 pub const BYTE_LF: u8 = b'\n';
 
+pub const BYTES_CMD_CLUSTER_SLOTS: &[u8] = b"*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n";
+pub const BYTES_CMD_CLUSTER_NODES: &[u8] = b"*2\r\n$7\r\nCLUSTER\r\n$5\r\nNODES\r\n";
+
 // contains Range means body cursor range [begin..end] for non-array type
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RespType {
@@ -394,7 +397,7 @@ pub struct Message {
 impl Message {
     pub fn new_cluster_slots() -> Message {
         Message {
-            data: Bytes::from("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n"),
+            data: Bytes::from(BYTES_CMD_CLUSTER_SLOTS),
             rtype: RespType::Array(
                 Range::new(0, 4),
                 vec![

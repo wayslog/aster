@@ -1,6 +1,6 @@
 [package]
 name = "libaster"
-version = "1.0.3"
+version = "1.0.4"
 authors = ["wayslog <zxs867179@gmail.com>"]
 description = "A light, fast and powerful cache proxy written in Rust."
 homepage = "https://github.com/wayslog/aster"
@@ -48,6 +48,7 @@ bitflags = "1.0.4"
 aho-corasick = "0.7.6"
 rand = "0.7.1"
 clap = {version = "2.33.0", features = ["yaml"]}
+get_if_addrs = "0.5.3"
 
 prometheus = {version = "0.7.0", optional=true}
 actix-web = {version = "1.0", optional=true}

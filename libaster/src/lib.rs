@@ -32,6 +32,7 @@ pub fn run() -> Result<(), Error> {
     let yaml = load_yaml!("cli.yml");
     let matches = App::from_yaml(yaml).get_matches();
     let config = matches.value_of("config").unwrap_or("default.toml");
+    let ip = matches.value_of("ip").map(|x| x.to_string());
     info!("[aster] loading config from {}", config);
     let cfg = com::Config::load(&config)?;
     debug!("use config : {:?}", cfg);
@@ -45,11 +46,11 @@ pub fn run() -> Result<(), Error> {
 
         match cluster.cache_type {
             com::CacheType::RedisCluster => {
-                let jhs = proxy::cluster::run(cluster);
+                let jhs = proxy::cluster::run(cluster, ip.clone());
                 ths.extend(jhs);
             }
             _ => {
-                let jhs = proxy::standalone::run(cluster);
+                let jhs = proxy::standalone::run(cluster, ip.clone());
                 ths.extend(jhs);
             }
         }

@@ -8,7 +8,7 @@ use crate::metrics::*;
 #[cfg(feature = "metrics")]
 use prometheus::HistogramTimer;
 
-use crate::com::AsError;
+use crate::com::{meta, AsError};
 use crate::protocol::IntoReply;
 use crate::proxy::standalone::Request;
 use crate::utils::notify::Notify;
@@ -27,6 +27,10 @@ pub mod resp;
 pub use cmd::CmdType;
 pub use resp::{Message, MessageIter, MessageMut, RespType};
 pub use resp::{RESP_ERROR, RESP_INT, RESP_STRING};
+
+const BYTES_CMD_CLUSTER: &[u8] = b"CLUSTER";
+const BYTES_SLOTS: &[u8] = b"SLOTS";
+const BYTES_NODES: &[u8] = b"NODES";
 
 #[derive(Clone)]
 pub struct Cmd {
@@ -174,7 +178,40 @@ impl Cmd {
             self.borrow_mut().set_reply(AsError::RequestNotSupport);
             return false;
         }
+
         if self.borrow().ctype.is_ctrl() {
+            let is_cluster = self
+                .borrow()
+                .req
+                .nth(0)
+                .map(|x| x == BYTES_CMD_CLUSTER)
+                .unwrap_or(false);
+            if !is_cluster {
+                self.borrow_mut().set_reply(AsError::RequestNotSupport);
+                return false;
+            }
+            let sub_cmd = self.borrow().req.nth(1).map(|x| x.to_vec());
+            if let Some(mut sub_cmd) = sub_cmd {
+                upper(&mut sub_cmd);
+                if sub_cmd == BYTES_SLOTS {
+                    let mut data = build_cluster_slots_reply();
+                    if let Ok(Some(msg)) = MessageMut::parse(&mut data).map(|x| x.map(|y| y.into()))
+                    {
+                        let msg: Message = msg;
+                        self.borrow_mut().set_reply(msg);
+                        return false;
+                    };
+                } else if sub_cmd == BYTES_NODES {
+                    let mut data = build_cluster_nodes_reply();
+                    if let Ok(Some(msg)) = MessageMut::parse(&mut data).map(|x| x.map(|y| y.into()))
+                    {
+                        let msg: Message = msg;
+                        self.borrow_mut().set_reply(msg);
+                        return false;
+                    };
+                }
+            }
+            self.borrow_mut().set_reply(AsError::RequestNotSupport);
             return false;
         }
         // and other conditions
@@ -843,6 +880,25 @@ impl IntoReply<Message> for usize {
         let value = format!("{}", self);
         Message::plain(value.as_bytes(), RESP_INT)
     }
+}
+
+fn build_cluster_nodes_reply() -> BytesMut {
+    let port = meta::get_port();
+    let ip = meta::get_ip();
+    let reply = format!("0000000000000000000000000000000000000001 {ip}:{port} master - 0 0 1 connected 0-5460\n0000000000000000000000000000000000000002 {ip}:{port} master - 0 0 2 connected 5461-10922\n0000000000000000000000000000000000000003 {ip}:{port} master - 0 0 3 connected 10923-16383\n", ip = ip, port = port);
+    let reply = format!("${}\r\n{}\r\n", reply.len(), reply);
+    let mut data = BytesMut::new();
+    data.extend_from_slice(reply.as_bytes());
+    data
+}
+
+fn build_cluster_slots_reply() -> BytesMut {
+    let port = meta::get_port();
+    let ip = meta::get_ip();
+    let reply = format!("*3\r\n*3\r\n:0\r\n:5460\r\n*2\r\n${iplen}\r\n{ip}\r\n:{port}\r\n*3\r\n:5461\r\n:10922\r\n*2\r\n${iplen}\r\n{ip}\r\n:{port}\r\n*3\r\n:10923\r\n:16383\r\n*2\r\n${iplen}\r\n{ip}\r\n:{port}\r\n", iplen=ip.len(), ip = ip, port = port);
+    let mut data = BytesMut::new();
+    data.extend_from_slice(reply.as_bytes());
+    data
 }
 
 #[test]
