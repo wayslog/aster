@@ -100,6 +100,7 @@ impl From<num::ParseIntError> for AsError {
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
+    #[serde(default)]
     pub clusters: Vec<ClusterConfig>,
 }
 
@@ -156,6 +157,7 @@ pub struct ClusterConfig {
     pub read_timeout: Option<u64>,
     pub write_timeout: Option<u64>,
 
+    #[serde(default)]
     pub servers: Vec<String>,
 
     // cluster special

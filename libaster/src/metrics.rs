@@ -1,4 +1,7 @@
 pub mod slowlog;
+pub mod tracker;
+
+pub use tracker::Tracker;
 
 use crate::com::AsError;
 use crate::ASTER_VERSION as VERSION;
@@ -8,8 +11,7 @@ use std::time::Duration;
 
 use actix_web::{web, App, HttpResponse, HttpServer, Responder};
 use prometheus::{
-    self, Encoder, Gauge, GaugeVec, HistogramTimer, HistogramVec, IntCounter, IntCounterVec,
-    TextEncoder,
+    self, Encoder, Gauge, GaugeVec, HistogramVec, IntCounter, IntCounterVec, TextEncoder,
 };
 use sysinfo::{ProcessExt, SystemExt};
 
@@ -58,7 +60,7 @@ lazy_static! {
             "aster_total_timer",
             "set up each cluster command proxy total timer",
             &["cluster"],
-            vec![0.010, 0.040, 0.100, 0.200]
+            vec![1_000.0, 10_000.0, 40_000.0, 100_000.0, 200_000.0]
         )
         .unwrap()
     };
@@ -67,7 +69,7 @@ lazy_static! {
             "aster_remote_timer",
             "set up each cluster command proxy remote timer",
             &["cluster"],
-            vec![0.001, 0.010, 0.100]
+            vec![1_000.0, 10_000.0, 100_000.0]
         )
         .unwrap()
     };
@@ -86,16 +88,14 @@ pub(crate) fn global_error_incr() {
     ASTER_GLOBAL_ERROR.inc();
 }
 
-pub(crate) fn remote_timer(cluster: &str) -> HistogramTimer {
-    ASTER_REMOTE_TIMER
-        .with_label_values(&[cluster])
-        .start_timer()
+pub(crate) fn remote_tracker(cluster: &str) -> Tracker {
+    let hist = ASTER_REMOTE_TIMER.with_label_values(&[cluster]).clone();
+    Tracker::new(hist)
 }
 
-pub(crate) fn total_timer(cluster: &str) -> HistogramTimer {
-    ASTER_TOTAL_TIMER
-        .with_label_values(&[cluster])
-        .start_timer()
+pub(crate) fn total_tracker(cluster: &str) -> Tracker {
+    let hist = ASTER_TOTAL_TIMER.with_label_values(&[cluster]).clone();
+    Tracker::new(hist)
 }
 
 fn show_metrics() -> impl Responder {

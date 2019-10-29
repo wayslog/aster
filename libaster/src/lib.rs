@@ -36,9 +36,29 @@ pub fn run() -> Result<(), Error> {
     info!("[aster] loading config from {}", config);
     let cfg = com::Config::load(&config)?;
     debug!("use config : {:?}", cfg);
+    assert!(
+        !cfg.clusters.is_empty(),
+        "clusters is absent of config file"
+    );
 
     let mut ths = Vec::new();
     for cluster in cfg.clusters.clone().into_iter() {
+        if cluster.servers.is_empty() {
+            warn!(
+                "fail to running cluster {} in addr {} due filed `servers` is empty",
+                cluster.name, cluster.listen_addr
+            );
+            continue;
+        }
+
+        if cluster.name.is_empty() {
+            warn!(
+                "fail to running cluster {} in addr {} due filed `name` is empty",
+                cluster.name, cluster.listen_addr
+            );
+            continue;
+        }
+
         info!(
             "starting aster cluster {} in addr {}",
             cluster.name, cluster.listen_addr

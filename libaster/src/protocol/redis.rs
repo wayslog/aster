@@ -5,8 +5,6 @@ use tokio::codec::{Decoder, Encoder};
 
 #[cfg(feature = "metrics")]
 use crate::metrics::*;
-#[cfg(feature = "metrics")]
-use prometheus::HistogramTimer;
 
 use crate::com::{meta, AsError};
 use crate::protocol::IntoReply;
@@ -70,9 +68,9 @@ impl Request for Cmd {
             reply: None,
             subs: None,
             #[cfg(feature = "metrics")]
-            total_timer: None,
+            total_tracker: None,
             #[cfg(feature = "metrics")]
-            remote_timer: None,
+            remote_tracker: None,
         };
         cmd.into_cmd(notify)
     }
@@ -131,29 +129,29 @@ impl Request for Cmd {
 
     #[cfg(feature = "metrics")]
     fn mark_total(&self, cluster: &str) {
-        let timer = total_timer(cluster);
-        self.cmd.borrow_mut().total_timer.replace(timer);
+        let timer = total_tracker(cluster);
+        self.cmd.borrow_mut().total_tracker.replace(timer);
     }
 
     #[cfg(feature = "metrics")]
     fn mark_remote(&self, cluster: &str) {
-        let timer = remote_timer(cluster);
-        self.cmd.borrow_mut().remote_timer.replace(timer);
+        let timer = remote_tracker(cluster);
+        self.cmd.borrow_mut().remote_tracker.replace(timer);
     }
 }
 
 impl Cmd {
     #[cfg(feature = "metrics")]
     pub fn cluster_mark_total(&self, cluster: &str) {
-        let timer = total_timer(cluster);
-        self.cmd.borrow_mut().total_timer.replace(timer);
+        let timer = total_tracker(cluster);
+        self.cmd.borrow_mut().total_tracker.replace(timer);
     }
 
     #[cfg(feature = "metrics")]
     pub fn cluster_mark_remote(&self, cluster: &str) {
-        let timer = remote_timer(cluster);
-        if self.cmd.borrow().remote_timer.is_none() {
-            self.cmd.borrow_mut().remote_timer.replace(timer);
+        let timer = remote_tracker(cluster);
+        if self.cmd.borrow().remote_tracker.is_none() {
+            self.cmd.borrow_mut().remote_tracker.replace(timer);
         }
     }
 
@@ -240,9 +238,9 @@ pub struct Command {
     subs: Option<Vec<Cmd>>,
 
     #[cfg(feature = "metrics")]
-    total_timer: Option<HistogramTimer>,
+    total_tracker: Option<Tracker>,
     #[cfg(feature = "metrics")]
-    remote_timer: Option<HistogramTimer>,
+    remote_tracker: Option<Tracker>,
 }
 
 const BYTES_JUSTOK: &[u8] = b"+OK\r\n";
@@ -397,7 +395,7 @@ impl Command {
         self.set_done();
 
         #[cfg(feature = "metrics")]
-        let _ = self.remote_timer.take();
+        let _ = self.remote_tracker.take();
     }
 
     pub fn subs(&self) -> Option<Vec<Cmd>> {
@@ -499,9 +497,9 @@ impl Command {
                     reply: None,
                     subs: None,
                     #[cfg(feature = "metrics")]
-                    total_timer: None,
+                    total_tracker: None,
                     #[cfg(feature = "metrics")]
-                    remote_timer: None,
+                    remote_tracker: None,
                 };
 
                 subs.push(subcmd.into_cmd(notify.clone()));
@@ -514,9 +512,9 @@ impl Command {
                 req: msg,
                 reply: None,
                 #[cfg(feature = "metrics")]
-                total_timer: None,
+                total_tracker: None,
                 #[cfg(feature = "metrics")]
-                remote_timer: None,
+                remote_tracker: None,
             };
             command.into_cmd(notify)
         } else {
@@ -528,9 +526,9 @@ impl Command {
                 reply: None,
                 subs: None,
                 #[cfg(feature = "metrics")]
-                total_timer: None,
+                total_tracker: None,
                 #[cfg(feature = "metrics")]
-                remote_timer: None,
+                remote_tracker: None,
             };
             let cmd = cmd.into_cmd(notify);
             cmd.set_reply(&AsError::RequestInlineWithMultiKeys);
@@ -563,9 +561,9 @@ impl Command {
                     reply: None,
                     subs: None,
                     #[cfg(feature = "metrics")]
-                    total_timer: None,
+                    total_tracker: None,
                     #[cfg(feature = "metrics")]
-                    remote_timer: None,
+                    remote_tracker: None,
                 };
 
                 subs.push(subcmd.into_cmd(notify.clone()));
@@ -579,9 +577,9 @@ impl Command {
                 reply: None,
                 subs: Some(subs),
                 #[cfg(feature = "metrics")]
-                total_timer: None,
+                total_tracker: None,
                 #[cfg(feature = "metrics")]
-                remote_timer: None,
+                remote_tracker: None,
             };
             cmd.into_cmd(notify)
         } else {
@@ -593,9 +591,9 @@ impl Command {
                 reply: None,
                 subs: None,
                 #[cfg(feature = "metrics")]
-                total_timer: None,
+                total_tracker: None,
                 #[cfg(feature = "metrics")]
-                remote_timer: None,
+                remote_tracker: None,
             };
             let cmd = cmd.into_cmd(notify);
             cmd.set_reply(&AsError::RequestInlineWithMultiKeys);
@@ -629,9 +627,9 @@ impl From<MessageMut> for Cmd {
                 reply: None,
                 subs: None,
                 #[cfg(feature = "metrics")]
-                total_timer: None,
+                total_tracker: None,
                 #[cfg(feature = "metrics")]
-                remote_timer: None,
+                remote_tracker: None,
             };
             let cmd: Cmd = command.into_cmd(notify);
             cmd.set_reply(AsError::RequestNotSupport);
@@ -656,9 +654,9 @@ impl From<MessageMut> for Cmd {
             reply: None,
             subs: None,
             #[cfg(feature = "metrics")]
-            total_timer: None,
+            total_tracker: None,
             #[cfg(feature = "metrics")]
-            remote_timer: None,
+            remote_tracker: None,
         };
         if ctype.is_ctrl() {
             if let Some(data) = msg.nth(COMMAND_POS) {
@@ -730,9 +728,9 @@ pub fn new_read_only_cmd() -> Cmd {
         reply: None,
         subs: None,
         #[cfg(feature = "metrics")]
-        total_timer: None,
+        total_tracker: None,
         #[cfg(feature = "metrics")]
-        remote_timer: None,
+        remote_tracker: None,
     };
     cmd.into_cmd(notify)
 }
@@ -752,9 +750,9 @@ pub fn new_cluster_slots_cmd() -> Cmd {
         reply: None,
         subs: None,
         #[cfg(feature = "metrics")]
-        total_timer: None,
+        total_tracker: None,
         #[cfg(feature = "metrics")]
-        remote_timer: None,
+        remote_tracker: None,
     };
     cmd.into_cmd(notify)
 }

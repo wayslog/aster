@@ -6,8 +6,6 @@ use tokio::codec::{Decoder, Encoder};
 
 #[cfg(feature = "metrics")]
 use crate::metrics::*;
-#[cfg(feature = "metrics")]
-use prometheus::HistogramTimer;
 
 use crate::com::AsError;
 use crate::protocol::IntoReply;
@@ -56,9 +54,9 @@ impl Request for Cmd {
             reply: None,
             subs: None,
             #[cfg(feature = "metrics")]
-            total_timer: None,
+            total_tracker: None,
             #[cfg(feature = "metrics")]
-            remote_timer: None,
+            remote_tracker: None,
         };
         let mut notify = Notify::empty();
         notify.set_expect(1);
@@ -120,14 +118,14 @@ impl Request for Cmd {
 
     #[cfg(feature = "metrics")]
     fn mark_total(&self, cluster: &str) {
-        let timer = total_timer(cluster);
-        self.cmd.borrow_mut().total_timer.replace(timer);
+        let timer = total_tracker(cluster);
+        self.cmd.borrow_mut().total_tracker.replace(timer);
     }
 
     #[cfg(feature = "metrics")]
     fn mark_remote(&self, cluster: &str) {
-        let timer = remote_timer(cluster);
-        self.cmd.borrow_mut().remote_timer.replace(timer);
+        let timer = remote_tracker(cluster);
+        self.cmd.borrow_mut().remote_tracker.replace(timer);
     }
 }
 
@@ -149,9 +147,9 @@ impl Cmd {
                     reply: None,
                     subs: None,
                     #[cfg(feature = "metrics")]
-                    total_timer: None,
+                    total_tracker: None,
                     #[cfg(feature = "metrics")]
-                    remote_timer: None,
+                    remote_tracker: None,
                 };
                 Cmd {
                     notify: notify.clone(),
@@ -168,9 +166,9 @@ impl Cmd {
             reply: None,
             subs,
             #[cfg(feature = "metrics")]
-            total_timer: None,
+            total_tracker: None,
             #[cfg(feature = "metrics")]
-            remote_timer: None,
+            remote_tracker: None,
         };
         Cmd {
             cmd: Rc::new(RefCell::new(command)),
@@ -210,9 +208,9 @@ pub struct Command {
 
     subs: Option<Vec<Cmd>>,
     #[cfg(feature = "metrics")]
-    total_timer: Option<HistogramTimer>,
+    total_tracker: Option<Tracker>,
     #[cfg(feature = "metrics")]
-    remote_timer: Option<HistogramTimer>,
+    remote_tracker: Option<Tracker>,
 }
 
 impl Command {
@@ -235,7 +233,7 @@ impl Command {
     pub fn set_reply(&mut self, reply: Message) {
         self.reply = Some(reply);
         #[cfg(feature = "metrics")]
-        let _ = self.remote_timer.take();
+        let _ = self.remote_tracker.take();
     }
 
     pub fn set_done(&mut self) {
