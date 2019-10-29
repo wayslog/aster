@@ -5,7 +5,7 @@ libaster is the library for aster proxy.
 
 ## change log
 
-## 1.0.5
+## 1.1.0
 
 * change timer from seconds to microseconds.
 * never panic when `cluster.servers` is empty but warn it.
