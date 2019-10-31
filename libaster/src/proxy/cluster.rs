@@ -178,6 +178,8 @@ impl Cluster {
                     .incoming()
                     .for_each(move |sock| {
                         let cluster = cluster.clone();
+                        sock.set_nodelay(true).expect("set nodelay must ok");
+
                         #[cfg(feature = "metrics")]
                         front_conn_incr(&cluster.cc.name);
 

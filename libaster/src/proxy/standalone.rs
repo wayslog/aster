@@ -190,6 +190,7 @@ impl<T: Request + 'static> Cluster<T> {
                 let service = listen
                     .incoming()
                     .for_each(move |sock| {
+                        sock.set_nodelay(true).expect("set nodelay must ok");
                         let client = sock.peer_addr().expect("peer must have addr");
                         let client_str = format!("{}", client);
                         let codec = T::FrontCodec::default();
