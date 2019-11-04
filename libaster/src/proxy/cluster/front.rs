@@ -7,6 +7,8 @@ use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+const MAX_BATCH_SIZE: usize = 2048;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Running,
@@ -28,9 +30,6 @@ where
     sendq: VecDeque<Cmd>,
     waitq: VecDeque<Cmd>,
     state: State,
-
-    // batch_max must greater than waitq_max
-    batch_max: usize,
 }
 
 impl<I, O> Front<I, O>
@@ -44,10 +43,9 @@ where
             client,
             input,
             output,
-            sendq: VecDeque::with_capacity(2048),
-            waitq: VecDeque::with_capacity(2048),
+            sendq: VecDeque::with_capacity(MAX_BATCH_SIZE),
+            waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             state: State::Running,
-            batch_max: 1024,
         }
     }
 
@@ -91,7 +89,7 @@ where
     fn try_recv(&mut self) -> Result<usize, AsError> {
         let mut count = 0usize;
         loop {
-            if self.waitq.len() == self.batch_max {
+            if self.waitq.len() ==MAX_BATCH_SIZE{
                 return Ok(count);
             }
 

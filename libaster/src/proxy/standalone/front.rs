@@ -10,6 +10,8 @@ use crate::proxy::standalone::Request;
 #[cfg(feature = "metrics")]
 use crate::metrics::front_conn_decr;
 
+const MAX_BATCH_SIZE: usize = 2048;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Running,
@@ -33,8 +35,6 @@ where
     waitq: VecDeque<T>,
     state: State,
 
-    // batch_max must greater than waitq_max
-    batch_max: usize,
 }
 
 impl<T, I, O> Front<T, I, O>
@@ -49,10 +49,9 @@ where
             client,
             input,
             output,
-            sendq: VecDeque::with_capacity(2048),
-            waitq: VecDeque::with_capacity(2048),
+            sendq: VecDeque::with_capacity(MAX_BATCH_SIZE),
+            waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             state: State::Running,
-            batch_max: 1024,
         }
     }
     fn try_reply(&mut self) -> Result<Async<usize>, AsError> {
@@ -95,7 +94,7 @@ where
     fn try_recv(&mut self) -> Result<usize, AsError> {
         let mut count = 0usize;
         loop {
-            if self.waitq.len() == self.batch_max {
+            if self.waitq.len() == MAX_BATCH_SIZE {
                 return Ok(count);
             }
 
