@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 
 use crate::proxy::standalone::Request;
 
-const MAX_PIPELINE: usize = 128;
+const MAX_PIPELINE: usize = 512;
 
 #[derive(Eq, PartialEq)]
 enum State {

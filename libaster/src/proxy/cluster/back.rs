@@ -6,7 +6,7 @@ use futures::unsync::mpsc::SendError;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
 
-const MAX_PIPELINE: usize = 128;
+const MAX_PIPELINE: usize = 512;
 
 #[derive(Eq, PartialEq)]
 enum State {

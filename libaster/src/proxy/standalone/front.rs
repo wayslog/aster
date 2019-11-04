@@ -52,7 +52,7 @@ where
             sendq: VecDeque::with_capacity(2048),
             waitq: VecDeque::with_capacity(2048),
             state: State::Running,
-            batch_max: 2048,
+            batch_max: 1024,
         }
     }
     fn try_reply(&mut self) -> Result<Async<usize>, AsError> {

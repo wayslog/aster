@@ -14,7 +14,7 @@ edition="2018"
 
 [features]
 default = []
-
+injemalloc = []
 metrics = ["prometheus", "actix-web", "actix-rt", "sysinfo"]
 
 [[bench]]
