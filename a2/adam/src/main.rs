@@ -3,8 +3,6 @@ use failure::Error;
 use std::time::Instant;
 use redis::Client;
 
-use redis::Commands;
-
 use std::env;
 
 
@@ -12,16 +10,15 @@ fn measure_redis(addr: &str, max: usize) -> Result<(), Error> {
     let cli = Client::open(&*format!("redis://{}", addr))?;
     let mut conn = cli.get_connection()?;
     let start = Instant::now();
+    let mut pipeline = redis::pipe();
     for i in 0..max {
-        let _: () = conn.set(i, i)?;
+        pipeline.cmd("SET").arg(i).arg(i).ignore()
+            .cmd("GET").arg(i);
     }
-    let mut sum = 0;
-    for i in 0..max {
-        let ival: i32 = conn.get(i)?;
-        sum += ival;
-    }
+
+    let gets: Vec<i32> = pipeline.query(&mut conn)?;
     let dur = start.elapsed();
-    println!("measure redis {} with dur {:?} and sum is {}", addr, dur, sum);
+    println!("measure redis {} with dur {:?} and result count {}", addr, dur, gets.len());
     Ok(())
 }
 
