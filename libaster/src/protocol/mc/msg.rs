@@ -1,5 +1,4 @@
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use bitflags::bitflags;
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{Bytes, BytesMut};
 
@@ -7,6 +6,7 @@ use crate::com::AsError;
 use crate::protocol::IntoReply;
 use crate::utils::simdfind::find_lf_simd;
 use crate::utils::Range;
+use crate::protocol::CmdFlags;
 
 use std::cmp::min;
 use std::io::{Cursor, Seek, SeekFrom};
@@ -81,13 +81,6 @@ const MSG_TEXT_MAX_RESP_TYPE_SIZE: usize = 5; // VALUE
 
 const MSG_BIN_REQ: u8 = 0x80;
 const MSG_BIN_RESP: u8 = 0x81;
-
-bitflags! {
-    struct MCFlags: u8 {
-        const NOREPLY = 0b00000001;
-        const QUIET   = 0b00000010;
-    }
-}
 
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub enum TextCmd {
@@ -389,7 +382,7 @@ impl MsgType {
 pub struct Message {
     data: Bytes,
     mtype: MsgType,
-    flags: MCFlags,
+    flags: CmdFlags,
 }
 
 impl Message {
@@ -533,7 +526,7 @@ impl Message {
         Ok(Some(Message {
             data: data.split_to(line).freeze(),
             mtype: MsgType::TextReq(cmd),
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
         }))
     }
 
@@ -550,10 +543,10 @@ impl Message {
                 cmd.set_key_range(cursor, cursor + key.len());
             }
         }
-        let mut flags = MCFlags::empty();
+        let mut flags = CmdFlags::empty();
         if let Some(last) = iter.last() {
             if last == BYTES_NOREPLY {
-                flags |= MCFlags::NOREPLY;
+                flags |= CmdFlags::NOREPLY;
             }
         }
         Ok(Some(Message {
@@ -584,7 +577,7 @@ impl Message {
         Ok(Some(Message {
             data: data.split_to(line).freeze(),
             mtype: MsgType::TextReq(cmd),
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
         }))
     }
 
@@ -620,10 +613,10 @@ impl Message {
             };
             btoi::btoi::<usize>(bs)?
         };
-        let mut flags = MCFlags::empty();
+        let mut flags = CmdFlags::empty();
         if let Some(last) = iter.last() {
             if last == BYTES_NOREPLY {
-                flags |= MCFlags::NOREPLY;
+                flags |= CmdFlags::NOREPLY;
             }
         }
         let total_size = line.wrapping_add(len).wrapping_add(BYTES_CRLF.len());
@@ -642,7 +635,7 @@ impl Message {
         Ok(Some(Message {
             data: data.split_to(line).freeze(),
             mtype: MsgType::TextInline,
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
         }))
     }
 
@@ -655,7 +648,7 @@ impl Message {
             return Ok(Some(Message {
                 data: data.split_to(line).freeze(),
                 mtype: MsgType::TextRespValue,
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
             }));
         }
         let len = if let Some(len_data) = (&data[..line - 2])
@@ -682,7 +675,7 @@ impl Message {
         Ok(Some(Message {
             data: data.split_to(total_size).freeze(),
             mtype: MsgType::TextRespValue,
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
         }))
     }
 
@@ -715,9 +708,9 @@ impl Message {
             return Ok(None);
         }
         let flags = if bmtype.is_quiet() {
-            MCFlags::QUIET
+            CmdFlags::QUIET
         } else {
-            MCFlags::empty()
+            CmdFlags::empty()
         };
         Ok(Some(Message {
             data: data.split_to(tlen).freeze(),
@@ -746,7 +739,7 @@ mod test {
         let msg_opt = Message::parse(&mut data).unwrap();
         let first = Message {
             data: Bytes::from(&sv.as_bytes()[..size]),
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
             mtype: MsgType::TextRespValue,
         };
 
@@ -755,7 +748,7 @@ mod test {
 
         let second = Message {
             data: Bytes::from(&sv.as_bytes()[size..]),
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
             mtype: MsgType::TextRespValue,
         };
         let msg_opt = Message::parse(&mut data).unwrap();
@@ -775,57 +768,57 @@ mod test {
         let items = vec![
             Message {
                 data: Bytes::from("set mykey 0 0 2\r\nab\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Set(Range::new(4, 9))),
             },
             Message {
                 data: Bytes::from("replace mykey 0 0 2\r\nab\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Replace(Range::new(8, 13))),
             },
             Message {
                 data: Bytes::from("replace mykey 0 0 2 noreply\r\nab\r\n".as_bytes()),
-                flags: MCFlags::NOREPLY,
+                flags: CmdFlags::NOREPLY,
                 mtype: MsgType::TextReq(TextCmd::Replace(Range::new(8, 13))),
             },
             Message {
                 data: Bytes::from("cas mykey 0 0 2 47\r\nab\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Cas(Range::new(4, 9))),
             },
             Message {
                 data: Bytes::from("cas mykey 0 0 2 47 noreply\r\nab\r\n".as_bytes()),
-                flags: MCFlags::NOREPLY,
+                flags: CmdFlags::NOREPLY,
                 mtype: MsgType::TextReq(TextCmd::Cas(Range::new(4, 9))),
             },
             Message {
                 data: Bytes::from("get mykey\r\n".as_bytes()),
                 mtype: MsgType::TextReq(TextCmd::Get(vec![Range::new(4, 9)])),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
             },
             Message {
                 data: Bytes::from("get mykey yourkey\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Get(vec![Range::new(4, 9), Range::new(10, 17)])),
             },
             Message {
                 data: Bytes::from("gets mykey yourkey\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Gets(vec![Range::new(5, 10), Range::new(11, 18)])),
             },
             Message {
                 data: Bytes::from("incr mykey 10\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Incr(Range::new(5, 10))),
             },
             Message {
                 data: Bytes::from("decr mykey 10\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Decr(Range::new(5, 10))),
             },
             Message {
                 data: Bytes::from("gat 10 mykey yourkey\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Gat(
                     Range::new(4, 6),
                     vec![Range::new(7, 12), Range::new(13, 20)],
@@ -833,18 +826,18 @@ mod test {
             },
             Message {
                 data: Bytes::from("quit\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Quit),
             },
             Message {
                 data: Bytes::from("version\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Version),
             },
             // next is for binary cases
             Message {
                 data: Bytes::from("version\r\n".as_bytes()),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::TextReq(TextCmd::Version),
             },
         ];
@@ -886,7 +879,7 @@ mod test {
         let items = vec![
             Message {
                 data: Bytes::from(&get_req_bin_data[..]),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::Binary {
                     btype: BinType::Req,
                     bmtype: BinMsgType::GetK,
@@ -896,7 +889,7 @@ mod test {
             // next is for binary cases
             Message {
                 data: Bytes::from(&get_resp_bin_data[..]),
-                flags: MCFlags::empty(),
+                flags: CmdFlags::empty(),
                 mtype: MsgType::Binary {
                     btype: BinType::Resp,
                     bmtype: BinMsgType::GetK,
@@ -982,7 +975,7 @@ impl Message {
         Message {
             data: Bytes::from("version\r\n".as_bytes()),
             mtype: MsgType::TextReq(TextCmd::Version),
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
         }
     }
 
@@ -990,12 +983,12 @@ impl Message {
         Message {
             data: Bytes::new(),
             mtype: MsgType::TextInline,
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
         }
     }
 
     pub(crate) fn is_noreply(&self) -> bool {
-        self.flags & MCFlags::NOREPLY == MCFlags::NOREPLY
+        self.flags & CmdFlags::NOREPLY == CmdFlags::NOREPLY
     }
 
     pub fn try_save_ends(&self, target: &mut BytesMut) {
@@ -1120,7 +1113,7 @@ impl<'a> Into<Message> for &'a AsError {
         Message {
             data: Bytes::from(format!("error {}\r\n", self).as_bytes()),
             mtype: MsgType::TextInline,
-            flags: MCFlags::empty(),
+            flags: CmdFlags::empty(),
         }
     }
 }

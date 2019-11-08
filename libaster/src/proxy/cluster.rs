@@ -223,7 +223,7 @@ impl Cluster {
 
     pub fn dispatch_to(&self, addr: &str, cmd: Cmd) -> Result<AsyncSink<Cmd>, AsError> {
         if !cmd.borrow().can_cycle() {
-            cmd.set_reply(AsError::ClusterFailDispatch);
+            cmd.set_error(AsError::ClusterFailDispatch);
             return Ok(AsyncSink::Ready);
         }
         let mut conns = self.conns.borrow_mut();
@@ -252,7 +252,7 @@ impl Cluster {
             }
             let cmd = cmds.pop_front().expect("cmds pop front never be empty");
             if !cmd.borrow().can_cycle() {
-                cmd.set_reply(AsError::ClusterFailDispatch);
+                cmd.set_error(AsError::ClusterFailDispatch);
                 continue;
             }
             let slot = {

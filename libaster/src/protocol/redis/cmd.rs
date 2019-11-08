@@ -2,6 +2,8 @@ use crate::protocol::redis::resp::Message;
 
 use hashbrown::HashMap;
 
+use crate::protocol::CmdType;
+
 lazy_static! {
     pub static ref CMD_TYPE: HashMap<&'static [u8], CmdType> = {
         let mut hmap = HashMap::new();
@@ -142,7 +144,7 @@ lazy_static! {
         hmap.insert(&b"INFO"[..], CmdType::Ctrl);
         hmap.insert(&b"PROXY"[..], CmdType::NotSupport);
         hmap.insert(&b"SLOWLOG"[..], CmdType::NotSupport);
-        hmap.insert(&b"QUIT"[..], CmdType::NotSupport);
+        hmap.insert(&b"QUIT"[..], CmdType::Ctrl);
         hmap.insert(&b"SELECT"[..], CmdType::NotSupport);
         hmap.insert(&b"TIME"[..], CmdType::NotSupport);
         hmap.insert(&b"CONFIG"[..], CmdType::NotSupport);
@@ -151,21 +153,6 @@ lazy_static! {
 
         hmap
     };
-}
-
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum CmdType {
-    Read,
-    Write,
-    Ctrl,
-    NotSupport,
-    IgnoreReply,
-
-    MSet,   // Write
-    MGet,   // Read
-    Exists, // Read
-    Eval,   // Write
-    Del,    // Write
 }
 
 impl CmdType {

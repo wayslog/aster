@@ -30,7 +30,7 @@ impl Future for RedirectHandler {
         loop {
             if let Some(Redirection { target, cmd }) = self.store.take() {
                 if !cmd.borrow().can_cycle() {
-                    cmd.borrow_mut().set_reply(AsError::RequestReachMaxCycle);
+                    cmd.set_error(AsError::RequestReachMaxCycle);
                     continue;
                 }
 

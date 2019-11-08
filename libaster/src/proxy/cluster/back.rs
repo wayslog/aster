@@ -155,7 +155,7 @@ where
                     Err(se) => {
                         let red: Redirection = se.into_inner();
                         error!("fail to redirect cmd {:?}", red.target);
-                        red.cmd.set_reply(AsError::RedirectFailError);
+                        red.cmd.set_error(AsError::RedirectFailError);
                         return Err(AsError::RedirectFailError);
                     }
                 }
@@ -225,10 +225,10 @@ where
 
     fn on_closed(&mut self) {
         if let Some(cmd) = self.store.take() {
-            cmd.set_reply(AsError::BackendClosedError(self.addr.clone()));
+            cmd.set_error(AsError::BackendClosedError(self.addr.clone()));
         }
         for cmd in self.cmdq.drain(0..) {
-            cmd.set_reply(AsError::BackendClosedError(self.addr.clone()));
+            cmd.set_error(AsError::BackendClosedError(self.addr.clone()));
         }
     }
 
@@ -342,7 +342,7 @@ where
         loop {
             match self.input.poll() {
                 Ok(Async::Ready(Some(cmd))) => {
-                    cmd.set_reply(&AsError::BackendClosedError(self.addr.clone()));
+                    cmd.set_error(&AsError::BackendClosedError(self.addr.clone()));
                 }
                 Ok(Async::Ready(None)) => {
                     return Ok(Async::Ready(()));

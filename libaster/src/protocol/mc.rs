@@ -1,4 +1,3 @@
-use bitflags::bitflags;
 use bytes::BytesMut;
 use futures::task::Task;
 
@@ -8,7 +7,7 @@ use tokio::codec::{Decoder, Encoder};
 use crate::metrics::*;
 
 use crate::com::AsError;
-use crate::protocol::IntoReply;
+use crate::protocol::{IntoReply, CmdType, CmdFlags};
 use crate::proxy::standalone::Request;
 use crate::utils::notify::Notify;
 use crate::utils::trim_hash_tag;
@@ -47,7 +46,7 @@ impl Request for Cmd {
     fn ping_request() -> Self {
         let cmd = Command {
             ctype: CmdType::Read,
-            flags: Flags::empty(),
+            flags: CmdFlags::empty(),
             cycle: 0,
 
             req: Message::version_request(),
@@ -106,14 +105,11 @@ impl Request for Cmd {
     fn set_reply<R: IntoReply<Message>>(&self, t: R) {
         let reply = t.into_reply();
         self.cmd.borrow_mut().set_reply(reply);
-        self.cmd.borrow_mut().set_done();
     }
 
     fn set_error(&self, t: &AsError) {
         let reply: Message = t.into_reply();
-        self.cmd.borrow_mut().set_reply(reply);
-        self.cmd.borrow_mut().set_done();
-        self.cmd.borrow_mut().set_error();
+        self.cmd.borrow_mut().set_error(reply);
     }
 
     #[cfg(feature = "metrics")]
@@ -131,7 +127,7 @@ impl Request for Cmd {
 
 impl Cmd {
     fn from_msg(msg: Message, mut notify: Notify) -> Cmd {
-        let flags = Flags::empty();
+        let flags = CmdFlags::empty();
         let ctype = CmdType::Read;
         let sub_msgs = msg.mk_subs();
         notify.set_expect((1 + sub_msgs.len()) as u16);
@@ -160,7 +156,7 @@ impl Cmd {
         let subs = if subs.is_empty() { None } else { Some(subs) };
         let command = Command {
             ctype: CmdType::Read,
-            flags: Flags::empty(),
+            flags: CmdFlags::empty(),
             cycle: 0,
             req: msg,
             reply: None,
@@ -183,24 +179,10 @@ impl From<Message> for Cmd {
     }
 }
 
-bitflags! {
-    pub struct Flags: u8 {
-        const DONE  = 0b00000001;
-        const ERROR = 0b00000010;
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CmdType {
-    Read,
-    Write,
-    Ctrl,
-    NotSupport,
-}
-
 #[allow(unused)]
 pub struct Command {
     ctype: CmdType,
-    flags: Flags,
+    flags: CmdFlags,
     cycle: u8,
 
     req: Message,
@@ -215,11 +197,11 @@ pub struct Command {
 
 impl Command {
     fn is_done(&self) -> bool {
-        self.flags & Flags::DONE == Flags::DONE
+        self.flags & CmdFlags::DONE == CmdFlags::DONE
     }
 
     fn is_error(&self) -> bool {
-        self.flags & Flags::ERROR == Flags::ERROR
+        self.flags & CmdFlags::ERROR == CmdFlags::ERROR
     }
 
     pub fn can_cycle(&self) -> bool {
@@ -232,17 +214,20 @@ impl Command {
 
     pub fn set_reply(&mut self, reply: Message) {
         self.reply = Some(reply);
+        self.set_done();
         #[cfg(feature = "metrics")]
         let _ = self.remote_tracker.take();
     }
 
-    pub fn set_done(&mut self) {
-        self.flags |= Flags::DONE;
+    pub fn set_error(&mut self, reply: Message) {
+        self.set_reply(reply);
+        self.flags |= CmdFlags::ERROR;
     }
 
-    pub fn set_error(&mut self) {
-        self.flags |= Flags::ERROR;
+    fn set_done(&mut self) {
+        self.flags |= CmdFlags::DONE;
     }
+
 }
 
 #[derive(Default)]

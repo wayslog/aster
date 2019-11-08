@@ -496,8 +496,9 @@ impl Message {
             RespType::Inline(fields) => {
                 let first_begin = fields.first().map(|x| x.begin()).unwrap_or(0);
                 let last_end = fields.last().map(|x| x.end()).unwrap_or(0);
-                debug_assert!(first_begin != last_end);
-                buf.extend_from_slice(&self.data.as_ref()[first_begin..last_end]);
+                if first_begin != last_end {
+                    buf.extend_from_slice(&self.data.as_ref()[first_begin..last_end]);
+                }
                 last_end - first_begin
             }
         }

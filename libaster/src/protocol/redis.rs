@@ -1,4 +1,3 @@
-use bitflags::bitflags;
 use bytes::{Bytes, BytesMut};
 use futures::task::Task;
 use tokio::codec::{Decoder, Encoder};
@@ -8,6 +7,7 @@ use crate::metrics::*;
 
 use crate::com::{meta, AsError};
 use crate::protocol::IntoReply;
+use crate::protocol::{CmdFlags, CmdType};
 use crate::proxy::standalone::Request;
 use crate::utils::notify::Notify;
 use crate::utils::{myitoa, trim_hash_tag, upper};
@@ -22,11 +22,11 @@ pub const SLOTS_COUNT: usize = 16384;
 pub mod cmd;
 pub mod resp;
 
-pub use cmd::CmdType;
 pub use resp::{Message, MessageIter, MessageMut, RespType};
 pub use resp::{RESP_ERROR, RESP_INT, RESP_STRING};
 
 const BYTES_CMD_CLUSTER: &[u8] = b"CLUSTER";
+const BYTES_CMD_QUIT: &[u8] = b"QUIT";
 const BYTES_SLOTS: &[u8] = b"SLOTS";
 const BYTES_NODES: &[u8] = b"NODES";
 
@@ -55,7 +55,7 @@ impl Request for Cmd {
 
     fn ping_request() -> Self {
         let msg = Message::new_ping_request();
-        let flags = CFlags::empty();
+        let flags = CmdFlags::empty();
         let mut notify = Notify::empty();
         notify.set_expect(1);
         let ctype = CmdType::get_cmd_type(&msg);
@@ -114,15 +114,14 @@ impl Request for Cmd {
         let reply = t.into_reply();
         let mut cmd = self.cmd.borrow_mut();
         cmd.set_reply(reply);
-        cmd.set_done();
     }
 
     fn set_error(&self, t: &AsError) {
         let reply: Message = t.into_reply();
         let mut cmd = self.cmd.borrow_mut();
         cmd.set_reply(reply);
-        cmd.set_done();
         cmd.set_error();
+
         #[cfg(feature = "metrics")]
         global_error_incr();
     }
@@ -167,6 +166,11 @@ impl Cmd {
         self.borrow_mut().set_reply(reply);
     }
 
+    pub fn set_error<T: IntoReply<Message>>(&self, reply: T) {
+        self.borrow_mut().set_reply(reply);
+        self.borrow_mut().set_error();
+    }
+
     pub fn reregister(&mut self, task: Task) {
         self.notify.set_task(task);
     }
@@ -178,35 +182,45 @@ impl Cmd {
         }
 
         if self.borrow().ctype.is_ctrl() {
+            let is_quit = self.borrow().req.nth(0).map(|x| {
+                info!("test data {:?}", String::from_utf8_lossy(x));
+                x == BYTES_CMD_QUIT
+            }).unwrap_or(false);
+            if is_quit {
+                self.borrow_mut().set_reply(Message::inline_raw(Bytes::new()));
+                return false;    
+            }
+
+            // check if is cluster
             let is_cluster = self
                 .borrow()
                 .req
                 .nth(0)
                 .map(|x| x == BYTES_CMD_CLUSTER)
                 .unwrap_or(false);
-            if !is_cluster {
-                self.borrow_mut().set_reply(AsError::RequestNotSupport);
-                return false;
-            }
-            let sub_cmd = self.borrow().req.nth(1).map(|x| x.to_vec());
-            if let Some(mut sub_cmd) = sub_cmd {
-                upper(&mut sub_cmd);
-                if sub_cmd == BYTES_SLOTS {
-                    let mut data = build_cluster_slots_reply();
-                    if let Ok(Some(msg)) = MessageMut::parse(&mut data).map(|x| x.map(|y| y.into()))
-                    {
-                        let msg: Message = msg;
-                        self.borrow_mut().set_reply(msg);
-                        return false;
-                    };
-                } else if sub_cmd == BYTES_NODES {
-                    let mut data = build_cluster_nodes_reply();
-                    if let Ok(Some(msg)) = MessageMut::parse(&mut data).map(|x| x.map(|y| y.into()))
-                    {
-                        let msg: Message = msg;
-                        self.borrow_mut().set_reply(msg);
-                        return false;
-                    };
+            if is_cluster {
+                let sub_cmd = self.borrow().req.nth(1).map(|x| x.to_vec());
+                if let Some(mut sub_cmd) = sub_cmd {
+                    upper(&mut sub_cmd);
+                    if sub_cmd == BYTES_SLOTS {
+                        let mut data = build_cluster_slots_reply();
+                        if let Ok(Some(msg)) =
+                            MessageMut::parse(&mut data).map(|x| x.map(|y| y.into()))
+                        {
+                            let msg: Message = msg;
+                            self.borrow_mut().set_reply(msg);
+                            return false;
+                        };
+                    } else if sub_cmd == BYTES_NODES {
+                        let mut data = build_cluster_nodes_reply();
+                        if let Ok(Some(msg)) =
+                            MessageMut::parse(&mut data).map(|x| x.map(|y| y.into()))
+                        {
+                            let msg: Message = msg;
+                            self.borrow_mut().set_reply(msg);
+                            return false;
+                        };
+                    }
                 }
             }
             self.borrow_mut().set_reply(AsError::RequestNotSupport);
@@ -217,17 +231,8 @@ impl Cmd {
     }
 }
 
-bitflags! {
-    struct CFlags: u8 {
-        const DONE     = 0b00000001;
-        const ASK      = 0b00000010;
-        const MOVED    = 0b00000100;
-        const ERROR    = 0b10000000;
-    }
-}
-
 pub struct Command {
-    flags: CFlags,
+    flags: CmdFlags,
     ctype: CmdType,
     // Command redirect count
     cycle: u8,
@@ -390,14 +395,6 @@ impl Command {
         KEY_RAW_POS
     }
 
-    pub fn set_reply<T: IntoReply<Message>>(&mut self, reply: T) {
-        self.reply = Some(reply.into_reply());
-        self.set_done();
-
-        #[cfg(feature = "metrics")]
-        let _ = self.remote_tracker.take();
-    }
-
     pub fn subs(&self) -> Option<Vec<Cmd>> {
         self.subs.as_ref().cloned()
     }
@@ -410,15 +407,23 @@ impl Command {
                 .map(|x| x.iter().all(|y| y.borrow().is_done()))
                 .unwrap_or(false);
         }
-        self.flags & CFlags::DONE == CFlags::DONE
+        self.flags & CmdFlags::DONE == CmdFlags::DONE
     }
 
-    pub fn set_done(&mut self) {
-        self.flags |= CFlags::DONE;
+    fn set_reply<T: IntoReply<Message>>(&mut self, reply: T) {
+        self.reply = Some(reply.into_reply());
+        self.set_done();
+
+        #[cfg(feature = "metrics")]
+        let _ = self.remote_tracker.take();
     }
 
-    pub fn set_error(&mut self) {
-        self.flags |= CFlags::ERROR;
+    fn set_done(&mut self) {
+        self.flags |= CmdFlags::DONE;
+    }
+
+    fn set_error(&mut self) {
+        self.flags |= CmdFlags::ERROR;
     }
 
     pub fn cycle(&self) -> u8 {
@@ -434,31 +439,31 @@ impl Command {
     }
 
     pub fn is_ask(&self) -> bool {
-        self.flags & CFlags::ASK == CFlags::ASK
+        self.flags & CmdFlags::ASK == CmdFlags::ASK
     }
 
     pub fn unset_ask(&mut self) {
-        self.flags &= !CFlags::ASK;
+        self.flags &= !CmdFlags::ASK;
     }
 
     pub fn set_ask(&mut self) {
-        self.flags |= CFlags::ASK;
+        self.flags |= CmdFlags::ASK;
     }
 
     pub fn is_moved(&mut self) -> bool {
-        self.flags & CFlags::MOVED == CFlags::MOVED
+        self.flags & CmdFlags::MOVED == CmdFlags::MOVED
     }
 
     pub fn set_moved(&mut self) {
-        self.flags |= CFlags::MOVED;
+        self.flags |= CmdFlags::MOVED;
     }
 
     pub fn unset_moved(&mut self) {
-        self.flags &= !CFlags::MOVED;
+        self.flags &= !CmdFlags::MOVED;
     }
 
     pub fn is_error(&self) -> bool {
-        self.flags & CFlags::ERROR == CFlags::ERROR
+        self.flags & CmdFlags::ERROR == CmdFlags::ERROR
     }
 
     pub fn is_read(&self) -> bool {
@@ -467,7 +472,7 @@ impl Command {
 }
 
 impl Command {
-    fn mk_mset(flags: CFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Cmd {
+    fn mk_mset(flags: CmdFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Cmd {
         let Message { rtype, data } = msg.clone();
         if let RespType::Array(head, array) = rtype {
             let array_len = array.len();
@@ -536,7 +541,7 @@ impl Command {
         }
     }
 
-    fn mk_subs(flags: CFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Cmd {
+    fn mk_subs(flags: CmdFlags, ctype: CmdType, mut notify: Notify, msg: Message) -> Cmd {
         let Message { rtype, data } = msg.clone();
         if let RespType::Array(head, array) = rtype {
             let array_len = array.len();
@@ -618,7 +623,7 @@ impl From<MessageMut> for Cmd {
         } else {
             let msg = msg_mut.into();
             let ctype = CmdType::NotSupport;
-            let flags = CFlags::empty();
+            let flags = CmdFlags::empty();
             let command = Command {
                 flags,
                 ctype,
@@ -638,7 +643,7 @@ impl From<MessageMut> for Cmd {
 
         let msg = msg_mut.into();
         let ctype = CmdType::get_cmd_type(&msg);
-        let flags = CFlags::empty();
+        let flags = CmdFlags::empty();
 
         if ctype.is_exists() || ctype.is_del() || ctype.is_mget() {
             return Command::mk_subs(flags, ctype, notify, msg);
@@ -715,7 +720,7 @@ impl Encoder for RedisNodeCodec {
 
 pub fn new_read_only_cmd() -> Cmd {
     let msg = Message::new_read_only();
-    let flags = CFlags::empty();
+    let flags = CmdFlags::empty();
     let mut notify = Notify::empty();
     notify.set_expect(1);
     let ctype = CmdType::get_cmd_type(&msg);
@@ -737,7 +742,7 @@ pub fn new_read_only_cmd() -> Cmd {
 
 pub fn new_cluster_slots_cmd() -> Cmd {
     let msg = Message::new_cluster_slots();
-    let flags = CFlags::empty();
+    let flags = CmdFlags::empty();
     let mut notify = Notify::empty();
     notify.set_expect(1);
     let ctype = CmdType::get_cmd_type(&msg);
@@ -883,7 +888,7 @@ impl IntoReply<Message> for usize {
 fn build_cluster_nodes_reply() -> BytesMut {
     let port = meta::get_port();
     let ip = meta::get_ip();
-    let reply = format!("0000000000000000000000000000000000000001 {ip}:{port} master - 0 0 1 connected 0-5460\n0000000000000000000000000000000000000002 {ip}:{port} master - 0 0 2 connected 5461-10922\n0000000000000000000000000000000000000003 {ip}:{port} master - 0 0 3 connected 10923-16383\n", ip = ip, port = port);
+    let reply = format!("0000000000000000000000000000000000000001 {ip}:{port} master,myself - 0 0 1 connected 0-5460\n0000000000000000000000000000000000000002 {ip}:{port} master - 0 0 2 connected 5461-10922\n0000000000000000000000000000000000000003 {ip}:{port} master - 0 0 3 connected 10923-16383\n", ip = ip, port = port);
     let reply = format!("${}\r\n{}\r\n", reply.len(), reply);
     let mut data = BytesMut::new();
     data.extend_from_slice(reply.as_bytes());
@@ -893,7 +898,7 @@ fn build_cluster_nodes_reply() -> BytesMut {
 fn build_cluster_slots_reply() -> BytesMut {
     let port = meta::get_port();
     let ip = meta::get_ip();
-    let reply = format!("*3\r\n*3\r\n:0\r\n:5460\r\n*2\r\n${iplen}\r\n{ip}\r\n:{port}\r\n*3\r\n:5461\r\n:10922\r\n*2\r\n${iplen}\r\n{ip}\r\n:{port}\r\n*3\r\n:10923\r\n:16383\r\n*2\r\n${iplen}\r\n{ip}\r\n:{port}\r\n", iplen=ip.len(), ip = ip, port = port);
+    let reply = format!("*3\r\n*3\r\n:0\r\n:5460\r\n*3\r\n${iplen}\r\n{ip}\r\n:{port}\r\n$40\r\n0000000000000000000000000000000000000001\r\n*3\r\n:5461\r\n:10922\r\n*3\r\n${iplen}\r\n{ip}\r\n:{port}\r\n$40\r\n0000000000000000000000000000000000000002\r\n*3\r\n:10923\r\n:16383\r\n*3\r\n${iplen}\r\n{ip}\r\n:{port}\r\n$40\r\n0000000000000000000000000000000000000003\r\n", iplen=ip.len(), ip = ip, port = port);
     let mut data = BytesMut::new();
     data.extend_from_slice(reply.as_bytes());
     data
