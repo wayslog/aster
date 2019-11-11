@@ -202,7 +202,7 @@ impl<T: Request + 'static> Cluster<T> {
                         Ok(())
                     })
                     .map_err(|err| {
-                        error!("fail to accept incomming sock due {}", err);
+                        error!("fail to accept incoming sock due {}", err);
                     });
                 current_thread::spawn(service);
                 Ok(rc_cluster)

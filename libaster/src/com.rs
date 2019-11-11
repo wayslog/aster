@@ -25,7 +25,7 @@ pub enum AsError {
     #[fail(display = "message is ok but request bad or not allowed")]
     BadReqeust,
 
-    #[fail(display = "request not spport")]
+    #[fail(display = "request not supported")]
     RequestNotSupport,
 
     #[fail(display = "inline request don't support multi keys")]
@@ -52,7 +52,7 @@ pub enum AsError {
     #[fail(display = "cluster fail to dispatch command")]
     ClusterFailDispatch,
 
-    #[fail(display = "unexcept io error {}", _0)]
+    #[fail(display = "unexpected io error {}", _0)]
     IoError(tokio::io::Error),
 
     #[fail(display = "remote connection has active close connection {}", _0)]
@@ -70,7 +70,7 @@ pub enum AsError {
     #[fail(display = "fail to load system info")]
     SystemError,
 
-    #[fail(display = "there is nothing happend")]
+    #[fail(display = "there is nothing happening")]
     None,
 }
 
