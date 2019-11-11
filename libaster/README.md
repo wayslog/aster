@@ -3,7 +3,12 @@ libaster
 
 libaster is the library for aster proxy.
 
-## change log
+# change log
+
+## 1.1.2
+
+* set TCP_NODELAY flags for reply conn
+* fixed exists and del bugs
 
 ## 1.1.0
 
