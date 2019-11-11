@@ -304,8 +304,14 @@ impl Command {
             if let Some(subs) = self.subs.as_ref() {
                 let begin = buf.len();
                 buf.extend_from_slice(BYTES_INTEGER);
-                let len = subs.len();
-                myitoa(len, buf);
+                let mut total = 0usize;
+                for sub in subs {
+                    if let Some(Some(data)) = sub.borrow().reply.as_ref().map(|x| x.nth(0)) {
+                        let ecount = btoi::btoi::<usize>(data).unwrap_or(0);
+                        total += ecount;
+                    }
+                }
+                myitoa(total, buf);
                 buf.extend_from_slice(BYTES_CRLF);
                 return Ok(buf.len() - begin);
             } else {
@@ -340,7 +346,7 @@ impl Command {
             buf.extend_from_slice(BYTES_ASK);
         }
 
-        if self.ctype.is_exists() && self.ctype.is_del() {
+        if self.ctype.is_exists() || self.ctype.is_del() {
             buf.extend_from_slice(BYTES_LEN2_HEAD);
             if let RespType::Array(_, arrs) = &self.req.rtype {
                 for rtype in arrs {
