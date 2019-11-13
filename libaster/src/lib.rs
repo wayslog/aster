@@ -80,7 +80,7 @@ pub fn run() -> Result<(), Error> {
     {
         let port_str = matches.value_of("metrics").unwrap_or("2110");
         let port = port_str.parse::<usize>().unwrap_or(2110);
-        spwan_metrics(port);
+        spawn_metrics(port);
     }
 
     for th in ths {
@@ -92,7 +92,7 @@ pub fn run() -> Result<(), Error> {
 #[cfg(feature = "metrics")]
 use std::thread;
 #[cfg(feature = "metrics")]
-fn spwan_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
+fn spawn_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
     vec![
         thread::Builder::new()
             .name("aster-metrics-thread".to_string())
