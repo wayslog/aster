@@ -183,7 +183,6 @@ impl Cmd {
 
         if self.borrow().ctype.is_ctrl() {
             let is_quit = self.borrow().req.nth(0).map(|x| {
-                info!("test data {:?}", String::from_utf8_lossy(x));
                 x == BYTES_CMD_QUIT
             }).unwrap_or(false);
             if is_quit {
