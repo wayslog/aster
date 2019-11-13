@@ -1,5 +1,4 @@
-use bytes::{BufMut, BytesMut};
-use itoa;
+use bytes::BytesMut;
 
 pub mod crc;
 pub mod notify;
@@ -35,38 +34,8 @@ fn test_itoa_ok() {
 }
 
 pub(crate) fn myitoa(input: usize, buf: &mut BytesMut) {
-    loop {
-        if !myitoa_ok(input, buf) {
-            let alen = ascii_len(input);
-            if buf.remaining_mut() < alen {
-                buf.reserve(alen); // alloc more size
-            }
-        } else {
-            break;
-        }
-    }
-}
-
-#[inline(always)]
-fn myitoa_ok(input: usize, buf: &mut BytesMut) -> bool {
-    let mut writer = buf.writer();
-    itoa::write(&mut writer, input).is_ok()
-}
-
-fn ascii_len(mut input: usize) -> usize {
-    let mut len = 0;
-    while input != 0 {
-        if input < 10 {
-            return len + 1;
-        } else if input < 100 {
-            return len + 2;
-        } else if input < 1000 {
-            return len + 3;
-        }
-        input %= 1000;
-        len += 3;
-    }
-    len
+    let value = format!("{}", input);
+    buf.extend_from_slice(value.as_bytes());
 }
 
 #[inline]
