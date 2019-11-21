@@ -60,6 +60,11 @@ where
                 self.waitq.push_front(cmd);
                 break;
             }
+            
+            if cmd.borrow().is_error() {
+                self.cluster.trigger_fetch();
+            }
+
             match self.output.start_send(cmd) {
                 Ok(AsyncSink::Ready) => {
                     count += 1;

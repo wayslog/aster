@@ -55,7 +55,7 @@ pub enum AsError {
     #[fail(display = "unexpected io error {}", _0)]
     IoError(tokio::io::Error),
 
-    #[fail(display = "remote connection has active close connection {}", _0)]
+    #[fail(display = "remote connection has been active closed: {}", _0)]
     BackendClosedError(String),
 
     #[fail(display = "fail to redirect command")]

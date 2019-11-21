@@ -158,14 +158,14 @@ impl Cluster {
                 Ok(rc_cluster)
             })
             .and_then(|rc_cluster| {
-                let interval_millis = rc_cluster.cc.fetch_interval.unwrap_or(60 * 30 * 1000);
+                let interval_millis = rc_cluster.cc.fetch_interval.unwrap_or(15 * 60 * 1000);
                 let interval =
                     Interval::new(Instant::now(), Duration::from_millis(interval_millis));
                 let fetch =
                     fetcher::Fetch::new(rc_cluster.clone(), interval.map_err(|_err| AsError::None));
                 current_thread::spawn(fetch);
 
-                let (tx, rx) = channel(1024);
+                let (tx, rx) = channel(2);
                 let _ = rc_cluster.fetch.borrow_mut().replace(tx);
                 let trigger = rx.map_err(|_| AsError::None);
                 let fetch = fetcher::Fetch::new(rc_cluster.clone(), trigger);
@@ -219,6 +219,19 @@ impl Cluster {
             .get_master(slot)
             .map(|x| x.to_string())
             .expect("master addr never be empty")
+    }
+
+    pub fn trigger_fetch(&self) {
+        if let Some(mut fetch) = self.fetch.borrow().clone() {
+            let now = Instant::now();
+            if let Ok(_) = fetch.start_send(now) {
+                if let Ok(_) = fetch.poll_complete() {
+                    info!("succeed trigger fetch process");
+                    return;
+                }
+            }
+        }
+        warn!("fail to trigger fetch process");
     }
 
     pub fn dispatch_to(&self, addr: &str, cmd: Cmd) -> Result<AsyncSink<Cmd>, AsError> {
