@@ -5,6 +5,15 @@ libaster is the library for aster proxy.
 
 # change log
 
+## 1.1.4
+
+* add active triggers of cluster fetcher
+
+## 1.1.3
+
+* fixed itoa bugs
+* fixed exists and del bugs
+
 ## 1.1.2
 
 * set TCP_NODELAY flags for reply conn
