@@ -34,7 +34,7 @@ fetch_interval = 3600000
 read_from_slave = false
 
 ping_fail_limit = 10
-ping_interval = 300
+ping_interval = 3000
 
 read_timeout = 1000
 write_timeout = 1000
