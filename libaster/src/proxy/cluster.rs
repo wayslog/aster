@@ -29,6 +29,8 @@ use tokio::runtime::current_thread;
 use tokio::timer::Interval;
 use tokio_codec::Decoder;
 
+use rand::prelude::*;
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -221,6 +223,14 @@ impl Cluster {
             .expect("master addr never be empty")
     }
 
+    fn get_random_master(&self, exclusive: &str) -> String {
+        self.slots
+            .borrow_mut()
+            .get_random_master(exclusive)
+            .map(|x| x.to_string())
+            .expect("master addr never be empty")
+    }
+
     pub fn trigger_fetch(&self) {
         if let Some(mut fetch) = self.fetch.borrow().clone() {
             let now = Instant::now();
@@ -265,7 +275,7 @@ impl Cluster {
             }
             let cmd = cmds.pop_front().expect("cmds pop front never be empty");
             if !cmd.borrow().can_cycle() {
-                cmd.set_error(AsError::ClusterFailDispatch);
+                cmd.set_error(AsError::RequestReachMaxCycle);
                 continue;
             }
             let slot = {
@@ -273,7 +283,18 @@ impl Cluster {
                 let signed = cmd.borrow().key_hash(hash_tag, crc16) as usize;
                 signed % SLOTS_COUNT
             };
-            let addr = self.get_addr(slot, cmd.borrow().is_read());
+
+            let addr = if !cmd.is_retry() {
+                self.get_addr(slot, cmd.borrow().is_read())
+            } else {
+                let cmd_borrow = cmd.borrow();
+                let exclusive = cmd_borrow
+                    .reply
+                    .as_ref()
+                    .map(|x| String::from_utf8_lossy(&x.data[1..x.data.len() - 2]).to_string())
+                    .unwrap_or("".to_string());
+                self.get_random_master(&exclusive)
+            };
             let mut conns = self.conns.borrow_mut();
 
             if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {
@@ -372,6 +393,7 @@ impl<S> Conn<S> {
 struct Slots {
     masters: Vec<String>,
     replicas: Vec<Replica>,
+    rng: ThreadRng,
 
     all_masters: HashSet<String>,
     all_replicas: HashSet<String>,
@@ -409,6 +431,21 @@ impl Slots {
         self.all_masters.insert(addr);
     }
 
+    fn get_random_master(&mut self, exclusive: &str) -> Option<&str> {
+        loop {
+            let cursor: usize = self.rng.gen_range(0, self.masters.len());
+            if self
+                .masters
+                .get(cursor)
+                .map(|x| x == exclusive)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            return self.masters.get(cursor).map(|x| x.as_str());
+        }
+    }
+
     fn get_master(&self, slot: usize) -> Option<&str> {
         self.masters.get(slot).map(|x| x.as_str())
     }
@@ -437,6 +474,7 @@ impl Default for Slots {
         let mut replicas = Vec::with_capacity(SLOTS_COUNT);
         replicas.resize(SLOTS_COUNT, Replica::default());
         Slots {
+            rng: thread_rng(),
             masters,
             replicas,
             all_masters: HashSet::new(),

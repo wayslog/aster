@@ -3,10 +3,10 @@ use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{Bytes, BytesMut};
 
 use crate::com::AsError;
+use crate::protocol::CmdFlags;
 use crate::protocol::IntoReply;
 use crate::utils::simdfind::find_lf_simd;
 use crate::utils::Range;
-use crate::protocol::CmdFlags;
 
 use std::cmp::min;
 use std::io::{Cursor, Seek, SeekFrom};

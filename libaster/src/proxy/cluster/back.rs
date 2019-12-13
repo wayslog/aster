@@ -47,6 +47,8 @@ where
     store: Option<Cmd>,
     cmdq: VecDeque<Cmd>,
 
+    inner_err: AsError,
+
     input: I,
     output: O,
     recv: R,
@@ -68,6 +70,9 @@ where
         recv: R,
         moved: M,
     ) -> Back<I, O, R, M> {
+        let inner_err = AsError::RetryRandom {
+            exclusive: addr.clone(),
+        };
         Back {
             cluster,
             addr,
@@ -75,6 +80,7 @@ where
             output,
             recv,
             moved,
+            inner_err,
 
             state: State::Running,
             ask_readed: false,
@@ -225,10 +231,12 @@ where
 
     fn on_closed(&mut self) {
         if let Some(cmd) = self.store.take() {
-            cmd.set_error(AsError::BackendClosedError(self.addr.clone()));
+            cmd.set_error(&self.inner_err);
+            cmd.set_retry();
         }
         for cmd in self.cmdq.drain(0..) {
-            cmd.set_error(AsError::BackendClosedError(self.addr.clone()));
+            cmd.set_error(&self.inner_err);
+            cmd.set_retry();
         }
     }
 
@@ -318,7 +326,7 @@ pub struct Blackhole<S>
 where
     S: Stream<Item = Cmd>,
 {
-    addr: String,
+    inner_err: AsError,
     input: S,
 }
 
@@ -327,7 +335,10 @@ where
     S: Stream<Item = Cmd>,
 {
     pub fn new(addr: String, input: S) -> Blackhole<S> {
-        Blackhole { addr, input }
+        let inner_err = AsError::RetryRandom {
+            exclusive: addr.clone(),
+        };
+        Blackhole { input, inner_err }
     }
 }
 
@@ -342,7 +353,8 @@ where
         loop {
             match self.input.poll() {
                 Ok(Async::Ready(Some(cmd))) => {
-                    cmd.set_error(&AsError::BackendClosedError(self.addr.clone()));
+                    cmd.set_error(&self.inner_err);
+                    cmd.set_retry();
                 }
                 Ok(Async::Ready(None)) => {
                     return Ok(Async::Ready(()));

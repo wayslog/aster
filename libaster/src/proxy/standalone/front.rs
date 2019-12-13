@@ -34,7 +34,6 @@ where
     sendq: VecDeque<T>,
     waitq: VecDeque<T>,
     state: State,
-
 }
 
 impl<T, I, O> Front<T, I, O>

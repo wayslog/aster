@@ -7,7 +7,7 @@ use tokio::codec::{Decoder, Encoder};
 use crate::metrics::*;
 
 use crate::com::AsError;
-use crate::protocol::{IntoReply, CmdType, CmdFlags};
+use crate::protocol::{CmdFlags, CmdType, IntoReply};
 use crate::proxy::standalone::Request;
 use crate::utils::notify::Notify;
 use crate::utils::trim_hash_tag;
@@ -227,7 +227,6 @@ impl Command {
     fn set_done(&mut self) {
         self.flags |= CmdFlags::DONE;
     }
-
 }
 
 #[derive(Default)]

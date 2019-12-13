@@ -37,7 +37,7 @@ pub enum AsError {
     #[fail(display = "proxy fail")]
     ProxyFail,
 
-    #[fail(display = "fail due retry send too much")]
+    #[fail(display = "fail due retry send, reached limit")]
     RequestReachMaxCycle,
 
     #[fail(display = "fail to parse integer {}", _0)]
@@ -49,7 +49,7 @@ pub enum AsError {
     #[fail(display = "CLUSTER SLOTS must contains slot info")]
     WrongClusterSlotsReplySlot,
 
-    #[fail(display = "cluster fail to dispatch command")]
+    #[fail(display = "cluster fail to proxy command")]
     ClusterFailDispatch,
 
     #[fail(display = "unexpected io error {}", _0)]
@@ -72,6 +72,9 @@ pub enum AsError {
 
     #[fail(display = "there is nothing happening")]
     None,
+
+    #[fail(display = "{}", exclusive)]
+    RetryRandom { exclusive: String },
 }
 
 impl From<tokio::io::Error> for AsError {

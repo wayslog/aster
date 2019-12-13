@@ -7,6 +7,12 @@ pub struct Tracker {
     hist: Histogram,
 }
 
+impl std::fmt::Debug for Tracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "Tracker<start={:?}>", self.start)
+    }
+}
+
 impl Tracker {
     pub fn new(hist: Histogram) -> Tracker {
         Self {

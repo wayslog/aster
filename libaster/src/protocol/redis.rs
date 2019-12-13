@@ -30,7 +30,7 @@ const BYTES_CMD_QUIT: &[u8] = b"QUIT";
 const BYTES_SLOTS: &[u8] = b"SLOTS";
 const BYTES_NODES: &[u8] = b"NODES";
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Cmd {
     cmd: Rc<RefCell<Command>>,
     notify: Notify,
@@ -162,6 +162,22 @@ impl Cmd {
         self.cmd.borrow_mut()
     }
 
+    pub fn unset_error(&self) {
+        self.cmd.borrow_mut().unset_error();
+    }
+
+    pub fn unset_done(&self) {
+        self.cmd.borrow_mut().unset_done();
+    }
+
+    pub fn set_retry(&self) {
+        self.cmd.borrow_mut().set_retry();
+    }
+
+    pub fn is_retry(&self) -> bool {
+        self.cmd.borrow().is_retry()
+    }
+
     pub fn set_reply<T: IntoReply<Message>>(&self, reply: T) {
         self.borrow_mut().set_reply(reply);
     }
@@ -182,12 +198,16 @@ impl Cmd {
         }
 
         if self.borrow().ctype.is_ctrl() {
-            let is_quit = self.borrow().req.nth(0).map(|x| {
-                x == BYTES_CMD_QUIT
-            }).unwrap_or(false);
+            let is_quit = self
+                .borrow()
+                .req
+                .nth(0)
+                .map(|x| x == BYTES_CMD_QUIT)
+                .unwrap_or(false);
             if is_quit {
-                self.borrow_mut().set_reply(Message::inline_raw(Bytes::new()));
-                return false;    
+                self.borrow_mut()
+                    .set_reply(Message::inline_raw(Bytes::new()));
+                return false;
             }
 
             // check if is cluster
@@ -230,6 +250,7 @@ impl Cmd {
     }
 }
 
+#[derive(Debug)]
 pub struct Command {
     flags: CmdFlags,
     ctype: CmdType,
@@ -237,7 +258,7 @@ pub struct Command {
     cycle: u8,
 
     req: Message,
-    reply: Option<Message>,
+    pub reply: Option<Message>,
 
     subs: Option<Vec<Cmd>>,
 
@@ -261,7 +282,7 @@ const BYTES_ARRAY: &[u8] = b"*";
 const BYTES_INTEGER: &[u8] = b":";
 
 const DEFAULT_CYCLE: u8 = 0;
-const MAX_CYCLE: u8 = 0b11111111;
+const MAX_CYCLE: u8 = 8;
 
 // for front end
 impl Command {
@@ -423,8 +444,24 @@ impl Command {
         let _ = self.remote_tracker.take();
     }
 
+    fn is_retry(&self) -> bool {
+        self.flags & CmdFlags::RETRY == CmdFlags::RETRY
+    }
+
+    fn set_retry(&mut self) {
+        self.flags |= CmdFlags::RETRY;
+    }
+
     fn set_done(&mut self) {
         self.flags |= CmdFlags::DONE;
+    }
+
+    fn unset_done(&mut self) {
+        self.flags &= !CmdFlags::DONE;
+    }
+
+    fn unset_error(&mut self) {
+        self.flags &= !CmdFlags::ERROR;
     }
 
     fn set_error(&mut self) {

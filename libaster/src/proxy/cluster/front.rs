@@ -29,6 +29,9 @@ where
 
     sendq: VecDeque<Cmd>,
     waitq: VecDeque<Cmd>,
+    retryq: VecDeque<Cmd>,
+    retry_waitq: VecDeque<Cmd>,
+
     state: State,
 }
 
@@ -45,6 +48,8 @@ where
             output,
             sendq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
+            retryq: VecDeque::with_capacity(MAX_BATCH_SIZE),
+            retry_waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             state: State::Running,
         }
     }
@@ -55,14 +60,30 @@ where
             if self.waitq.is_empty() {
                 break;
             }
-            let cmd = self.waitq.pop_front().expect("command never be error");
+
+            let cmd = if !self.retry_waitq.is_empty() {
+                self.retry_waitq
+                    .pop_front()
+                    .expect("retry command never be error")
+            } else {
+                self.waitq.pop_front().expect("command never be error")
+            };
+
             if !cmd.borrow().is_done() {
                 self.waitq.push_front(cmd);
                 break;
             }
-            
+
             if cmd.borrow().is_error() {
                 self.cluster.trigger_fetch();
+                if cmd.is_retry() {
+                    cmd.unset_done();
+                    cmd.unset_error();
+                    cmd.borrow_mut().add_cycle();
+                    self.retry_waitq.push_back(cmd.clone());
+                    self.retryq.push_back(cmd);
+                    continue;
+                }
             }
 
             match self.output.start_send(cmd) {
@@ -88,13 +109,22 @@ where
     }
 
     fn try_send(&mut self) -> Result<usize, AsError> {
-        self.cluster.dispatch_all(&mut self.sendq)
+        let mut size = 0usize;
+        while !self.retryq.is_empty() {
+            let before = size;
+            size += self.cluster.dispatch_all(&mut self.retryq)?;
+            if before == size && !self.retryq.is_empty() {
+                return Ok(size);
+            }
+        }
+        size += self.cluster.dispatch_all(&mut self.sendq)?;
+        Ok(size)
     }
 
     fn try_recv(&mut self) -> Result<usize, AsError> {
         let mut count = 0usize;
         loop {
-            if self.waitq.len() ==MAX_BATCH_SIZE{
+            if self.waitq.len() == MAX_BATCH_SIZE {
                 return Ok(count);
             }
 
