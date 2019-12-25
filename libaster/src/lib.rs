@@ -95,11 +95,11 @@ use std::thread;
 fn spawn_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
     vec![
         thread::Builder::new()
-            .name("aster-metrics-thread".to_string())
+            .name("http-service".to_string())
             .spawn(move || metrics::init(port).unwrap())
             .unwrap(),
         thread::Builder::new()
-            .name("aster-metrics-thread".to_string())
+            .name("measure-service".to_string())
             .spawn(move || metrics::measure_system().unwrap())
             .unwrap(),
     ]

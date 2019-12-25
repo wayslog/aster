@@ -90,6 +90,9 @@ impl Future for Initializer {
                     if !cmd.borrow().is_done() {
                         return Ok(Async::NotReady);
                     }
+                    if let Err(_err) = sender.close() {
+                        warn!("init connection can't be closed properly, skip");
+                    }
                     std::mem::drop(sender); // must drop when the while state is done;
                     self.state = State::Done(cmd.clone());
                 }

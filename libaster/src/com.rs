@@ -5,12 +5,15 @@ use tokio::net::TcpStream;
 
 pub use failure::Error;
 
+use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::num;
 use std::path::Path;
 
 pub mod meta;
+
+pub const ENV_ASTER_DEFAULT_THREADS: &str = "ASTER_DEFAULT_THREAD";
 
 #[derive(Debug, Fail)]
 pub enum AsError {
@@ -114,7 +117,13 @@ impl Config {
         let mut data = String::new();
         let mut fd = File::open(path)?;
         fd.read_to_string(&mut data)?;
-        let cfg = toml::from_str(&data)?;
+        let mut cfg: Config = toml::from_str(&data)?;
+        let thread = Config::load_thread_from_env();
+        for cluster in &mut cfg.clusters[..] {
+            if cluster.thread.is_none() {
+                cluster.thread = Some(thread);
+            }
+        }
         Ok(cfg)
     }
 
@@ -125,8 +134,20 @@ impl Config {
         let mut data = String::new();
         let mut fd = File::open(path)?;
         fd.read_to_string(&mut data)?;
-        let cfg = toml::from_str(&data)?;
+        let mut cfg: Config = toml::from_str(&data)?;
+        let thread = Config::load_thread_from_env();
+        for cluster in &mut cfg.clusters[..] {
+            if cluster.thread.is_none() {
+                cluster.thread = Some(thread);
+            }
+        }
         Ok(cfg)
+    }
+
+    fn load_thread_from_env() -> usize {
+        let thread_str = env::var(ENV_ASTER_DEFAULT_THREADS).unwrap_or("4".to_string());
+        let thread = thread_str.parse::<usize>().unwrap_or(4);
+        thread
     }
 }
 

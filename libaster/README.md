@@ -5,6 +5,10 @@ libaster is the library for aster proxy.
 
 # change log
 
+## 1.1.6
+
+* add thread controller by environment variables.
+
 ## 1.1.5
 
 * add retry policy for aster when backend failover

@@ -24,7 +24,6 @@ node_connections = 1
 name = "test-redis-standalone"
 listen_addr = "0.0.0.0:7787"
 hash_tag = "{}"
-thread = 1
 cache_type = "redis"
 servers = [
     "127.0.0.1:6379:10 redis-1",
@@ -50,7 +49,7 @@ thread = 1
 cache_type = "redis_cluster"
 servers = ["127.0.0.1:3200"]
 
-fetch_interval = 3600000 
+fetch_interval = 3600000 # 3600s , 1 hour 
 read_from_slave = false
 
 ping_fail_limit = 10
