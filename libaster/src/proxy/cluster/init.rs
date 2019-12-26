@@ -57,6 +57,7 @@ impl Future for Initializer {
                         .read_timeout(self.cc.read_timeout.clone())
                         .write_timeout(self.cc.write_timeout.clone())
                         .connect();
+                    self.current += 1;
 
                     match conn {
                         Ok(sender) => {
@@ -69,7 +70,6 @@ impl Future for Initializer {
                             self.state = State::Connecting;
                         }
                     }
-                    self.current += 1;
                 }
                 State::Fetching(ref mut sender, ref cmd) => match sender.start_send(cmd.clone()) {
                     Ok(AsyncSink::NotReady(_cmd)) => {
@@ -83,6 +83,9 @@ impl Future for Initializer {
                     Err(err) => {
                         let addr = self.cc.servers[self.current - 1].clone();
                         error!("fail to send CLUSTER SLOTS cmd to {} due {}", addr, err);
+                        if let Err(_err) = sender.close() {
+                            warn!("init fetching  connection can't be closed properly, skip");
+                        }
                         self.state = State::Connecting;
                     }
                 },
@@ -91,9 +94,10 @@ impl Future for Initializer {
                         return Ok(Async::NotReady);
                     }
                     if let Err(_err) = sender.close() {
-                        warn!("init connection can't be closed properly, skip");
+                        warn!("init waitting connection can't be closed properly, skip");
                     }
                     std::mem::drop(sender); // must drop when the while state is done;
+                    debug!("CLUSTER SLOTS get response as {:?}", cmd);
                     self.state = State::Done(cmd.clone());
                 }
                 State::Done(cmd) => match slots_reply_to_replicas(cmd.clone()) {

@@ -5,6 +5,10 @@ libaster is the library for aster proxy.
 
 # change log
 
+## 1.1.7
+
+* fixed unboot when seed meets down
+
 ## 1.1.6
 
 * add thread controller by environment variables.
