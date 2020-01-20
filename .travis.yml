@@ -29,11 +29,8 @@ matrix:
 
 jobs:
   include:
-    - stage: initial
-      script: docker run -e "IP=0.0.0.0" -d -p 7000-7007:7000-7007 grokzen/redis-cluster:4.0.9
-
     - stage: unittest
-      script: cargo test --verbose --all
+      script: docker run -e "IP=0.0.0.0" -d -p 7000-7007:7000-7007 grokzen/redis-cluster:5.0.7 && cargo test --verbose --all
 
 stages:
   - initial
