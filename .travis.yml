@@ -29,9 +29,8 @@ matrix:
 
 jobs:
   include:
-    - stage: unittest
+    - stage: UnitTest
       script: docker run -e "IP=0.0.0.0" -d -p 7000-7007:7000-7007 grokzen/redis-cluster:5.0.7 && cargo test --verbose --all
 
 stages:
-  - initial
-  - unittest
+  - UnitTest
