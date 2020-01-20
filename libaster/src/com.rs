@@ -56,7 +56,7 @@ pub enum AsError {
     ClusterFailDispatch,
 
     #[fail(display = "unexpected io error {}", _0)]
-    IoError(tokio::io::Error),
+    IoError(tokio::io::Error), // io_error
 
     #[fail(display = "remote connection has been active closed: {}", _0)]
     BackendClosedError(String),
@@ -68,7 +68,7 @@ pub enum AsError {
     ClusterAllSeedsDie(String),
 
     #[fail(display = "fail to load config toml error {}", _0)]
-    ConfigError(toml::de::Error),
+    ConfigError(toml::de::Error), // de error
 
     #[fail(display = "fail to load system info")]
     SystemError,
@@ -78,6 +78,48 @@ pub enum AsError {
 
     #[fail(display = "{}", exclusive)]
     RetryRandom { exclusive: String },
+}
+
+impl PartialEq for AsError {
+    fn eq(&self, other: &AsError) -> bool {
+        match (self, other) {
+            (Self::None, Self::None) => true,
+            (Self::BadMessage, Self::BadMessage) => true,
+            (Self::BadReqeust, Self::BadReqeust) => true,
+            (Self::RequestNotSupport, Self::RequestNotSupport) => true,
+            (Self::RequestInlineWithMultiKeys, Self::RequestInlineWithMultiKeys) => true,
+            (Self::BadReply, Self::BadReply) => true,
+            (Self::ProxyFail, Self::ProxyFail) => true,
+            (Self::RequestReachMaxCycle, Self::RequestReachMaxCycle) => true,
+            (Self::ParseIntError(inner), Self::ParseIntError(other_inner)) => inner == other_inner,
+            (Self::WrongClusterSlotsReplyType, Self::WrongClusterSlotsReplyType) => true,
+            (Self::WrongClusterSlotsReplySlot, Self::WrongClusterSlotsReplySlot) => true,
+            (Self::ClusterFailDispatch, Self::ClusterFailDispatch) => true,
+            (Self::RedirectFailError, Self::RedirectFailError) => true,
+            (Self::BackendClosedError(inner), Self::BackendClosedError(other_inner)) => {
+                inner == other_inner
+            }
+            (Self::StrParseIntError(inner), Self::StrParseIntError(other_inner)) => {
+                inner == other_inner
+            }
+            (Self::ClusterAllSeedsDie(inner), Self::ClusterAllSeedsDie(other_inner)) => {
+                inner == other_inner
+            }
+
+            (Self::IoError(inner), Self::IoError(other_inner)) => {
+                inner.kind() == other_inner.kind()
+            }
+            (Self::ConfigError(_), Self::ConfigError(_)) => true,
+            (Self::SystemError, Self::SystemError) => true,
+            (
+                Self::RetryRandom { exclusive: ex },
+                Self::RetryRandom {
+                    exclusive: other_ex,
+                },
+            ) => ex == other_ex,
+            _ => false,
+        }
+    }
 }
 
 impl From<tokio::io::Error> for AsError {

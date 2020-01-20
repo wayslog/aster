@@ -41,7 +41,7 @@ impl RespType {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageMut {
     pub rtype: RespType,
     pub data: BytesMut,
@@ -156,6 +156,9 @@ impl MessageMut {
                 }));
             }
             _ => {
+                if cursor != 0 {
+                    return Err(AsError::BadMessage);
+                }
                 // inline command
                 return Self::try_parse_inline(&src[cursor..cursor + pos + 1]);
             }
@@ -182,112 +185,6 @@ impl MessageMut {
         }
         Ok(None)
     }
-}
-
-#[test]
-fn test_parse() {
-    let data = b"*2\r\n$3\r\nget\r\n$4\r\nab\nc\r\n";
-    let mut src = BytesMut::from(&data[..]);
-    let msg = MessageMut::parse(&mut src).unwrap().unwrap();
-    assert_eq!(msg.data.len(), data.len());
-    assert_eq!(msg.nth(0).unwrap(), b"get");
-    assert_eq!(msg.nth(1).unwrap(), b"ab\nc");
-    match msg.rtype {
-        RespType::Array(head, vals) => {
-            assert_eq!(head.begin, 0);
-            assert_eq!(head.end, 4);
-
-            if let RespType::Bulk(h, body) = vals[0] {
-                assert_eq!(h.begin, 4);
-                assert_eq!(h.end, 8);
-
-                assert_eq!(body.begin, 8);
-                assert_eq!(body.end, 13);
-            } else {
-                panic!("fail to load bulk string");
-            }
-
-            if let RespType::Bulk(h, body) = vals[1] {
-                assert_eq!(h.begin, 13);
-                assert_eq!(h.end, 17);
-
-                assert_eq!(body.begin, 17);
-                assert_eq!(body.end, 23);
-            } else {
-                panic!("fail to load bulk string");
-            }
-        }
-        other => {
-            panic!("fail to parse {:?}", other);
-        }
-    }
-}
-
-#[test]
-fn test_iter() {
-    let data = b"*2\r\n$3\r\nget\r\n$4\r\nab\nc\r\n";
-    let mut src = BytesMut::from(&data[..]);
-    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
-    assert_eq!(msg.raw_data().len(), data.len());
-    let mut iter = msg.iter();
-    assert_eq!(iter.next(), Some(b"get".as_ref()));
-    assert_eq!(iter.next(), Some(b"ab\nc".as_ref()));
-}
-
-#[test]
-fn test_iter_plain() {
-    let data = b"+abcdef\r\n";
-    let mut src = BytesMut::from(&data[..]);
-    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
-    assert_eq!(msg.raw_data().len(), data.len());
-    let mut iter = msg.iter();
-    assert_eq!(iter.next(), Some("abcdef".as_bytes()));
-    assert_eq!(iter.next(), None);
-}
-
-#[test]
-fn test_iter_bulk() {
-    let data = b"$3\r\nabc\r\n";
-    let mut src = BytesMut::from(&data[..]);
-    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
-    assert_eq!(msg.raw_data().len(), data.len());
-    let mut iter = msg.iter();
-    assert_eq!(iter.next(), Some("abc".as_bytes()));
-    assert_eq!(iter.next(), None);
-}
-
-#[test]
-fn test_parse_cluster_slots() {
-    let data = b"*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n";
-    let mut src = BytesMut::from(&data[..]);
-    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
-    assert_eq!(
-        msg,
-        Message {
-            data: Bytes::from("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n"),
-            rtype: RespType::Array(
-                Range::new(0, 4),
-                vec![
-                    RespType::Bulk(Range::new(4, 8), Range::new(8, 17)),
-                    RespType::Bulk(Range::new(17, 21), Range::new(21, 28)),
-                ],
-            ),
-        }
-    );
-}
-
-#[test]
-fn test_parse_inline() {
-    let data = b"GET a\n";
-    let mut src = BytesMut::from(&data[..]);
-    let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
-    assert_eq!(
-        msg,
-        Message {
-            data: Bytes::from(&data[..]),
-            rtype: RespType::Inline(vec![Range::new(0, 3), Range::new(4, 6),]),
-        }
-    )
 }
 
 impl MessageMut {
@@ -638,4 +535,159 @@ fn parse_redirect(data: &[u8]) -> Option<Redirect> {
         }
     }
     None
+}
+
+#[test]
+fn test_parse() {
+    let data = b"*2\r\n$3\r\nget\r\n$4\r\nab\nc\r\n";
+    let mut src = BytesMut::from(&data[..]);
+    let msg = MessageMut::parse(&mut src).unwrap().unwrap();
+    assert_eq!(msg.data.len(), data.len());
+    assert_eq!(msg.nth(0).unwrap(), b"get");
+    assert_eq!(msg.nth(1).unwrap(), b"ab\nc");
+    match msg.rtype {
+        RespType::Array(head, vals) => {
+            assert_eq!(head.begin, 0);
+            assert_eq!(head.end, 4);
+
+            if let RespType::Bulk(h, body) = vals[0] {
+                assert_eq!(h.begin, 4);
+                assert_eq!(h.end, 8);
+
+                assert_eq!(body.begin, 8);
+                assert_eq!(body.end, 13);
+            } else {
+                panic!("fail to load bulk string");
+            }
+
+            if let RespType::Bulk(h, body) = vals[1] {
+                assert_eq!(h.begin, 13);
+                assert_eq!(h.end, 17);
+
+                assert_eq!(body.begin, 17);
+                assert_eq!(body.end, 23);
+            } else {
+                panic!("fail to load bulk string");
+            }
+        }
+        other => {
+            panic!("fail to parse {:?}", other);
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use self::super::*;
+    use assert2::{assert, check};
+
+    #[test]
+    fn test_iter() {
+        let data = b"*2\r\n$3\r\nget\r\n$4\r\nab\nc\r\n";
+        let mut src = BytesMut::from(&data[..]);
+        let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+        assert!(msg.raw_data().len() == data.len());
+        let mut iter = msg.iter();
+        assert!(iter.next() == Some(b"get".as_ref()));
+        assert!(iter.next() == Some(b"ab\nc".as_ref()));
+    }
+
+    #[test]
+    fn test_iter_plain() {
+        let data = b"+abcdef\r\n";
+        let mut src = BytesMut::from(&data[..]);
+        let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+        assert!(msg.raw_data().len() == data.len());
+        let mut iter = msg.iter();
+        assert!(iter.next() == Some("abcdef".as_bytes()));
+        assert!(iter.next() == None);
+    }
+
+    #[test]
+    fn test_iter_bulk() {
+        let data = b"$3\r\nabc\r\n";
+        let mut src = BytesMut::from(&data[..]);
+        let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+        assert!(msg.raw_data().len() == data.len());
+        let mut iter = msg.iter();
+        assert!(iter.next() == Some("abc".as_bytes()));
+        assert!(iter.next() == None);
+    }
+
+    #[test]
+    fn test_parse_cluster_slots() {
+        let data = b"*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n";
+        let mut src = BytesMut::from(&data[..]);
+        let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+        assert!(
+            msg == Message {
+                data: Bytes::from("*2\r\n$7\r\nCLUSTER\r\n$5\r\nSLOTS\r\n"),
+                rtype: RespType::Array(
+                    Range::new(0, 4),
+                    vec![
+                        RespType::Bulk(Range::new(4, 8), Range::new(8, 17)),
+                        RespType::Bulk(Range::new(17, 21), Range::new(21, 28)),
+                    ],
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_inline() {
+        let data = b"GET a\n";
+        let mut src = BytesMut::from(&data[..]);
+        let msg: Message = MessageMut::parse(&mut src).unwrap().unwrap().into();
+        assert!(
+            msg == Message {
+                data: Bytes::from(&data[..]),
+                rtype: RespType::Inline(vec![Range::new(0, 3), Range::new(4, 6),]),
+            }
+        )
+    }
+
+    // ---------------------- test copy from redis/tests/unit/protocol.tcl ------------------------------------------ //
+
+    #[test]
+    fn test_handle_empy_query() {
+        let data = b"\r\n";
+        let mut src = BytesMut::from(data.as_ref());
+        let msg = MessageMut::parse(&mut src).unwrap().unwrap();
+        assert!(
+            msg == MessageMut {
+                data: BytesMut::from(data.as_ref()),
+                rtype: RespType::Inline(vec![Range::new(0, 2)]),
+            }
+        );
+        assert_eq!(src.len(), 0);
+    }
+
+    #[test]
+    fn test_negative_multibulk_length() {
+        let data = b"*-10\r\n";
+        let mut src = BytesMut::from(data.as_ref());
+        assert!(MessageMut::parse(&mut src).unwrap_err() == AsError::BadMessage);
+    }
+
+    #[test]
+    fn test_wrong_mutlti_bulk_payload_header() {
+        let data = "*3\r\n$3\r\nSET\r\n$1\r\nx\r\nfooz\r\n";
+        let mut src = BytesMut::from(data.as_bytes());
+        check!(MessageMut::parse(&mut src).unwrap_err() == AsError::BadMessage);
+        check!(src.len() == data.len() - 4);
+    }
+
+    #[test]
+    fn test_negative_mutiblk_payload_length() {
+        let data = "*3\r\n\\$3\r\nSET\r\n\\$1\r\nx\r\nfooz\r\n";
+        let mut src = BytesMut::from(data.as_bytes());
+        assert!(MessageMut::parse(&mut src).unwrap_err() == AsError::BadMessage);
+    }
+
+    #[test]
+    fn test_non_number_multibulk_payload_length() {
+        let data = "*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$blabla\r\n";
+        let mut src = BytesMut::from(data.as_bytes());
+        assert!(MessageMut::parse(&mut src).unwrap_err() == AsError::BadMessage);
+    }
 }

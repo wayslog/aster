@@ -10,6 +10,7 @@ lazy_static! {
 
         // special commands
         hmap.insert(&b"DEL"[..], CmdType::Del);
+        hmap.insert(&b"UNLINK"[..], CmdType::Del);
         hmap.insert(&b"DUMP"[..], CmdType::Read);
         hmap.insert(&b"EXISTS"[..], CmdType::Exists);
         hmap.insert(&b"EXPIRE"[..], CmdType::Write);
@@ -55,6 +56,7 @@ lazy_static! {
         hmap.insert(&b"SETEX"[..], CmdType::Write);
         hmap.insert(&b"SETNX"[..], CmdType::Write);
         hmap.insert(&b"SETRANGE"[..], CmdType::Write);
+        hmap.insert(&b"BITFIELD"[..], CmdType::Write);
         hmap.insert(&b"STRLEN"[..], CmdType::Read);
 
         // hash type
