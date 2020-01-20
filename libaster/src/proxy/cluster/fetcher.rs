@@ -90,7 +90,7 @@ where
                         self.state = State::Waiting(addr.clone(), cmd.clone());
                     }
                     Err(err) => {
-                        error!("fail to fetch CLUSTER SLOTS due to {}", err);
+                        error!("fail to fetch CLUSTER SLOTS from {} due to {}", addr, err);
                         self.state = State::Interval;
                     }
                 },
@@ -109,7 +109,7 @@ where
                             continue;
                         }
                         Err(err) => {
-                            warn!("fail to parse cmd reply due {}", err);
+                            warn!("fail to parse cmd reply from {} due {}", addr, err);
                             self.state = State::Interval;
                             continue;
                         }

@@ -75,7 +75,11 @@ impl<T: Request + 'static> Future for Ping<T> {
                             // removed but success next time
                             if let Some(cluster) = self.cluster.upgrade() {
                                 cluster.add_node(self.name.clone()).map_err(|err| {
-                                    error!("fail to add node due {:?}", err);
+                                    error!(
+                                        "fail to add node for {} due to {:?}",
+                                        self.name.clone(),
+                                        err
+                                    );
                                 })?;
                             } else {
                                 return Ok(Async::Ready(()));

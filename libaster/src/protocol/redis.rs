@@ -866,7 +866,7 @@ pub fn slots_reply_to_replicas(cmd: Cmd) -> Result<Option<ReplicaLayout>, AsErro
                 }
             }
             if masters.len() != SLOTS_COUNT {
-                return Ok(None);
+                warn!("slots is not full covered but ignore it");
             }
             let master_list = masters.into_iter().map(|(_, v)| v).collect();
             let replicas_list = replicas

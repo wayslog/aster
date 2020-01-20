@@ -150,7 +150,7 @@ impl<T: Request + 'static> Cluster<T> {
                         ) {
                             conns.insert(&addr, conn);
                         } else {
-                            warn!("fail to connect to {}-{}", cluster.cc.name, addr);
+                            warn!("fail to connect to {} {}", cluster.cc.name, addr);
                         }
                     }
                 }
@@ -284,7 +284,7 @@ impl<T: Request + 'static> Cluster<T> {
                         return Ok(ret);
                     }
                     Err(se) => {
-                        warn!("dispatch to meet error addr={}", &addr);
+                        warn!("dispatch_to meet error addr={}", &addr);
                         let cmd = se.into_inner();
                         cmd.add_cycle();
                         conns.remove(addr);
@@ -292,7 +292,7 @@ impl<T: Request + 'static> Cluster<T> {
                     }
                 }
             } else {
-                debug!("trying to reconnect to {}", addr);
+                debug!("dispatch_to trying to reconnect to {}", addr);
                 let sender = connect(
                     &self.cc.name,
                     &addr,
@@ -422,10 +422,11 @@ where
             node_addr
                 .as_str()
                 .parse()
-                .map_err(|err| error!("fail to parse addr {:?} to {}", err, node_clone))
+                .map_err(|err| error!("fail to parse addr {} due to {:?}", node_clone, err))
         })
-        .and_then(|addr| {
-            TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+        .and_then(|addr: SocketAddr| {
+            TcpStream::connect(&addr)
+                .map_err(move |err| error!("fail to connect to {} due to {:?}", &addr, err))
         })
         .then(move |srslt: Result<TcpStream, ()>| {
             if let Ok(sock) = srslt {

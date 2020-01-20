@@ -240,8 +240,10 @@ impl Cluster {
                     return;
                 }
             }
+            warn!("fail to trigger fetch process due fetch channel is full or closed.");
+        } else {
+            warn!("fail to trigger fetch process due to trigger event uninitialed");
         }
-        warn!("fail to trigger fetch process");
     }
 
     pub fn dispatch_to(&self, addr: &str, cmd: Cmd) -> Result<AsyncSink<Cmd>, AsError> {
@@ -583,13 +585,19 @@ impl ConnBuilder {
 
     pub(crate) fn connect(self) -> Result<Sender<Cmd>, AsError> {
         if !self.check_valid() {
-            error!("fail to open connection to backend due param is valid");
+            error!(
+                "fail to open connection to backend {} due param is valid",
+                self.node.as_ref().map(|x| x.as_ref()).unwrap_or("unknown")
+            );
             return Err(AsError::BadConfig("backend connection config".to_string()));
         }
 
-        let node_addr = self.node.expect("must be checked first");
+        let node_addr = self.node.expect("addr must be checked first");
         let node_addr_clone = node_addr.clone();
-        let cluster = self.cluster.expect("must be checked first").to_string();
+        let cluster = self
+            .cluster
+            .expect("cluster name must be checked first")
+            .to_string();
         let rt = self.rt.clone();
         let wt = self.wt.clone();
         let moved = self.moved.expect("must be checked first");
@@ -602,10 +610,12 @@ impl ConnBuilder {
                 node_addr
                     .as_str()
                     .parse()
-                    .map_err(|err| error!("fail to parse addr {:?} to {}", err, node_clone))
+                    .map_err(|err| error!("fail to parse addr {} due to {:?}", node_clone, err))
             })
             .and_then(|addr| {
-                TcpStream::connect(&addr).map_err(|err| error!("fail to connect {:?}", err))
+                let report_addr = format!("{:?}", &addr);
+                TcpStream::connect(&addr)
+                    .map_err(move |err| error!("fail to connect to {} {:?}", &report_addr, err))
             })
             .then(move |sock| {
                 if let Ok(sock) = sock {
@@ -618,7 +628,7 @@ impl ConnBuilder {
                         back::Back::new(cluster, node_addr_clone, rx, sink, stream, moved);
                     current_thread::spawn(backend);
                 } else {
-                    error!("fail to conenct to backend");
+                    error!("fail to conenct to backend {}", node_addr_clone);
                     let blackhole = back::Blackhole::new(node_addr_clone, rx);
                     current_thread::spawn(blackhole);
                     if let Some(mut fetch) = fetch {

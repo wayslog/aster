@@ -211,7 +211,7 @@ where
                         // trace!("backend recv is ready");
                     }
                     Err(err) => {
-                        warn!("backend {} recv is error {}", self.addr, err);
+                        warn!("fail to recv from {} error {}", self.addr, err);
                         self.state = State::Closing;
                         continue;
                     }
@@ -233,7 +233,7 @@ where
                         // trace!("backend forward is ready");
                     }
                     Err(err) => {
-                        warn!("backend {} forward is error {}", self.addr, err);
+                        warn!("fail to forward to {} error {}", self.addr, err);
                         self.state = State::Closing;
                         continue;
                     }
