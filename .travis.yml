@@ -23,10 +23,5 @@ matrix:
     - rust: stable
   fast_finish: true
 
-jobs:
-  include:
-    - stage: UnitTest
-      script: scripts/ci-test.sh
-
-stages:
-  - UnitTest
+script:
+  - scripts/ci-test.sh

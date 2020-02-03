@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+echo "aster start tests......"
+
+cargo test
+
 docker run -e "IP=0.0.0.0" -d -p 7000-7007:7000-7007 grokzen/redis-cluster:5.0.7 && cargo test --verbose --all
 make debug &
 
