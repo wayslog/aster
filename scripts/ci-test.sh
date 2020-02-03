@@ -8,7 +8,7 @@ cargo test
 docker run -e "IP=0.0.0.0" -d -p 7000-7007:7000-7007 grokzen/redis-cluster:5.0.7 && cargo test --verbose --all
 make debug &
 
-apt install python3 -y
+sudo apt install python3 -y
 
 git clone --depth=1 https://github.com/wayslog/redis-py.git
 cp default.toml redis-py
