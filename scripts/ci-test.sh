@@ -13,9 +13,10 @@ sudo pip install pytest mock python-toml
 git clone --depth=1 https://github.com/wayslog/redis-py.git
 cp default.toml redis-py
 
-make debug &
-sleep 5
+cargo build --all
+RUST_LOG=libaster=info RUST_BACKTRACE=full ./target/debug/aster-proxy default.toml
 
+sleep 5
 cd redis-py
 
 pytest --redis-url="redis://127.0.0.1:7787"
