@@ -196,6 +196,9 @@ impl Cmd {
             self.borrow_mut().set_reply(AsError::RequestNotSupport);
             return false;
         }
+        if self.borrow().is_done() {
+            return true;
+        }
 
         if self.borrow().ctype.is_ctrl() {
             let is_quit = self
@@ -709,8 +712,10 @@ impl From<MessageMut> for Cmd {
             if let Some(data) = msg.nth(COMMAND_POS) {
                 if data == BYTES_CMD_PING {
                     cmd.set_reply(STR_REPLY_PONG);
+                    cmd.unset_error();
                 } else if data == BYTES_CMD_COMMAND {
-                    cmd.set_reply(BYTES_REPLY_NULL_ARRAY)
+                    cmd.set_reply(BYTES_REPLY_NULL_ARRAY);
+                    cmd.unset_error();
                 } else {
                     // unsupport commands
                 }

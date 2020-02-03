@@ -58,6 +58,7 @@ lazy_static! {
         hmap.insert(&b"SETRANGE"[..], CmdType::Write);
         hmap.insert(&b"BITFIELD"[..], CmdType::Write);
         hmap.insert(&b"STRLEN"[..], CmdType::Read);
+        hmap.insert(&b"SUBSTR"[..], CmdType::Read);
 
         // hash type
         hmap.insert(&b"HDEL"[..], CmdType::Write);
@@ -136,6 +137,13 @@ lazy_static! {
         hmap.insert(&b"PFADD"[..], CmdType::Write);
         hmap.insert(&b"PFCOUNT"[..], CmdType::Read);
         hmap.insert(&b"PFMERGE"[..], CmdType::Write);
+        // geo
+        hmap.insert(&b"GEOADD"[..], CmdType::Write);
+        hmap.insert(&b"GEODIST"[..], CmdType::Read);
+        hmap.insert(&b"GEOHASH"[..], CmdType::Read);
+        hmap.insert(&b"GEOPOS"[..], CmdType::Write);
+        hmap.insert(&b"GEORADIUS"[..], CmdType::Write);
+        hmap.insert(&b"GEORADIUSBYMEMBER"[..], CmdType::Write);
         // eval type
         hmap.insert(&b"EVAL"[..], CmdType::Eval);
         hmap.insert(&b"EVALSHA"[..], CmdType::NotSupport);
