@@ -23,14 +23,10 @@ matrix:
     - rust: stable
   fast_finish: true
 
-# cache:
-#   - cargo
-#   - apt: true
-
 jobs:
   include:
     - stage: UnitTest
-      script: docker run -e "IP=0.0.0.0" -d -p 7000-7007:7000-7007 grokzen/redis-cluster:5.0.7 && cargo test --verbose --all
+      script: scripts/ci-test.sh
 
 stages:
   - UnitTest
