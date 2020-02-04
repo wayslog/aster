@@ -6,6 +6,12 @@ release:
 	cargo build --all --release
 	RUST_LOG=libaster=info RUST_BACKTRACE=full ./target/release/aster-proxy default.toml
 
+test:
+	cargo test --all
+
+bench:
+	cargo bench
+
 clean:
 	cargo clean
 

@@ -111,6 +111,12 @@ pub(crate) fn thread_incr() {
 }
 
 pub(crate) fn measure_system() -> Result<(), AsError> {
+    // register global thread pool with only one thread to reduce thread number
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build_global()
+        .expect("rayon thread register failed");
+
     thread_incr();
     let pid = match sysinfo::get_current_pid() {
         Ok(pid) => pid,

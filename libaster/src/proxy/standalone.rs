@@ -317,8 +317,12 @@ impl<T: Request + 'static> Cluster<T> {
                 continue;
             }
             let key_hash = cmd.key_hash(&self.hash_tag, fnv1a64);
-            let addr = self.ring.borrow().get_node(key_hash).to_string();
-            let addr = self.get_node(addr);
+
+            let addr = if let Some(name) = self.ring.borrow().get_node(key_hash) {
+                self.get_node(name.to_string())
+            } else {
+                return Ok(count);
+            };
             let mut conns = self.conns.borrow_mut();
 
             if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {
@@ -510,13 +514,12 @@ pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
     let worker = cc.thread.unwrap_or(4);
     (0..worker)
         .into_iter()
-        .map(|index| {
-            let num = index + 1;
+        .map(|_index| {
             let builder = Builder::new();
             let cc = cc.clone();
             let ip = ip.clone();
             builder
-                .name(format!("aster-{}-standalone-{}", cc.name, num))
+                .name(cc.name.clone())
                 .spawn(move || {
                     meta_init(cc.clone(), ip);
                     #[cfg(feature = "metrics")]

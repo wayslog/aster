@@ -670,13 +670,12 @@ pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
     let worker = cc.thread.unwrap_or(4);
     (0..worker)
         .into_iter()
-        .map(|index| {
-            let num = index + 1;
+        .map(|_index| {
             let builder = thread::Builder::new();
             let cc = cc.clone();
             let ip = ip.clone();
             builder
-                .name(format!("aster-{}-cluster-{}", cc.name, num))
+                .name(cc.name.clone())
                 .spawn(move || {
                     meta_init(cc.clone(), ip);
 

@@ -95,7 +95,7 @@ use std::thread;
 fn spawn_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
     vec![
         thread::Builder::new()
-            .name("http-service".to_string())
+            .name("aster-http-srv".to_string())
             .spawn(move || metrics::init(port).unwrap())
             .unwrap(),
         thread::Builder::new()

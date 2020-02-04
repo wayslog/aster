@@ -116,9 +116,9 @@ impl HashRing {
         }
     }
 
-    pub fn get_node(&self, hash: u64) -> &str {
+    pub fn get_node(&self, hash: u64) -> Option<&str> {
         let pos = self.get_pos_by_hash(hash);
-        &self.ticks.get(pos).unwrap().node
+        self.ticks.get(pos).map(|x| x.node.as_ref())
     }
 }
 
@@ -146,7 +146,10 @@ mod test_ketama {
         )
         .expect("create new hash ring success");
         let node = ring.get_node(fnv1a64("a".as_bytes()));
-        assert_eq!(node, "mc-1");
-        assert_eq!(ring.get_node(fnv1a64("memtier-102".as_bytes())), "mc-x")
+        assert_eq!(node, Some("mc-1"));
+        assert_eq!(
+            ring.get_node(fnv1a64("memtier-102".as_bytes())),
+            Some("mc-x")
+        )
     }
 }

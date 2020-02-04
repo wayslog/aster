@@ -29,6 +29,7 @@ path = "src/lib.rs"
 
 [dependencies]
 libaster = {path = "libaster", version = "1.1.7", features=["metrics"]}
+cargo-outdated = "0.9.1"
 
 [profile.release]
 debug = true
