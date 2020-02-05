@@ -107,7 +107,7 @@ where
                 count += 1;
                 cmd.reregister(task::current());
                 #[cfg(feature = "metrics")]
-                cmd.mark_total(&self.cluster.cc.name);
+                cmd.mark_total(&self.cluster.cc.borrow().name);
                 if cmd.valid() && !cmd.is_done() {
                     // for done command, never send to backend
                     if let Some(subs) = cmd.subs() {
@@ -219,6 +219,6 @@ where
 {
     fn drop(&mut self) {
         #[cfg(feature = "metrics")]
-        front_conn_decr(&self.cluster.cc.name);
+        front_conn_decr(&self.cluster.cc.borrow().name);
     }
 }

@@ -33,6 +33,14 @@ pub struct HashRing {
 }
 
 impl HashRing {
+    pub fn empty() -> Self {
+        HashRing {
+            nodes: Vec::new(),
+            spots: Vec::new(),
+            ticks: Vec::new(),
+        }
+    }
+
     pub fn new(nodes: Vec<String>, spots: Vec<usize>) -> Result<Self, AsError> {
         if nodes.len() != spots.len() {
             return Err(AsError::BadConfig(
