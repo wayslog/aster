@@ -25,6 +25,7 @@ use futures::AsyncSink;
 use futures::{Sink, Stream};
 
 use tokio::net::TcpStream;
+use tokio::prelude::FutureExt;
 use tokio::runtime::current_thread;
 use tokio::timer::Interval;
 use tokio_codec::Decoder;
@@ -615,6 +616,7 @@ impl ConnBuilder {
             .and_then(|addr| {
                 let report_addr = format!("{:?}", &addr);
                 TcpStream::connect(&addr)
+                    .timeout(Duration::from_millis(100))
                     .map_err(move |err| error!("fail to connect to {} {:?}", &report_addr, err))
             })
             .then(move |sock| {

@@ -1,6 +1,6 @@
 [package]
 name = "aster-proxy"
-version = "1.1.7"
+version = "1.1.8"
 authors = ["wayslog <zxs867179@gmail.com>"]
 description = "A light, fast and powerful cache proxy written in Rust."
 homepage = "https://github.com/wayslog/aster"
@@ -28,7 +28,7 @@ name = "aster"
 path = "src/lib.rs"
 
 [dependencies]
-libaster = {path = "libaster", version = "1.1.7", features=["metrics"]}
+libaster = {path = "libaster", version = "1.1.8", features=["metrics"]}
 cargo-outdated = "0.9.1"
 
 [profile.release]

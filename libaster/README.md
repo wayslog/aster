@@ -5,6 +5,10 @@ libaster is the library for aster proxy.
 
 # change log
 
+## 1.1.8
+
+* add default tcp connection timeout for backend.
+
 ## 1.1.7
 
 * fixed unboot when seed meets down

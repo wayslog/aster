@@ -9,8 +9,10 @@ use futures::lazy;
 use futures::task::Task;
 use futures::unsync::mpsc::{channel, Sender};
 use futures::{AsyncSink, Future, Sink, Stream};
+
 use tokio::codec::{Decoder, Encoder};
 use tokio::net::TcpStream;
+use tokio::prelude::FutureExt;
 use tokio::runtime::current_thread;
 
 use std::cell::RefCell;
@@ -19,6 +21,7 @@ use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::thread::{Builder, JoinHandle};
+use std::time::Duration;
 
 use crate::protocol::{mc, redis};
 
@@ -430,6 +433,7 @@ where
         })
         .and_then(|addr: SocketAddr| {
             TcpStream::connect(&addr)
+                .timeout(Duration::from_secs(1))
                 .map_err(move |err| error!("fail to connect to {} due to {:?}", &addr, err))
         })
         .then(move |srslt: Result<TcpStream, ()>| {
