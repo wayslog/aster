@@ -153,6 +153,12 @@ impl<T: Request + 'static> Cluster<T> {
             })
             .and_then(|cluster| {
                 let rc_cluster = cluster.clone();
+                let reloader = reload::Reloader::new(rc_cluster);
+                current_thread::spawn(reloader);
+                Ok(cluster)
+            })
+            .and_then(|cluster| {
+                let rc_cluster = cluster.clone();
                 let listen = create_reuse_port_listener(&addr).expect("bind never fail");
                 let service = listen
                     .incoming()
@@ -196,7 +202,8 @@ impl<T: Request + 'static> Cluster<T> {
         Ok(())
     }
 
-    pub(crate) fn setup_ping(&self, addr: &str) {}
+    // TODO: implement it
+    // pub(crate) fn setup_ping(&self, addr: &str) {}
 
     pub(crate) fn reinit(&self, cc: ClusterConfig) -> Result<(), AsError> {
         let sls = ServerLine::parse_servers(&cc.servers)?;

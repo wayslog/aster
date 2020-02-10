@@ -146,31 +146,26 @@ impl From<num::ParseIntError> for AsError {
     }
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(default)]
     pub clusters: Vec<ClusterConfig>,
 }
 
 impl Config {
-    #[cfg(not(test))]
-    pub fn load<P: AsRef<Path>>(p: P) -> Result<Config, AsError> {
-        let path = p.as_ref();
-        let mut data = String::new();
-        let mut fd = File::open(path)?;
-        fd.read_to_string(&mut data)?;
-        let mut cfg: Config = toml::from_str(&data)?;
-        let thread = Config::load_thread_from_env();
-        for cluster in &mut cfg.clusters[..] {
-            if cluster.thread.is_none() {
-                cluster.thread = Some(thread);
+    pub fn cluster(&self, name: &str) -> Option<ClusterConfig> {
+        for cluster in &self.clusters {
+            if cluster.name == name {
+                return Some(cluster.clone());
             }
         }
-        Ok(cfg)
+        None
     }
 
-    // for test default load
-    #[cfg(test)]
+    pub fn valid(&self) -> Result<(), AsError> {
+        Ok(())
+    }
+
     pub fn load<P: AsRef<Path>>(p: P) -> Result<Config, AsError> {
         let path = p.as_ref();
         let mut data = String::new();

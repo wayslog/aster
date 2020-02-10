@@ -32,7 +32,9 @@ pub fn run() -> Result<(), Error> {
     let yaml = load_yaml!("cli.yml");
     let matches = App::from_yaml(yaml).get_matches();
     let config = matches.value_of("config").unwrap_or("default.toml");
+    let watch_file = config.clone();
     let ip = matches.value_of("ip").map(|x| x.to_string());
+    let enable_reload = matches.is_present("reload");
     info!("[aster] loading config from {}", config);
     let cfg = com::Config::load(&config)?;
     debug!("use config : {:?}", cfg);
@@ -40,6 +42,7 @@ pub fn run() -> Result<(), Error> {
         !cfg.clusters.is_empty(),
         "clusters is absent of config file"
     );
+    crate::proxy::standalone::reload::init(&watch_file, enable_reload)?;
 
     let mut ths = Vec::new();
     for cluster in cfg.clusters.clone().into_iter() {
