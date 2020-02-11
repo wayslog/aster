@@ -225,12 +225,6 @@ where
             }
             let current = current_version();
             if current == self.current {
-                if log_enabled!(Level::Debug) {
-                    debug!(
-                        "cluster {} skip to reload due my version {:?} equals global version {:?}",
-                        self.name, current, self.current
-                    );
-                }
                 continue;
             }
             info!(
