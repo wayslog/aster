@@ -11,7 +11,7 @@ sudo apt install python3 -y
 sudo pip install pytest mock python-toml
 
 git clone --depth=1 https://github.com/wayslog/redis-py.git
-cp default-travis.toml redis-py
+cp default-travis.toml redis-py/default.toml
 
 cargo build --all
 RUST_LOG=libaster=info RUST_BACKTRACE=full ./target/debug/aster-proxy default-travis.toml &
