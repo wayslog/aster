@@ -2,7 +2,8 @@ use futures::task;
 use futures::{Async, AsyncSink, Future, Stream};
 use tokio::timer::Interval;
 
-use std::rc::Weak;
+use std::cell::Cell;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use crate::proxy::standalone::{Cluster, Request};
@@ -29,6 +30,7 @@ pub struct Ping<T: Request> {
     limit: u8,
 
     state: State<T>,
+    cancel: Rc<Cell<bool>>,
 }
 
 impl<T: Request> Ping<T> {
@@ -36,6 +38,7 @@ impl<T: Request> Ping<T> {
         cluster: Weak<Cluster<T>>,
         name: String,
         addr: String,
+        cancel: Rc<Cell<bool>>,
         interval_millis: u64,
         succ_interval_millis: u64,
         limit: u8,
@@ -57,7 +60,8 @@ impl<T: Request> Ping<T> {
             succ_interval,
             limit,
             count: 0,
-            state: State::Justice(true),
+            state: State::OnSuccess,
+            cancel,
         }
     }
 }
@@ -68,6 +72,11 @@ impl<T: Request + 'static> Future for Ping<T> {
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
         loop {
+            if self.cancel.get() {
+                info!("ping to {}({}) was canceld by handle", self.name, self.addr);
+                return Ok(Async::Ready(()));
+            }
+
             match self.state {
                 State::Justice(is_last_succ) => {
                     if is_last_succ {

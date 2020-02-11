@@ -16,11 +16,11 @@ use tokio::net::TcpStream;
 use tokio::prelude::FutureExt;
 use tokio::runtime::current_thread;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
@@ -83,6 +83,8 @@ pub struct Cluster<T> {
     _marker: PhantomData<T>,
     ring: RefCell<HashRing>,
     conns: RefCell<Conns<T>>,
+    pings: RefCell<HashMap<String, Rc<Cell<bool>>>>,
+    myself: RefCell<Weak<Cluster<T>>>,
 }
 
 impl<T: Request + 'static> Cluster<T> {
@@ -107,44 +109,32 @@ impl<T: Request + 'static> Cluster<T> {
                     _marker: Default::default(),
                     ring: RefCell::new(HashRing::empty()),
                     conns: RefCell::new(Conns::default()),
+                    pings: RefCell::new(HashMap::new()),
+                    myself: RefCell::new(Weak::new()),
                 };
-                cluster.reinit(cc).expect("fail to setup cluster");
-                Ok(Rc::new(cluster))
+                let rc_cluster = Rc::new(cluster);
+                let weak_ref = Rc::downgrade(&rc_cluster);
+                rc_cluster.myself.replace(weak_ref);
+
+                rc_cluster.reinit(cc).expect("fail to setup cluster");
+                Ok(rc_cluster)
             })
             .and_then(|cluster| {
                 let rc_cluster = cluster.clone();
-                let ping_fail_limit = cluster
-                    .cc
-                    .borrow()
-                    .ping_fail_limit
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or(0);
+                let ping_fail_limit = cluster.ping_fail_limit();
                 if ping_fail_limit > 0 {
-                    let ping_interval = cluster
-                        .cc
-                        .borrow()
-                        .ping_interval
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or(300000);
-                    let ping_succ_interval = cluster
-                        .cc
-                        .borrow()
-                        .ping_succ_interval
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or(1000);
-                    for (alias, node) in cluster.alias.borrow().iter() {
-                        let ping = ping::Ping::new(
-                            Rc::downgrade(&cluster),
-                            alias.to_string(),
-                            node.to_string(),
+                    let ping_interval = cluster.ping_interval();
+                    let ping_succ_interval = cluster.ping_succ_interval();
+                    // TODO: ping support non-alias mode
+                    let alias_map = cluster.alias.borrow().clone();
+                    for (alias, node) in alias_map.into_iter() {
+                        cluster.setup_ping(
+                            &alias,
+                            &node,
                             ping_interval,
                             ping_succ_interval,
                             ping_fail_limit,
                         );
-                        current_thread::spawn(ping);
                     }
                 } else {
                     info!("skip setup ping for {}", cluster.cc.borrow().name);
@@ -202,8 +192,59 @@ impl<T: Request + 'static> Cluster<T> {
         Ok(())
     }
 
-    // TODO: implement it
-    // pub(crate) fn setup_ping(&self, addr: &str) {}
+    fn ping_fail_limit(&self) -> u8 {
+        self.cc
+            .borrow()
+            .ping_fail_limit
+            .as_ref()
+            .cloned()
+            .unwrap_or(0)
+    }
+
+    fn ping_interval(&self) -> u64 {
+        self.cc
+            .borrow()
+            .ping_interval
+            .as_ref()
+            .cloned()
+            .unwrap_or(300000)
+    }
+
+    fn ping_succ_interval(&self) -> u64 {
+        self.cc
+            .borrow()
+            .ping_succ_interval
+            .as_ref()
+            .cloned()
+            .unwrap_or(1000)
+    }
+
+    fn setup_ping(
+        &self,
+        alias: &str,
+        node: &str,
+        ping_interval: u64,
+        ping_succ_interval: u64,
+        ping_fail_limit: u8,
+    ) {
+        const CANCEL: bool = false;
+        let handle = Rc::new(Cell::new(CANCEL));
+        {
+            let mut pings = self.pings.borrow_mut();
+            pings.insert(node.to_string(), handle.clone());
+        }
+
+        let ping = ping::Ping::new(
+            self.myself.borrow().clone(),
+            alias.to_string(),
+            node.to_string(),
+            handle,
+            ping_interval,
+            ping_succ_interval,
+            ping_fail_limit,
+        );
+        current_thread::spawn(ping);
+    }
 
     pub(crate) fn reinit(&self, cc: ClusterConfig) -> Result<(), AsError> {
         let sls = ServerLine::parse_servers(&cc.servers)?;
@@ -212,6 +253,10 @@ impl<T: Request + 'static> Cluster<T> {
             .clone()
             .into_iter()
             .zip(nodes.clone().into_iter())
+            .collect();
+        let alias_rev: HashMap<_, _> = alias_map
+            .iter()
+            .map(|(x, y)| (y.clone(), x.clone()))
             .collect();
         let spots_map: HashMap<_, _> = if alias.is_empty() {
             nodes
@@ -242,9 +287,30 @@ impl<T: Request + 'static> Cluster<T> {
         let unused_addrs = old_addrs.difference(&addrs);
         for addr in new_addrs {
             self.reconnect(&*addr);
+            let ping_fail_limit = self.ping_fail_limit();
+            if ping_fail_limit > 0 {
+                let ping_interval = self.ping_interval();
+                let ping_succ_interval = self.ping_succ_interval();
+                let alias = alias_rev
+                    .get(addr)
+                    .expect("alias must be exists")
+                    .to_string();
+                self.setup_ping(
+                    &alias,
+                    addr,
+                    ping_interval,
+                    ping_succ_interval,
+                    ping_fail_limit,
+                );
+            }
         }
+
         for addr in unused_addrs {
             self.conns.borrow_mut().remove(&addr);
+            let mut pings = self.pings.borrow_mut();
+            if let Some(handle) = pings.remove(addr) {
+                handle.set(true);
+            }
         }
 
         *self.cc.borrow_mut() = cc;
