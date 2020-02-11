@@ -1,10 +1,10 @@
 use futures::{Async, Future, Stream};
 use inotify::{EventMask, Inotify, WatchMask};
+use log::Level;
 use tokio::timer::Interval;
 
 use std::collections::HashMap;
 use std::env;
-use std::mem::MaybeUninit;
 use std::path::Path;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -42,22 +42,23 @@ impl FileWatcher {
     }
 
     pub fn current_version(&self) -> Version {
-        let current = self.current.load(Ordering::Relaxed);
+        let current = self.current.load(Ordering::SeqCst);
         Version(current)
     }
 
     fn reload(&self) -> Result<(), AsError> {
+        debug!("reload from file {:p}", &self.watchfile);
         let config = Config::load(&self.watchfile)?;
         config.valid()?;
-        let current = self.current.load(Ordering::Relaxed);
+        info!("load new config content as {:?}", config);
+        let current = self.current.load(Ordering::SeqCst);
         let mut handle = self.versions.lock().unwrap();
         handle.insert(current + 1, config);
-        self.current.fetch_add(1, Ordering::Relaxed);
+        self.current.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
     fn watch_dir(&self) -> String {
-        info!("watch file is {}", self.watchfile);
         let pth = Path::new(&self.watchfile);
         let pb = if pth.is_absolute() {
             pth.to_path_buf()
@@ -68,6 +69,7 @@ impl FileWatcher {
 
         let watch_dir = pb.parent().expect("not valid path for config");
         let ret = watch_dir.to_str().expect("not valid path").to_string();
+        info!("watch file address is {:p}", &self.watchfile);
         ret
     }
 
@@ -78,7 +80,8 @@ impl FileWatcher {
         inotify.add_watch(watch_dir, WatchMask::MODIFY | WatchMask::CREATE)?;
         let mut buf = [0u8; 1024];
         let mut last_update_time = Instant::now();
-        let update_gap = Duration::from_secs(60); // 1 minutes
+        let update_gap = Duration::from_secs(3); // 1 minutes
+        last_update_time = last_update_time.checked_sub(update_gap).unwrap();
         loop {
             let events = inotify.read_events_blocking(&mut buf)?;
             for event in events {
@@ -124,30 +127,30 @@ pub fn init(watchfile: &str, reload: bool) -> Result<(), AsError> {
     if reload {
         info!("starting file watcher");
         thread::spawn(move || {
-            let fw = unsafe { G_FW.read() };
+            let fw = unsafe { G_FW.as_ref().unwrap() };
             if let Err(err) = fw.watch() {
                 error!("fail to watch file due to {:?}", err);
             } else {
                 info!("success start file watcher");
             }
         });
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(100));
     }
     Ok(())
 }
 
 fn current_version() -> Version {
-    let fw = unsafe { G_FW.read() };
+    let fw = unsafe { G_FW.as_ref().unwrap() };
     fw.current_version()
 }
 
 fn get_config(version: usize) -> Option<Config> {
-    let fw = unsafe { G_FW.read() };
+    let fw = unsafe { G_FW.as_ref().unwrap() };
     fw.get_config(version)
 }
 
 fn enable_reload() -> bool {
-    let fw = unsafe { G_FW.read() };
+    let fw = unsafe { G_FW.as_ref().unwrap() };
     fw.enable_reload()
 }
 
@@ -179,7 +182,7 @@ impl<T: Request + 'static> Reloader<T> {
             cluster: weak,
             current: Version(0),
             interval: Interval::new(
-                Instant::now() + Duration::from_secs(30),
+                Instant::now() + Duration::from_secs(10),
                 Duration::from_secs(1),
             ),
         }
@@ -211,7 +214,13 @@ where
             }
             let current = current_version();
             if current == self.current {
-                return Ok(Async::NotReady);
+                if log_enabled!(Level::Debug) {
+                    debug!(
+                        "cluster {} skip to reload due my version {:?} equals global version {:?}",
+                        self.name, current, self.current
+                    );
+                }
+                continue;
             }
             info!(
                 "start change config version from {:?} to {:?}",
@@ -239,10 +248,10 @@ where
                     continue;
                 }
                 info!("success reload for cluster {}", cluster.cc.borrow().name);
+                self.current = current;
             } else {
-                return Ok(Async::Ready(()));
+                error!("fail to reload due cluster has been destroyed");
             }
-            self.current = current;
         }
     }
 }
