@@ -42,7 +42,7 @@ pub fn run() -> Result<(), Error> {
         !cfg.clusters.is_empty(),
         "clusters is absent of config file"
     );
-    crate::proxy::standalone::reload::init(&watch_file, enable_reload)?;
+    crate::proxy::standalone::reload::init(&watch_file, cfg.clone(), enable_reload)?;
 
     let mut ths = Vec::new();
     for cluster in cfg.clusters.clone().into_iter() {

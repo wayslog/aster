@@ -23,11 +23,14 @@ pub struct FileWatcher {
 }
 
 impl FileWatcher {
-    fn new(watchfile: String, reload: bool) -> Self {
+    fn new(watchfile: String, config: Config, reload: bool) -> Self {
+        let init_version = 0;
+        let mut init_map = HashMap::new();
+        init_map.insert(init_version, config);
         FileWatcher {
             watchfile,
-            current: AtomicUsize::new(0),
-            versions: Mutex::new(HashMap::new()),
+            current: AtomicUsize::new(init_version),
+            versions: Mutex::new(init_map),
             reload,
         }
     }
@@ -46,10 +49,27 @@ impl FileWatcher {
         Version(current)
     }
 
+    fn current_config(&self) -> Config {
+        let current = self.current.load(Ordering::SeqCst);
+        let handle = self.versions.lock().unwrap();
+        handle
+            .get(&current)
+            .cloned()
+            .expect("current version must be exists")
+    }
+
     fn reload(&self) -> Result<(), AsError> {
+        thread::sleep(Duration::from_millis(200));
         debug!("reload from file {:p}", &self.watchfile);
         let config = Config::load(&self.watchfile)?;
         config.valid()?;
+        let current_config = self.current_config();
+
+        if current_config.reload_equals(&config) {
+            info!("skip due to no change in configuration");
+            return Ok(());
+        }
+
         info!("load new config content as {:?}", config);
         let current = self.current.load(Ordering::SeqCst);
         let mut handle = self.versions.lock().unwrap();
@@ -79,9 +99,6 @@ impl FileWatcher {
         info!("start to watch dir {:?}", watch_dir);
         inotify.add_watch(watch_dir, WatchMask::MODIFY | WatchMask::CREATE)?;
         let mut buf = [0u8; 1024];
-        let mut last_update_time = Instant::now();
-        let update_gap = Duration::from_secs(3); // 1 minutes
-        last_update_time = last_update_time.checked_sub(update_gap).unwrap();
         loop {
             let events = inotify.read_events_blocking(&mut buf)?;
             for event in events {
@@ -95,18 +112,12 @@ impl FileWatcher {
                     "start reload version from {}",
                     self.current.load(Ordering::SeqCst)
                 );
-
-                if last_update_time.elapsed() < update_gap {
-                    warn!("skip update due change too frequent");
-                    continue;
-                }
-
                 if let Err(err) = self.reload() {
                     error!("reload fail due to {:?}", err);
                 } else {
-                    info!("success reload");
-                    last_update_time = Instant::now();
+                    info!("success reload config");
                 }
+                break;
             }
         }
     }
@@ -115,9 +126,9 @@ impl FileWatcher {
 static G_FW_ONCE: Once = Once::new();
 static mut G_FW: *const FileWatcher = std::ptr::null();
 
-pub fn init(watchfile: &str, reload: bool) -> Result<(), AsError> {
+pub fn init(watchfile: &str, config: Config, reload: bool) -> Result<(), AsError> {
     G_FW_ONCE.call_once(|| {
-        let fw = FileWatcher::new(watchfile.to_string(), reload);
+        let fw = FileWatcher::new(watchfile.to_string(), config, reload);
         let fw = Box::new(fw);
         unsafe {
             G_FW = Box::into_raw(fw) as *const _;
@@ -226,6 +237,10 @@ where
                 "start change config version from {:?} to {:?}",
                 self.current, current
             );
+            if log_enabled!(Level::Debug) {
+                let current_cfg = current.config();
+                debug!("start to change config content as {:?}", current_cfg);
+            }
 
             let config = match current.config() {
                 Some(ccs) => ccs,

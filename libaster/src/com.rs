@@ -5,6 +5,7 @@ use tokio::net::TcpStream;
 
 pub use failure::Error;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -160,6 +161,24 @@ impl Config {
             }
         }
         None
+    }
+
+    fn servers_map(&self) -> BTreeMap<String, BTreeSet<String>> {
+        self.clusters
+            .iter()
+            .map(|x| {
+                (
+                    x.name.clone(),
+                    x.servers.iter().map(|x| x.to_string()).collect(),
+                )
+            })
+            .collect()
+    }
+
+    pub fn reload_equals(&self, other: &Config) -> bool {
+        let equals_map = self.servers_map();
+        let others_map = other.servers_map();
+        equals_map == others_map
     }
 
     pub fn valid(&self) -> Result<(), AsError> {
