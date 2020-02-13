@@ -39,6 +39,8 @@ use std::rc::Rc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+type TriggerSender = Sender<fetcher::TriggerBy>;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
     Move { slot: usize, to: String },
@@ -89,7 +91,8 @@ pub struct Cluster {
     read_from_slave: bool,
 
     moved: Sender<Redirection>,
-    fetch: RefCell<Option<Sender<Instant>>>,
+    fetch: RefCell<Option<TriggerSender>>,
+    latest: RefCell<Instant>,
 }
 
 impl Cluster {
@@ -151,6 +154,7 @@ impl Cluster {
                     slots: RefCell::new(slots),
                     conns: RefCell::new(conns),
                     fetch: RefCell::new(None),
+                    latest: RefCell::new(Instant::now()),
                 };
                 Ok((cluster, moved_rx))
             })
@@ -162,16 +166,19 @@ impl Cluster {
             })
             .and_then(|rc_cluster| {
                 let interval_millis = rc_cluster.cc.fetch_interval.unwrap_or(15 * 60 * 1000);
-                let interval =
-                    Interval::new(Instant::now(), Duration::from_millis(interval_millis));
-                let fetch =
-                    fetcher::Fetch::new(rc_cluster.clone(), interval.map_err(|_err| AsError::None));
-                current_thread::spawn(fetch);
+                let interval = Interval::new(
+                    Instant::now() + Duration::from_millis(interval_millis),
+                    Duration::from_millis(interval_millis),
+                );
+                let interval_stream = interval
+                    .map(|_| fetcher::TriggerBy::Interval)
+                    .map_err(|_| AsError::None);
 
                 let (tx, rx) = channel(2);
                 let _ = rc_cluster.fetch.borrow_mut().replace(tx);
                 let trigger = rx.map_err(|_| AsError::None);
-                let fetch = fetcher::Fetch::new(rc_cluster.clone(), trigger);
+                let fetch =
+                    fetcher::Fetch::new(rc_cluster.clone(), trigger.select(interval_stream));
                 current_thread::spawn(fetch);
                 Ok(rc_cluster)
             })
@@ -244,10 +251,9 @@ impl Cluster {
             .expect("master addr never be empty")
     }
 
-    pub fn trigger_fetch(&self) {
+    pub fn trigger_fetch(&self, trigger_by: fetcher::TriggerBy) {
         if let Some(mut fetch) = self.fetch.borrow().clone() {
-            let now = Instant::now();
-            if let Ok(_) = fetch.start_send(now) {
+            if let Ok(_) = fetch.start_send(trigger_by) {
                 if let Ok(_) = fetch.poll_complete() {
                     info!("succeed trigger fetch process");
                     return;
@@ -282,7 +288,7 @@ impl Cluster {
         }
     }
 
-    pub fn dispatch_all(&self, cmds: &mut VecDeque<Cmd>) -> Result<usize, AsError> {
+    fn inner_dispatch_all(&self, cmds: &mut VecDeque<Cmd>) -> Result<usize, AsError> {
         let mut count = 0usize;
         loop {
             if cmds.is_empty() {
@@ -337,6 +343,18 @@ impl Cluster {
                 return Ok(count);
             }
         }
+    }
+
+    pub fn dispatch_all(&self, cmds: &mut VecDeque<Cmd>) -> Result<usize, AsError> {
+        let count = self.inner_dispatch_all(cmds)?;
+        if count != 0 {
+            self.latest.replace(Instant::now());
+        }
+        Ok(count)
+    }
+
+    pub(crate) fn since_latest(&self) -> Duration {
+        self.latest.borrow().elapsed()
     }
 
     pub(crate) fn try_update_all_slots(&self, layout: ReplicaLayout) -> bool {
@@ -534,7 +552,7 @@ pub(crate) struct ConnBuilder {
     rt: Option<u64>,
     wt: Option<u64>,
     replica: bool,
-    fetch: Option<Sender<Instant>>,
+    fetch: Option<TriggerSender>,
 }
 
 impl ConnBuilder {
@@ -550,7 +568,7 @@ impl ConnBuilder {
         }
     }
 
-    pub(crate) fn fetch(self, fetch: Option<Sender<Instant>>) -> Self {
+    pub(crate) fn fetch(self, fetch: Option<TriggerSender>) -> Self {
         let mut cb = self;
         cb.fetch = fetch;
         cb
@@ -649,8 +667,7 @@ impl ConnBuilder {
                     let blackhole = back::Blackhole::new(node_addr_clone, rx);
                     current_thread::spawn(blackhole);
                     if let Some(mut fetch) = fetch {
-                        let now = Instant::now();
-                        fetch.start_send(now).unwrap();
+                        fetch.start_send(fetcher::TriggerBy::Error).unwrap();
                         fetch.poll_complete().unwrap();
                     }
                 }

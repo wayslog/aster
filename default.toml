@@ -53,7 +53,8 @@ thread = 1
 cache_type = "redis_cluster"
 servers = ["127.0.0.1:3200"]
 
-fetch_interval = 3600000 # 3600s , 1 hour 
+fetch_interval = 1800000 # 1800s , 30 minutes
+fetch_since_latest_cmd = 3600000 # 3600s , 1 hour
 read_from_slave = false
 
 ping_fail_limit = 10

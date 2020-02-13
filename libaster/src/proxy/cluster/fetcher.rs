@@ -4,11 +4,18 @@ use rand::{thread_rng, Rng};
 
 use futures::task;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::Duration;
 
 use crate::com::AsError;
 use crate::protocol::redis::{new_cluster_slots_cmd, slots_reply_to_replicas, Cmd};
 use crate::proxy::cluster::Cluster;
+
+#[derive(Debug, Clone)]
+pub enum TriggerBy {
+    Interval,
+    Moved,
+    Error,
+}
 
 enum State {
     Interval,
@@ -20,17 +27,18 @@ enum State {
 
 pub struct Fetch<R>
 where
-    R: Stream<Item = Instant, Error = AsError>,
+    R: Stream<Item = TriggerBy, Error = AsError>,
 {
     cluster: Rc<Cluster>,
     rng: ThreadRng,
     state: State,
     trigger: R,
+    gap: Duration,
 }
 
 impl<R> Fetch<R>
 where
-    R: Stream<Item = Instant, Error = AsError>,
+    R: Stream<Item = TriggerBy, Error = AsError>,
 {
     pub fn new(cluster: Rc<Cluster>, trigger: R) -> Fetch<R> {
         Fetch {
@@ -38,13 +46,14 @@ where
             trigger,
             rng: thread_rng(),
             state: State::Interval,
+            gap: Duration::from_secs(30 * 60), // 30 mins
         }
     }
 }
 
 impl<R> Future for Fetch<R>
 where
-    R: Stream<Item = Instant, Error = AsError>,
+    R: Stream<Item = TriggerBy, Error = AsError>,
 {
     type Item = ();
     type Error = ();
@@ -57,7 +66,20 @@ where
             match &self.state {
                 State::Interval => match self.trigger.poll() {
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Ok(Async::Ready(Some(_))) => {
+                    Ok(Async::Ready(Some(trigger_by))) => {
+                        match trigger_by {
+                            TriggerBy::Interval => {
+                                if self.cluster.since_latest() < self.gap {
+                                    continue;
+                                }
+                            }
+                            TriggerBy::Error => {
+                                debug!("fetcher success trigger by proxy error");
+                            }
+                            TriggerBy::Moved => {
+                                debug!("fetcher success trigger by moved");
+                            }
+                        }
                         self.state = State::Random;
                     }
                     Ok(Async::Ready(None)) => {
