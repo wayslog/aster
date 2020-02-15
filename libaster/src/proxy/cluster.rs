@@ -11,6 +11,7 @@ use crate::com::AsError;
 use crate::com::ClusterConfig;
 use crate::protocol::redis::{new_read_only_cmd, RedisHandleCodec, RedisNodeCodec};
 use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
+use crate::proxy::cluster::fetcher::SingleFlightTrigger;
 use crate::utils::crc::crc16;
 
 #[cfg(feature = "metrics")]
@@ -35,11 +36,9 @@ use rand::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
-
-type TriggerSender = Sender<fetcher::TriggerBy>;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
@@ -91,7 +90,7 @@ pub struct Cluster {
     read_from_slave: bool,
 
     moved: Sender<Redirection>,
-    fetch: RefCell<Option<TriggerSender>>,
+    fetch: RefCell<Option<Rc<SingleFlightTrigger>>>,
     latest: RefCell<Instant>,
 }
 
@@ -165,7 +164,7 @@ impl Cluster {
                 Ok(rc_cluster)
             })
             .and_then(|rc_cluster| {
-                let interval_millis = rc_cluster.cc.fetch_interval.unwrap_or(15 * 60 * 1000);
+                let interval_millis = rc_cluster.cc.fetch_interval.unwrap_or(1000);
                 let interval = Interval::new(
                     Instant::now() + Duration::from_millis(interval_millis),
                     Duration::from_millis(interval_millis),
@@ -174,8 +173,9 @@ impl Cluster {
                     .map(|_| fetcher::TriggerBy::Interval)
                     .map_err(|_| AsError::None);
 
-                let (tx, rx) = channel(2);
-                let _ = rc_cluster.fetch.borrow_mut().replace(tx);
+                let (tx, rx) = channel(1024);
+                let trigger = Rc::new(SingleFlightTrigger::new(1, tx));
+                let _ = rc_cluster.fetch.borrow_mut().replace(trigger);
                 let trigger = rx.map_err(|_| AsError::None);
                 let fetch =
                     fetcher::Fetch::new(rc_cluster.clone(), trigger.select(interval_stream));
@@ -252,14 +252,11 @@ impl Cluster {
     }
 
     pub fn trigger_fetch(&self, trigger_by: fetcher::TriggerBy) {
-        if let Some(mut fetch) = self.fetch.borrow().clone() {
-            if let Ok(_) = fetch.start_send(trigger_by) {
-                if let Ok(_) = fetch.poll_complete() {
-                    info!("succeed trigger fetch process");
-                    return;
-                }
+        if let Some(trigger) = self.fetch.borrow().clone() {
+            if trigger.try_trigger() {
+                info!("succeed trigger fetch process by {:?}", trigger_by);
+                return;
             }
-            warn!("fail to trigger fetch process due fetch channel is full or closed.");
         } else {
             warn!("fail to trigger fetch process due to trigger event uninitialed");
         }
@@ -377,7 +374,13 @@ impl Cluster {
             .node(addr.to_string())
             .read_timeout(self.cc.read_timeout.clone())
             .write_timeout(self.cc.write_timeout.clone())
-            .fetch(self.fetch.borrow().clone())
+            .fetch(
+                self.fetch
+                    .borrow()
+                    .as_ref()
+                    .map(|x| Rc::downgrade(x))
+                    .unwrap_or(Weak::new()),
+            )
             .replica(is_replica)
             .connect()?;
         conns.insert(&addr, sender);
@@ -552,7 +555,7 @@ pub(crate) struct ConnBuilder {
     rt: Option<u64>,
     wt: Option<u64>,
     replica: bool,
-    fetch: Option<TriggerSender>,
+    fetch: Weak<SingleFlightTrigger>,
 }
 
 impl ConnBuilder {
@@ -564,11 +567,11 @@ impl ConnBuilder {
             rt: Some(1000),
             wt: Some(1000),
             replica: false,
-            fetch: None,
+            fetch: Weak::new(),
         }
     }
 
-    pub(crate) fn fetch(self, fetch: Option<TriggerSender>) -> Self {
+    pub(crate) fn fetch(self, fetch: Weak<SingleFlightTrigger>) -> Self {
         let mut cb = self;
         cb.fetch = fetch;
         cb
@@ -666,9 +669,8 @@ impl ConnBuilder {
                     error!("fail to conenct to backend {}", node_addr_clone);
                     let blackhole = back::Blackhole::new(node_addr_clone, rx);
                     current_thread::spawn(blackhole);
-                    if let Some(mut fetch) = fetch {
-                        fetch.start_send(fetcher::TriggerBy::Error).unwrap();
-                        fetch.poll_complete().unwrap();
+                    if let Some(trigger) = fetch.upgrade() {
+                        trigger.try_trigger();
                     }
                 }
                 Ok(())
