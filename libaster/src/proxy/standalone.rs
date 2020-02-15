@@ -193,14 +193,29 @@ impl<T: Request + 'static> Cluster<T> {
                 let service = listen
                     .incoming()
                     .for_each(move |sock| {
-                        sock.set_nodelay(true).expect("set nodelay must ok");
-                        let client = sock.peer_addr().expect("peer must have addr");
-                        let client_str = format!("{}", client);
+                        let cluster_ref = cluster.clone();
+                        if let Err(err) = sock.set_nodelay(true) {
+                            warn!(
+                                "cluster {} fail to set nodelay but skip, due to {:?}",
+                                cluster_ref.cc.name, err
+                            );
+                        }
+                        let client_str = match sock.peer_addr() {
+                            Ok(client) => format!("{}", client),
+                            Err(err) => {
+                                error!(
+                                    "cluster {} fail to get client name due to {:?}",
+                                    cluster_ref.cc.name, err
+                                );
+                                "unknown".to_string()
+                            }
+                        };
+
                         let codec = T::FrontCodec::default();
                         let (output, input) = codec.framed(sock).split();
                         #[cfg(feature = "metrics")]
                         front_conn_incr(&cluster.cc.name);
-                        let fut = front::Front::new(client_str, cluster.clone(), input, output);
+                        let fut = front::Front::new(client_str, cluster_ref, input, output);
                         current_thread::spawn(fut);
                         Ok(())
                     })

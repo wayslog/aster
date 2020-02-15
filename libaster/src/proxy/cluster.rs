@@ -181,13 +181,25 @@ impl Cluster {
                     .incoming()
                     .for_each(move |sock| {
                         let cluster = cluster.clone();
-                        sock.set_nodelay(true).expect("set nodelay must ok");
+                        if let Err(err) = sock.set_nodelay(true) {
+                            warn!(
+                                "cluster {} fail to set nodelay but skip, due to {:?}",
+                                cluster.cc.name, err
+                            );
+                        }
+                        let client_str = match sock.peer_addr() {
+                            Ok(client) => format!("{}", client),
+                            Err(err) => {
+                                error!(
+                                    "cluster {} fail to get client name due to {:?}",
+                                    cluster.cc.name, err
+                                );
+                                "unknown".to_string()
+                            }
+                        };
 
                         #[cfg(feature = "metrics")]
                         front_conn_incr(&cluster.cc.name);
-
-                        let client = sock.peer_addr().expect("peer must have addr");
-                        let client_str = format!("{}", client);
                         let codec = RedisHandleCodec {};
                         let (output, input) = codec.framed(sock).split();
                         let fut = front::Front::new(client_str, cluster, input, output);
@@ -623,7 +635,10 @@ impl ConnBuilder {
                 if let Ok(sock) = sock {
                     let sock =
                         set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
-                    sock.set_nodelay(true).expect("set nodelay must ok");
+                    if let Err(_) = sock.set_nodelay(true) {
+                        warn!("fail to set set nodelay when connect to backend but ignore");
+                    }
+
                     let codec = RedisNodeCodec {};
                     let (sink, stream) = codec.framed(sock).split();
                     let backend =
