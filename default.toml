@@ -1,49 +1,49 @@
 
-# [[clusters]]
-# name = "test-mc-standalone"
-# listen_addr = "0.0.0.0:7789"
-# hash_tag = "{}"
-# thread = 1
-# cache_type = "memcache"
-# servers = [
-#     "127.0.0.1:11211:10 mc-1",
-#     "127.0.0.1:11211:10 mc-2",
-# ]
+[[clusters]]
+name = "test-mc-standalone"
+listen_addr = "0.0.0.0:7789"
+hash_tag = "{}"
+thread = 1
+cache_type = "memcache"
+servers = [
+    "127.0.0.1:11211:10 mc-1",
+    "127.0.0.1:11211:10 mc-2",
+]
 
-# fetch_interval = 3600000 
-# read_from_slave = false
+fetch_interval = 3600000 
+read_from_slave = false
 
-# ping_fail_limit = 6 # 3 times
-# ping_succ_interval = 1000 # 1 second
-# ping_interval = 5000 # 5 seconds
+ping_fail_limit = 6 # 3 times
+ping_succ_interval = 1000 # 1 second
+ping_interval = 5000 # 5 seconds
 
-# read_timeout = 1000
-# write_timeout = 1000
-# dial_timeout = 500
-# listen_proto = "tcp"
-# node_connections = 1
+read_timeout = 1000
+write_timeout = 1000
+dial_timeout = 500
+listen_proto = "tcp"
+node_connections = 1
 
-# [[clusters]]
-# name = "test-redis-standalone"
-# listen_addr = "0.0.0.0:7787"
-# hash_tag = "{}"
-# cache_type = "redis"
-# servers = [
-#     "127.0.0.1:6378:10 redis-1",
-#     "127.0.0.1:6379:10 redis-2",
-# ]
-# thread = 1
-# fetch_interval = 3600000 
-# read_from_slave = false
+[[clusters]]
+name = "test-redis-standalone"
+listen_addr = "0.0.0.0:7787"
+hash_tag = "{}"
+cache_type = "redis"
+servers = [
+    "127.0.0.1:6378:10 redis-1",
+    "127.0.0.1:6379:10 redis-2",
+]
+thread = 1
+fetch_interval = 3600000 
+read_from_slave = false
 
-# ping_fail_limit = 10
-# ping_interval = 30000
+ping_fail_limit = 10
+ping_interval = 30000
 
-# read_timeout = 1000
-# write_timeout = 1000
-# dial_timeout = 500
-# listen_proto = "tcp"
-# node_connections = 1
+read_timeout = 1000
+write_timeout = 1000
+dial_timeout = 500
+listen_proto = "tcp"
+node_connections = 1
 
 [[clusters]]
 name = "test-cluster"

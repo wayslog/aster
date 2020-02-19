@@ -157,7 +157,8 @@ impl<T: Request + 'static> Cluster<T> {
                         if let Err(err) = sock.set_nodelay(true) {
                             warn!(
                                 "cluster {} fail to set nodelay but skip, due to {:?}",
-                                cluster_ref.cc.name, err
+                                cluster_ref.cc.borrow().name,
+                                err
                             );
                         }
                         let client_str = match sock.peer_addr() {
@@ -165,7 +166,8 @@ impl<T: Request + 'static> Cluster<T> {
                             Err(err) => {
                                 error!(
                                     "cluster {} fail to get client name due to {:?}",
-                                    cluster_ref.cc.name, err
+                                    cluster_ref.cc.borrow().name,
+                                    err
                                 );
                                 "unknown".to_string()
                             }
@@ -174,7 +176,7 @@ impl<T: Request + 'static> Cluster<T> {
                         let codec = T::FrontCodec::default();
                         let (output, input) = codec.framed(sock).split();
                         #[cfg(feature = "metrics")]
-                        front_conn_incr(&cluster.cc.name);
+                        front_conn_incr(&cluster.cc.borrow().name);
                         let fut = front::Front::new(client_str, cluster_ref, input, output);
                         current_thread::spawn(fut);
                         Ok(())
