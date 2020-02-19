@@ -3,6 +3,7 @@ pub mod fnv;
 pub mod front;
 pub mod ketama;
 pub mod ping;
+pub mod reload;
 
 use futures::future::ok;
 use futures::lazy;
@@ -15,11 +16,11 @@ use tokio::net::TcpStream;
 use tokio::prelude::FutureExt;
 use tokio::runtime::current_thread;
 
-use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
@@ -74,14 +75,16 @@ pub trait Request: Clone {
 }
 
 pub struct Cluster<T> {
-    pub cc: ClusterConfig,
+    pub cc: RefCell<ClusterConfig>,
     hash_tag: Vec<u8>,
-    spots: HashMap<String, usize>,
-    alias: HashMap<String, String>,
+    spots: RefCell<HashMap<String, usize>>,
+    alias: RefCell<HashMap<String, String>>,
 
-    _maker: PhantomData<T>,
+    _marker: PhantomData<T>,
     ring: RefCell<HashRing>,
     conns: RefCell<Conns<T>>,
+    pings: RefCell<HashMap<String, Rc<Cell<bool>>>>,
+    myself: RefCell<Weak<Cluster<T>>>,
 }
 
 impl<T: Request + 'static> Cluster<T> {
@@ -93,99 +96,56 @@ impl<T: Request + 'static> Cluster<T> {
             .expect("parse socket never fail");
         let fut = ok::<ClusterConfig, AsError>(cc)
             .and_then(|cc| {
-                let sls = ServerLine::parse_servers(&cc.servers).expect("parse server line failed");
-                let (nodes, alias, weights) = ServerLine::unwrap_spot(&sls);
-                let alias_map: HashMap<_, _> = alias
-                    .clone()
-                    .into_iter()
-                    .zip(nodes.clone().into_iter())
-                    .collect();
-                let spots_map: HashMap<_, _> = if alias.is_empty() {
-                    nodes
-                        .clone()
-                        .into_iter()
-                        .zip(weights.clone().into_iter())
-                        .collect()
-                } else {
-                    alias
-                        .clone()
-                        .into_iter()
-                        .zip(weights.clone().into_iter())
-                        .collect()
-                };
                 let hash_tag = cc
                     .hash_tag
                     .as_ref()
                     .map(|x| x.as_bytes().to_vec())
                     .unwrap_or(vec![]);
-                let hash_ring = if alias.is_empty() {
-                    HashRing::new(nodes, weights)?
-                } else {
-                    HashRing::new(alias, weights)?
-                };
-                let ring = RefCell::new(hash_ring);
-                let conns: RefCell<Conns<T>> = RefCell::new(Conns::default());
                 let cluster = Cluster {
-                    cc,
-                    _maker: Default::default(),
+                    cc: RefCell::new(cc.clone()),
                     hash_tag,
-                    ring,
-                    conns,
-                    alias: alias_map,
-                    spots: spots_map,
+                    spots: RefCell::new(HashMap::new()),
+                    alias: RefCell::new(HashMap::new()),
+                    _marker: Default::default(),
+                    ring: RefCell::new(HashRing::empty()),
+                    conns: RefCell::new(Conns::default()),
+                    pings: RefCell::new(HashMap::new()),
+                    myself: RefCell::new(Weak::new()),
                 };
-                Ok(Rc::new(cluster))
-            })
-            .and_then(|cluster| {
-                let addrs: Vec<_> = if cluster.has_alias() {
-                    cluster.alias.values().map(|x| x.to_string()).collect()
-                } else {
-                    cluster.spots.keys().map(|x| x.to_string()).collect()
-                };
-                {
-                    let mut conns = cluster.conns.borrow_mut();
-                    for addr in addrs {
-                        if let Ok(conn) = connect(
-                            &cluster.cc.name,
-                            &addr,
-                            cluster.cc.read_timeout.clone(),
-                            cluster.cc.write_timeout.clone(),
-                        ) {
-                            conns.insert(&addr, conn);
-                        } else {
-                            warn!("fail to connect to {} {}", cluster.cc.name, addr);
-                        }
-                    }
-                }
-                Ok(cluster)
+                let rc_cluster = Rc::new(cluster);
+                let weak_ref = Rc::downgrade(&rc_cluster);
+                rc_cluster.myself.replace(weak_ref);
+
+                rc_cluster.reinit(cc).expect("fail to setup cluster");
+                Ok(rc_cluster)
             })
             .and_then(|cluster| {
                 let rc_cluster = cluster.clone();
-                let ping_fail_limit = cluster.cc.ping_fail_limit.as_ref().cloned().unwrap_or(0);
+                let ping_fail_limit = cluster.ping_fail_limit();
                 if ping_fail_limit > 0 {
-                    let ping_interval =
-                        cluster.cc.ping_interval.as_ref().cloned().unwrap_or(300000);
-                    let ping_succ_interval = cluster
-                        .cc
-                        .ping_succ_interval
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or(1000);
-                    for (alias, node) in cluster.alias.iter() {
-                        let ping = ping::Ping::new(
-                            Rc::downgrade(&cluster),
-                            alias.to_string(),
-                            node.to_string(),
+                    let ping_interval = cluster.ping_interval();
+                    let ping_succ_interval = cluster.ping_succ_interval();
+                    // TODO: ping support non-alias mode
+                    let alias_map = cluster.alias.borrow().clone();
+                    for (alias, node) in alias_map.into_iter() {
+                        cluster.setup_ping(
+                            &alias,
+                            &node,
                             ping_interval,
                             ping_succ_interval,
                             ping_fail_limit,
                         );
-                        current_thread::spawn(ping);
                     }
                 } else {
-                    info!("skip setup ping for {}", cluster.cc.name);
+                    info!("skip setup ping for {}", cluster.cc.borrow().name);
                 }
                 Ok(rc_cluster)
+            })
+            .and_then(|cluster| {
+                let rc_cluster = cluster.clone();
+                let reloader = reload::Reloader::new(rc_cluster);
+                current_thread::spawn(reloader);
+                Ok(cluster)
             })
             .and_then(|cluster| {
                 let rc_cluster = cluster.clone();
@@ -197,7 +157,8 @@ impl<T: Request + 'static> Cluster<T> {
                         if let Err(err) = sock.set_nodelay(true) {
                             warn!(
                                 "cluster {} fail to set nodelay but skip, due to {:?}",
-                                cluster_ref.cc.name, err
+                                cluster_ref.cc.borrow().name,
+                                err
                             );
                         }
                         let client_str = match sock.peer_addr() {
@@ -205,7 +166,8 @@ impl<T: Request + 'static> Cluster<T> {
                             Err(err) => {
                                 error!(
                                     "cluster {} fail to get client name due to {:?}",
-                                    cluster_ref.cc.name, err
+                                    cluster_ref.cc.borrow().name,
+                                    err
                                 );
                                 "unknown".to_string()
                             }
@@ -214,7 +176,7 @@ impl<T: Request + 'static> Cluster<T> {
                         let codec = T::FrontCodec::default();
                         let (output, input) = codec.framed(sock).split();
                         #[cfg(feature = "metrics")]
-                        front_conn_incr(&cluster.cc.name);
+                        front_conn_incr(&cluster.cc.borrow().name);
                         let fut = front::Front::new(client_str, cluster_ref, input, output);
                         current_thread::spawn(fut);
                         Ok(())
@@ -232,8 +194,136 @@ impl<T: Request + 'static> Cluster<T> {
         Ok(())
     }
 
+    fn ping_fail_limit(&self) -> u8 {
+        self.cc
+            .borrow()
+            .ping_fail_limit
+            .as_ref()
+            .cloned()
+            .unwrap_or(0)
+    }
+
+    fn ping_interval(&self) -> u64 {
+        self.cc
+            .borrow()
+            .ping_interval
+            .as_ref()
+            .cloned()
+            .unwrap_or(300000)
+    }
+
+    fn ping_succ_interval(&self) -> u64 {
+        self.cc
+            .borrow()
+            .ping_succ_interval
+            .as_ref()
+            .cloned()
+            .unwrap_or(1000)
+    }
+
+    fn setup_ping(
+        &self,
+        alias: &str,
+        node: &str,
+        ping_interval: u64,
+        ping_succ_interval: u64,
+        ping_fail_limit: u8,
+    ) {
+        const CANCEL: bool = false;
+        let handle = Rc::new(Cell::new(CANCEL));
+        {
+            let mut pings = self.pings.borrow_mut();
+            pings.insert(node.to_string(), handle.clone());
+        }
+
+        let ping = ping::Ping::new(
+            self.myself.borrow().clone(),
+            alias.to_string(),
+            node.to_string(),
+            handle,
+            ping_interval,
+            ping_succ_interval,
+            ping_fail_limit,
+        );
+        current_thread::spawn(ping);
+    }
+
+    pub(crate) fn reinit(&self, cc: ClusterConfig) -> Result<(), AsError> {
+        let sls = ServerLine::parse_servers(&cc.servers)?;
+        let (nodes, alias, weights) = ServerLine::unwrap_spot(&sls);
+        let alias_map: HashMap<_, _> = alias
+            .clone()
+            .into_iter()
+            .zip(nodes.clone().into_iter())
+            .collect();
+        let alias_rev: HashMap<_, _> = alias_map
+            .iter()
+            .map(|(x, y)| (y.clone(), x.clone()))
+            .collect();
+        let spots_map: HashMap<_, _> = if alias.is_empty() {
+            nodes
+                .clone()
+                .into_iter()
+                .zip(weights.clone().into_iter())
+                .collect()
+        } else {
+            alias
+                .clone()
+                .into_iter()
+                .zip(weights.clone().into_iter())
+                .collect()
+        };
+        let hash_ring = if alias.is_empty() {
+            HashRing::new(nodes, weights)?
+        } else {
+            HashRing::new(alias, weights)?
+        };
+        let addrs: HashSet<_> = if !alias_map.is_empty() {
+            alias_map.values().map(|x| x.to_string()).collect()
+        } else {
+            spots_map.keys().map(|x| x.to_string()).collect()
+        };
+        let old_addrs = self.conns.borrow().addrs();
+
+        let new_addrs = addrs.difference(&old_addrs);
+        let unused_addrs = old_addrs.difference(&addrs);
+        for addr in new_addrs {
+            self.reconnect(&*addr);
+            let ping_fail_limit = self.ping_fail_limit();
+            if ping_fail_limit > 0 {
+                let ping_interval = self.ping_interval();
+                let ping_succ_interval = self.ping_succ_interval();
+                let alias = alias_rev
+                    .get(addr)
+                    .expect("alias must be exists")
+                    .to_string();
+                self.setup_ping(
+                    &alias,
+                    addr,
+                    ping_interval,
+                    ping_succ_interval,
+                    ping_fail_limit,
+                );
+            }
+        }
+
+        for addr in unused_addrs {
+            self.conns.borrow_mut().remove(&addr);
+            let mut pings = self.pings.borrow_mut();
+            if let Some(handle) = pings.remove(addr) {
+                handle.set(true);
+            }
+        }
+
+        *self.cc.borrow_mut() = cc;
+        *self.ring.borrow_mut() = hash_ring;
+        *self.alias.borrow_mut() = alias_map;
+        *self.spots.borrow_mut() = spots_map;
+        Ok(())
+    }
+
     fn has_alias(&self) -> bool {
-        !self.alias.is_empty()
+        !self.alias.borrow().is_empty()
     }
 
     fn get_node(&self, name: String) -> String {
@@ -242,19 +332,20 @@ impl<T: Request + 'static> Cluster<T> {
         }
 
         self.alias
+            .borrow()
             .get(&name)
             .expect("alias name must exists")
             .to_string()
     }
 
     pub(crate) fn add_node(&self, name: String) -> Result<(), AsError> {
-        if let Some(weight) = self.spots.get(&name).cloned() {
+        if let Some(weight) = self.spots.borrow().get(&name).cloned() {
             let addr = self.get_node(name.clone());
             let conn = connect(
-                &self.cc.name,
+                &self.cc.borrow().name,
                 &addr,
-                self.cc.read_timeout.clone(),
-                self.cc.write_timeout.clone(),
+                self.cc.borrow().read_timeout.clone(),
+                self.cc.borrow().write_timeout.clone(),
             )?;
             self.conns.borrow_mut().insert(&addr, conn);
             self.ring.borrow_mut().add_node(name, weight);
@@ -275,10 +366,10 @@ impl<T: Request + 'static> Cluster<T> {
         debug!("trying to reconnect to {}", addr);
         conns.remove(addr);
         match connect(
-            &self.cc.name,
+            &self.cc.borrow().name,
             &addr,
-            self.cc.read_timeout.clone(),
-            self.cc.write_timeout.clone(),
+            self.cc.borrow().read_timeout.clone(),
+            self.cc.borrow().write_timeout.clone(),
         ) {
             Ok(sender) => conns.insert(&addr, sender),
             Err(err) => {
@@ -312,10 +403,10 @@ impl<T: Request + 'static> Cluster<T> {
             } else {
                 debug!("dispatch_to trying to reconnect to {}", addr);
                 let sender = connect(
-                    &self.cc.name,
+                    &self.cc.borrow().name,
                     &addr,
-                    self.cc.read_timeout.clone(),
-                    self.cc.write_timeout.clone(),
+                    self.cc.borrow().read_timeout.clone(),
+                    self.cc.borrow().write_timeout.clone(),
                 )?;
                 conns.insert(&addr, sender);
             }
@@ -357,10 +448,10 @@ impl<T: Request + 'static> Cluster<T> {
                         cmd.add_cycle();
                         cmds.push_front(cmd);
                         let sender = connect(
-                            &self.cc.name,
+                            &self.cc.borrow().name,
                             &addr,
-                            self.cc.read_timeout.clone(),
-                            self.cc.write_timeout.clone(),
+                            self.cc.borrow().read_timeout.clone(),
+                            self.cc.borrow().write_timeout.clone(),
                         )?;
                         conns.insert(&addr, sender);
                         return Ok(count);
@@ -369,10 +460,10 @@ impl<T: Request + 'static> Cluster<T> {
             } else {
                 cmds.push_front(cmd);
                 let sender = connect(
-                    &self.cc.name,
+                    &self.cc.borrow().name,
                     &addr,
-                    self.cc.read_timeout.clone(),
-                    self.cc.write_timeout.clone(),
+                    self.cc.borrow().read_timeout.clone(),
+                    self.cc.borrow().write_timeout.clone(),
                 )?;
                 conns.insert(&addr, sender);
                 return Ok(count);
@@ -387,6 +478,10 @@ struct Conns<T> {
 }
 
 impl<T> Conns<T> {
+    fn addrs(&self) -> HashSet<String> {
+        self.inner.keys().cloned().collect()
+    }
+
     fn get_mut(&mut self, s: &str) -> Option<&mut Conn<Sender<T>>> {
         self.inner.get_mut(s)
     }

@@ -189,7 +189,7 @@ where
                     break;
                 }
                 Err(err) => {
-                    error!("fail to recv from backend connection due {:?}", err);
+                    error!("fail to recv from back {} due {:?}", self.addr, err);
                     return Err(err.into());
                 }
             };
@@ -232,11 +232,9 @@ where
     fn on_closed(&mut self) {
         if let Some(cmd) = self.store.take() {
             cmd.set_error(&self.inner_err);
-            cmd.set_retry();
         }
         for cmd in self.cmdq.drain(0..) {
             cmd.set_error(&self.inner_err);
-            cmd.set_retry();
         }
     }
 
@@ -354,7 +352,6 @@ where
             match self.input.poll() {
                 Ok(Async::Ready(Some(cmd))) => {
                     cmd.set_error(&self.inner_err);
-                    cmd.set_retry();
                 }
                 Ok(Async::Ready(None)) => {
                     return Ok(Async::Ready(()));

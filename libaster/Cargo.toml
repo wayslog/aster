@@ -56,3 +56,4 @@ actix-web = {version = "1.0", optional=true}
 actix-rt = {version = "0.2.5", optional=true}
 sysinfo = {version = "0.9.5", optional=true}
 rayon = {version = "1.2.0", optional=true}
+inotify = "0.8.2"

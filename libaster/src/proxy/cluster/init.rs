@@ -102,14 +102,10 @@ impl Future for Initializer {
                 }
                 State::Done(cmd) => match slots_reply_to_replicas(cmd.clone()) {
                     Ok(Some(replica)) => {
-                        // debug!(
-                        //     "success fetch all cluster info for cluster {}",
-                        //     self.cc.name
-                        // );
                         let cluster = Cluster::run(self.cc.clone(), replica);
                         match cluster {
                             Ok(_) => {
-                                // debug!("succeed to create cluster {}", self.cc.name);
+                                info!("succeed to create cluster {}", self.cc.name);
                                 return Ok(Async::Ready(()));
                             }
                             Err(err) => {

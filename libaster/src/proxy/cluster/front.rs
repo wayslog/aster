@@ -1,5 +1,6 @@
 use crate::com::AsError;
 use crate::protocol::redis::Cmd;
+use crate::proxy::cluster::fetcher::TriggerBy;
 use crate::proxy::cluster::Cluster;
 
 use futures::task;
@@ -75,7 +76,7 @@ where
             }
 
             if cmd.borrow().is_error() {
-                self.cluster.trigger_fetch();
+                self.cluster.trigger_fetch(TriggerBy::Error);
                 if cmd.is_retry() {
                     cmd.unset_done();
                     cmd.unset_error();
