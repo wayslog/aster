@@ -5,6 +5,10 @@ libaster is the library for aster proxy.
 
 # change log
 
+## 1.2.0
+
+* add aster reload feature for standalone proxy mode.
+
 ## 1.1.8.1 
 
 * hot fixed: prevent panic when operate closed socket.
