@@ -291,9 +291,9 @@ dependencies = [
 
 [[package]]
 name = "aster-proxy"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
- "libaster 1.2.0",
+ "libaster 1.2.1",
 ]
 
 [[package]]
@@ -968,7 +968,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
 [[package]]
 name = "libaster"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "actix-rt 0.2.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "actix-web 1.0.9 (registry+https://github.com/rust-lang/crates.io-index)",
