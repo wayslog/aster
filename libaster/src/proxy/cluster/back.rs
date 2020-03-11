@@ -239,7 +239,7 @@ where
     }
 
     fn has_cmd(&mut self) -> bool {
-        self.store.is_some() && self.cmdq.is_empty()
+        self.store.is_some() || !self.cmdq.is_empty()
     }
 }
 

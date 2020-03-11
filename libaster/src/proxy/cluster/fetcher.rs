@@ -137,8 +137,10 @@ where
                         match trigger_by {
                             TriggerBy::Interval => {
                                 if self.cluster.since_latest() < self.gap {
+                                    // trace!("interval continue");
                                     continue;
                                 }
+                                // trace!("interval succ");
                             }
                             TriggerBy::Error => {
                                 debug!("fetcher success trigger by proxy error");
@@ -167,12 +169,15 @@ where
                         .nth(position)
                         .cloned()
                         .unwrap();
+                    // trace!("random {}", addr);
                     let mut cmd = new_cluster_slots_cmd();
                     cmd.reregister(task::current());
                     self.state = State::Sending(addr, cmd);
                 }
                 State::Sending(addr, cmd) => match self.cluster.dispatch_to(addr, cmd.clone()) {
                     Ok(AsyncSink::NotReady(_)) => {
+                        cmd.borrow_mut().add_cycle();
+                        // trace!("sending not ready");
                         return Ok(Async::NotReady);
                     }
                     Ok(AsyncSink::Ready) => {
@@ -185,8 +190,10 @@ where
                 },
                 State::Waiting(addr, cmd) => {
                     if !cmd.borrow().is_done() {
+                        // trace!("wait never done");
                         return Ok(Async::NotReady);
                     }
+                    // trace!("wait done");
                     self.state = State::Done(addr.clone(), cmd.clone());
                 }
                 State::Done(addr, cmd) => {

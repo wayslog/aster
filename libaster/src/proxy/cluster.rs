@@ -110,7 +110,8 @@ impl Cluster {
                     .map(|x| x.as_bytes().to_vec())
                     .unwrap_or(vec![]);
                 let mut slots = Slots::default();
-                slots.try_update_all(replica);
+                let (masters, replicas) = replica;
+                slots.try_update_all(masters, replicas);
                 let (moved, moved_rx) = channel(10240);
 
                 let all_masters = slots.get_all_masters();
@@ -274,9 +275,9 @@ impl Cluster {
                     Ok(ret) => {
                         return Ok(ret);
                     }
-                    Err(se) => {
-                        let cmd = se.into_inner();
-                        return Ok(AsyncSink::NotReady(cmd));
+                    Err(_se) => {
+                        warn!("fail to send to backend {} ", addr);
+                        return Err(AsError::BackendClosedError(addr.to_string()));
                     }
                 }
             } else {
@@ -355,8 +356,11 @@ impl Cluster {
     }
 
     pub(crate) fn try_update_all_slots(&self, layout: ReplicaLayout) -> bool {
-        let updated = self.slots.borrow_mut().try_update_all(layout);
-
+        let (masters, replicas) = layout;
+        let updated = self.slots.borrow_mut().try_update_all(masters, replicas);
+        if updated {
+            info!("skip to update cluster cc due to unnecessary");
+        }
         updated
     }
 
@@ -436,8 +440,7 @@ struct Slots {
 }
 
 impl Slots {
-    fn try_update_all(&mut self, layout: ReplicaLayout) -> bool {
-        let (masters, replicas) = layout;
+    fn try_update_all(&mut self, masters: Vec<String>, replicas: Vec<Vec<String>>) -> bool {
         let mut changed = false;
         for i in 0..SLOTS_COUNT {
             if self.masters[i] != masters[i] {
