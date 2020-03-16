@@ -59,6 +59,10 @@ impl SingleFlightTrigger {
         }
     }
 
+    pub fn ensure_trgger(&self) {
+        self.trigger();
+    }
+
     fn trigger(&self) {
         let mut fetch = self.fetch.borrow_mut();
         if let Ok(_) = fetch.start_send(TriggerBy::Error) {
@@ -100,6 +104,7 @@ where
     rng: ThreadRng,
     state: State,
     trigger: R,
+    #[allow(unused)]
     gap: Duration,
 }
 
@@ -126,7 +131,7 @@ where
     type Error = ();
 
     fn poll(&mut self) -> Result<Async<Self::Item>, Self::Error> {
-        if self.cluster.cc.servers.is_empty() {
+        if self.cluster.cc.borrow().servers.is_empty() {
             return Ok(Async::Ready(()));
         }
         loop {
@@ -136,10 +141,9 @@ where
                     Ok(Async::Ready(Some(trigger_by))) => {
                         match trigger_by {
                             TriggerBy::Interval => {
-                                if self.cluster.since_latest() < self.gap {
-                                    // trace!("interval continue");
-                                    continue;
-                                }
+                                // if self.cluster.since_latest() < self.gap {
+                                //     continue;
+                                // }
                                 // trace!("interval succ");
                             }
                             TriggerBy::Error => {
@@ -160,16 +164,19 @@ where
                     }
                 },
                 State::Random => {
-                    let position = self.rng.gen_range(0, self.cluster.cc.servers.len());
+                    let position = self
+                        .rng
+                        .gen_range(0, self.cluster.cc.borrow().servers.len());
                     let addr = self
                         .cluster
                         .cc
+                        .borrow()
                         .servers
                         .iter()
                         .nth(position)
                         .cloned()
                         .unwrap();
-                    // trace!("random {}", addr);
+                    info!("start fetch from remote address {}", addr);
                     let mut cmd = new_cluster_slots_cmd();
                     cmd.reregister(task::current());
                     self.state = State::Sending(addr, cmd);

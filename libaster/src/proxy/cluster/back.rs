@@ -113,7 +113,7 @@ where
                             "fail to send cmd to backend to {} due to {}",
                             self.addr, err
                         );
-                        rcmd.set_reply(&err);
+                        rcmd.set_error(&err);
                         return Err(err);
                     }
                 }
@@ -231,10 +231,14 @@ where
 
     fn on_closed(&mut self) {
         if let Some(cmd) = self.store.take() {
+            debug!("backend set cmd retry in store addr:{} cmd:{:?}", self.addr, cmd);
             cmd.set_error(&self.inner_err);
+            cmd.set_retry();
         }
         for cmd in self.cmdq.drain(0..) {
+            debug!("backend set cmd retry in queue addr:{} cmd:{:?}", self.addr, cmd);
             cmd.set_error(&self.inner_err);
+            cmd.set_retry();
         }
     }
 
@@ -324,6 +328,7 @@ pub struct Blackhole<S>
 where
     S: Stream<Item = Cmd>,
 {
+    addr: String,
     inner_err: AsError,
     input: S,
 }
@@ -336,7 +341,11 @@ where
         let inner_err = AsError::RetryRandom {
             exclusive: addr.clone(),
         };
-        Blackhole { input, inner_err }
+        Blackhole {
+            addr,
+            input,
+            inner_err,
+        }
     }
 }
 
@@ -351,16 +360,13 @@ where
         loop {
             match self.input.poll() {
                 Ok(Async::Ready(Some(cmd))) => {
+                    debug!("backend close cmd in blackhole addr:{} and cmd:{:?}", self.addr, cmd);
                     cmd.set_error(&self.inner_err);
+                    cmd.set_retry();
                 }
-                Ok(Async::Ready(None)) => {
+                _ => {
+                    info!("backend blackhole exists of {}", self.addr);
                     return Ok(Async::Ready(()));
-                }
-                Ok(Async::NotReady) => {
-                    return Ok(Async::NotReady);
-                }
-                Err(_) => {
-                    unreachable!("rx chan is never be fail");
                 }
             }
         }

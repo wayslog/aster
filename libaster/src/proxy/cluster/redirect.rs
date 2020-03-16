@@ -2,6 +2,7 @@ use futures::unsync::mpsc::Receiver;
 use futures::{Async, AsyncSink, Future, Stream};
 
 use crate::com::AsError;
+use crate::proxy::cluster::fetcher;
 use crate::proxy::cluster::{Cluster, Redirect, Redirection};
 
 use std::rc::Rc;
@@ -39,11 +40,15 @@ impl Future for RedirectHandler {
                     Redirect::Ask { slot, to } => (slot, to, false),
                 };
                 if is_move {
-                    debug!(
+                    info!(
                         "cluster {} slot {} was moved to {}",
-                        self.cluster.cc.name, slot, to
+                        self.cluster.cc.borrow().name,
+                        slot,
+                        to
                     );
-                    self.cluster.update_slot(slot, to.clone());
+                    if self.cluster.update_slot(slot, to.clone()) {
+                        self.cluster.trigger_fetch(fetcher::TriggerBy::Moved);
+                    }
                 }
                 let rc_cmd = cmd.clone();
                 match self.cluster.dispatch_to(&to, cmd) {

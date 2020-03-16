@@ -82,7 +82,7 @@ pub use Redirect::{Ask, Move};
 pub struct RedirectFuture {}
 
 pub struct Cluster {
-    pub cc: ClusterConfig,
+    pub cc: RefCell<ClusterConfig>,
 
     slots: RefCell<Slots>,
     conns: RefCell<Conns>,
@@ -147,7 +147,7 @@ impl Cluster {
                     }
                 }
                 let cluster = Cluster {
-                    cc,
+                    cc: RefCell::new(cc),
                     hash_tag,
                     read_from_slave,
                     moved,
@@ -165,7 +165,7 @@ impl Cluster {
                 Ok(rc_cluster)
             })
             .and_then(|rc_cluster| {
-                let interval_millis = rc_cluster.cc.fetch_interval.unwrap_or(1000);
+                let interval_millis = rc_cluster.cc.borrow().fetch_interval.unwrap_or(1000);
                 let interval = Interval::new(
                     Instant::now() + Duration::from_millis(interval_millis),
                     Duration::from_millis(interval_millis),
@@ -177,9 +177,10 @@ impl Cluster {
                 let (tx, rx) = channel(1024);
                 let trigger = Rc::new(SingleFlightTrigger::new(1, tx));
                 let _ = rc_cluster.fetch.borrow_mut().replace(trigger);
-                let trigger = rx.map_err(|_| AsError::None);
+
+                let trigger_stream = rx.map_err(|_| AsError::None);
                 let fetch =
-                    fetcher::Fetch::new(rc_cluster.clone(), trigger.select(interval_stream));
+                    fetcher::Fetch::new(rc_cluster.clone(), trigger_stream.select(interval_stream));
                 current_thread::spawn(fetch);
                 Ok(rc_cluster)
             })
@@ -192,7 +193,8 @@ impl Cluster {
                         if let Err(err) = sock.set_nodelay(true) {
                             warn!(
                                 "cluster {} fail to set nodelay but skip, due to {:?}",
-                                cluster.cc.name, err
+                                cluster.cc.borrow().name,
+                                err
                             );
                         }
                         let client_str = match sock.peer_addr() {
@@ -200,14 +202,15 @@ impl Cluster {
                             Err(err) => {
                                 error!(
                                     "cluster {} fail to get client name due to {:?}",
-                                    cluster.cc.name, err
+                                    cluster.cc.borrow().name,
+                                    err
                                 );
                                 "unknown".to_string()
                             }
                         };
 
                         #[cfg(feature = "metrics")]
-                        front_conn_incr(&cluster.cc.name);
+                        front_conn_incr(&cluster.cc.borrow().name);
                         let codec = RedisHandleCodec {};
                         let (output, input) = codec.framed(sock).split();
                         let fut = front::Front::new(client_str, cluster, input, output);
@@ -254,7 +257,15 @@ impl Cluster {
 
     pub fn trigger_fetch(&self, trigger_by: fetcher::TriggerBy) {
         if let Some(trigger) = self.fetch.borrow().clone() {
-            if trigger.try_trigger() {
+            let if_triggered = match trigger_by {
+                fetcher::TriggerBy::Moved => {
+                    trigger.try_trigger();
+                    true
+                }
+                _ => trigger.try_trigger(),
+            };
+
+            if if_triggered {
                 info!("succeed trigger fetch process by {:?}", trigger_by);
                 return;
             }
@@ -277,6 +288,7 @@ impl Cluster {
                     }
                     Err(_se) => {
                         warn!("fail to send to backend {} ", addr);
+                        self.connect(&addr, &mut conns)?;
                         return Err(AsError::BackendClosedError(addr.to_string()));
                     }
                 }
@@ -351,22 +363,28 @@ impl Cluster {
         Ok(count)
     }
 
+    #[allow(unused)]
     pub(crate) fn since_latest(&self) -> Duration {
         self.latest.borrow().elapsed()
     }
 
     pub(crate) fn try_update_all_slots(&self, layout: ReplicaLayout) -> bool {
         let (masters, replicas) = layout;
-        let updated = self.slots.borrow_mut().try_update_all(masters, replicas);
+        let updated = self
+            .slots
+            .borrow_mut()
+            .try_update_all(masters.clone(), replicas);
         if updated {
-            info!("skip to update cluster cc due to unnecessary");
+            let handle = &mut self.cc.borrow_mut();
+            handle.servers.clear();
+            handle.servers.extend_from_slice(&masters);
         }
         updated
     }
 
-    pub(crate) fn update_slot(&self, slot: usize, addr: String) {
+    pub(crate) fn update_slot(&self, slot: usize, addr: String) -> bool {
         debug_assert!(slot <= SLOTS_COUNT);
-        self.slots.borrow_mut().update_slot(slot, addr);
+        self.slots.borrow_mut().update_slot(slot, addr)
     }
 
     pub(crate) fn connect(&self, addr: &str, conns: &mut Conns) -> Result<(), AsError> {
@@ -374,10 +392,10 @@ impl Cluster {
 
         let sender = ConnBuilder::new()
             .moved(self.moved.clone())
-            .cluster(self.cc.name.clone())
+            .cluster(self.cc.borrow().name.clone())
             .node(addr.to_string())
-            .read_timeout(self.cc.read_timeout.clone())
-            .write_timeout(self.cc.write_timeout.clone())
+            .read_timeout(self.cc.borrow().read_timeout.clone())
+            .write_timeout(self.cc.borrow().write_timeout.clone())
             .fetch(
                 self.fetch
                     .borrow()
@@ -465,9 +483,11 @@ impl Slots {
         changed
     }
 
-    fn update_slot(&mut self, slot: usize, addr: String) {
+    fn update_slot(&mut self, slot: usize, addr: String) -> bool {
+        let old = self.masters[slot].clone();
         self.masters[slot] = addr.clone();
-        self.all_masters.insert(addr);
+        self.all_masters.insert(addr.clone());
+        old != addr
     }
 
     fn get_random_master(&mut self, exclusive: &str) -> Option<&str> {

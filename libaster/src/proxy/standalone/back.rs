@@ -274,16 +274,12 @@ where
         loop {
             match self.input.poll() {
                 Ok(Async::Ready(Some(cmd))) => {
+                    info!("backend bloackhole clear the connection for {}", self.addr);
                     cmd.set_error(&AsError::BackendClosedError(self.addr.clone()));
                 }
-                Ok(Async::Ready(None)) => {
+                _ => {
+                    info!("backend blackhole exists of {}", self.addr);
                     return Ok(Async::Ready(()));
-                }
-                Ok(Async::NotReady) => {
-                    return Ok(Async::NotReady);
-                }
-                Err(_) => {
-                    unreachable!("rx chan is never be fail");
                 }
             }
         }

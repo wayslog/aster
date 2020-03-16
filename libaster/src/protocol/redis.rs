@@ -154,6 +154,10 @@ impl Cmd {
         }
     }
 
+    pub fn incr_notify(&self, count: u16) {
+        self.notify.fetch_add(count);
+    }
+
     pub fn borrow(&self) -> Ref<Command> {
         self.cmd.borrow()
     }
@@ -285,7 +289,7 @@ const BYTES_ARRAY: &[u8] = b"*";
 const BYTES_INTEGER: &[u8] = b":";
 
 const DEFAULT_CYCLE: u8 = 0;
-const MAX_CYCLE: u8 = 8;
+const MAX_CYCLE: u8 = 1;
 
 // for front end
 impl Command {

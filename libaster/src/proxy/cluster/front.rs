@@ -77,13 +77,8 @@ where
 
             if cmd.borrow().is_error() {
                 self.cluster.trigger_fetch(TriggerBy::Error);
-                if cmd.is_retry() {
-                    cmd.unset_done();
-                    cmd.unset_error();
-                    cmd.borrow_mut().add_cycle();
-                    self.retry_waitq.push_back(cmd.clone());
-                    self.retryq.push_back(cmd);
-                    continue;
+                if self.spawn_retry(cmd.clone()) {
+                    break;
                 }
             }
 
@@ -107,6 +102,38 @@ where
             self.output.poll_complete()?;
         }
         Ok(Async::Ready(count))
+    }
+
+    fn spawn_retry(&mut self, cmd: Cmd) -> bool {
+        if let Some(subs) = cmd.borrow().subs() {
+            let mut count = 0;
+            for sub in subs.into_iter() {
+                if !sub.is_retry() {
+                    continue;
+                }
+                count += 1;
+                sub.unset_done();
+                sub.unset_error();
+                sub.borrow_mut().add_cycle();
+                self.retryq.push_back(sub);
+            }
+            if count == 0 {
+                return false;
+            }
+            cmd.incr_notify(count + 1);
+            self.retry_waitq.push_back(cmd.clone());
+        } else {
+            if !cmd.is_retry() {
+                return false;
+            }
+            cmd.unset_done();
+            cmd.unset_error();
+            cmd.incr_notify(2);
+            cmd.borrow_mut().add_cycle();
+            self.retryq.push_back(cmd.clone());
+            self.retry_waitq.push_back(cmd.clone());
+        }
+        false
     }
 
     fn try_send(&mut self) -> Result<usize, AsError> {
@@ -140,7 +167,7 @@ where
                 cmd.reregister(task::current());
 
                 #[cfg(feature = "metrics")]
-                cmd.cluster_mark_total(&self.cluster.cc.name);
+                cmd.cluster_mark_total(&self.cluster.cc.borrow().name);
 
                 if cmd.check_valid() && !cmd.borrow().is_done() {
                     // for done command, never send to backend
@@ -251,6 +278,6 @@ where
 {
     fn drop(&mut self) {
         #[cfg(feature = "metrics")]
-        crate::metrics::front_conn_decr(&self.cluster.cc.name);
+        crate::metrics::front_conn_decr(&self.cluster.cc.borrow().name);
     }
 }
