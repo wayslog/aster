@@ -37,6 +37,8 @@ use std::rc::{Rc, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+const DEFAULT_FETCH_INTERVAL_MS: u64 = 10 * 60 * 1000; // 10 min
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
     Move { slot: usize, to: String },
@@ -162,7 +164,11 @@ impl Cluster {
                 Ok(rc_cluster)
             })
             .and_then(|rc_cluster| {
-                let interval_millis = rc_cluster.cc.borrow().fetch_interval.unwrap_or(1000);
+                let interval_millis = rc_cluster
+                    .cc
+                    .borrow()
+                    .fetch_interval
+                    .unwrap_or(DEFAULT_FETCH_INTERVAL_MS);
                 let interval = Interval::new(
                     Instant::now() + Duration::from_millis(interval_millis),
                     Duration::from_millis(interval_millis),
