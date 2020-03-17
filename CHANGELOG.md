@@ -1,6 +1,13 @@
 
 # change log
 
+## 1.3.0
+
+- refactor aster project structure
+- remove fuzz
+- remove retry feature
+- add refetch 
+
 ## 1.2.1
 
 - fixed: cpu 100% cost
