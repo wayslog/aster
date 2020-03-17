@@ -174,14 +174,6 @@ impl Cmd {
         self.cmd.borrow_mut().unset_done();
     }
 
-    pub fn set_retry(&self) {
-        self.cmd.borrow_mut().set_retry();
-    }
-
-    pub fn is_retry(&self) -> bool {
-        self.cmd.borrow().is_retry()
-    }
-
     pub fn set_reply<T: IntoReply<Message>>(&self, reply: T) {
         self.borrow_mut().set_reply(reply);
     }
@@ -451,14 +443,6 @@ impl Command {
         let _ = self.remote_tracker.take();
     }
 
-    fn is_retry(&self) -> bool {
-        self.flags & CmdFlags::RETRY == CmdFlags::RETRY
-    }
-
-    fn set_retry(&mut self) {
-        self.flags |= CmdFlags::RETRY;
-    }
-
     fn set_done(&mut self) {
         self.flags |= CmdFlags::DONE;
     }
@@ -512,6 +496,13 @@ impl Command {
     }
 
     pub fn is_error(&self) -> bool {
+        if self.subs.is_some() {
+            return self
+                .subs
+                .as_ref()
+                .map(|x| x.iter().any(|y| y.borrow().is_error()))
+                .unwrap_or(false);
+        }
         self.flags & CmdFlags::ERROR == CmdFlags::ERROR
     }
 

@@ -70,9 +70,7 @@ where
         recv: R,
         moved: M,
     ) -> Back<I, O, R, M> {
-        let inner_err = AsError::RetryRandom {
-            exclusive: addr.clone(),
-        };
+        let inner_err = AsError::ConnClosed(addr.clone());
         Back {
             cluster,
             addr,
@@ -231,14 +229,10 @@ where
 
     fn on_closed(&mut self) {
         if let Some(cmd) = self.store.take() {
-            debug!("backend set cmd retry in store addr:{} cmd:{:?}", self.addr, cmd);
             cmd.set_error(&self.inner_err);
-            cmd.set_retry();
         }
         for cmd in self.cmdq.drain(0..) {
-            debug!("backend set cmd retry in queue addr:{} cmd:{:?}", self.addr, cmd);
             cmd.set_error(&self.inner_err);
-            cmd.set_retry();
         }
     }
 
@@ -338,9 +332,7 @@ where
     S: Stream<Item = Cmd>,
 {
     pub fn new(addr: String, input: S) -> Blackhole<S> {
-        let inner_err = AsError::RetryRandom {
-            exclusive: addr.clone(),
-        };
+        let inner_err = AsError::ConnClosed(addr.clone());
         Blackhole {
             addr,
             input,
@@ -360,9 +352,11 @@ where
         loop {
             match self.input.poll() {
                 Ok(Async::Ready(Some(cmd))) => {
-                    debug!("backend close cmd in blackhole addr:{} and cmd:{:?}", self.addr, cmd);
+                    debug!(
+                        "backend close cmd in blackhole addr:{} and cmd:{:?}",
+                        self.addr, cmd
+                    );
                     cmd.set_error(&self.inner_err);
-                    cmd.set_retry();
                 }
                 _ => {
                     info!("backend blackhole exists of {}", self.addr);

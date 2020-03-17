@@ -30,8 +30,6 @@ where
 
     sendq: VecDeque<Cmd>,
     waitq: VecDeque<Cmd>,
-    retryq: VecDeque<Cmd>,
-    retry_waitq: VecDeque<Cmd>,
 
     state: State,
 }
@@ -49,8 +47,6 @@ where
             output,
             sendq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
-            retryq: VecDeque::with_capacity(MAX_BATCH_SIZE),
-            retry_waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             state: State::Running,
         }
     }
@@ -62,13 +58,7 @@ where
                 break;
             }
 
-            let cmd = if !self.retry_waitq.is_empty() {
-                self.retry_waitq
-                    .pop_front()
-                    .expect("retry command never be error")
-            } else {
-                self.waitq.pop_front().expect("command never be error")
-            };
+            let cmd = self.waitq.pop_front().expect("command never be error");
 
             if !cmd.borrow().is_done() {
                 self.waitq.push_front(cmd);
@@ -77,9 +67,6 @@ where
 
             if cmd.borrow().is_error() {
                 self.cluster.trigger_fetch(TriggerBy::Error);
-                if self.spawn_retry(cmd.clone()) {
-                    break;
-                }
             }
 
             match self.output.start_send(cmd) {
@@ -104,49 +91,8 @@ where
         Ok(Async::Ready(count))
     }
 
-    fn spawn_retry(&mut self, cmd: Cmd) -> bool {
-        if let Some(subs) = cmd.borrow().subs() {
-            let mut count = 0;
-            for sub in subs.into_iter() {
-                if !sub.is_retry() {
-                    continue;
-                }
-                count += 1;
-                sub.unset_done();
-                sub.unset_error();
-                sub.borrow_mut().add_cycle();
-                self.retryq.push_back(sub);
-            }
-            if count == 0 {
-                return false;
-            }
-            cmd.incr_notify(count + 1);
-            self.retry_waitq.push_back(cmd.clone());
-        } else {
-            if !cmd.is_retry() {
-                return false;
-            }
-            cmd.unset_done();
-            cmd.unset_error();
-            cmd.incr_notify(2);
-            cmd.borrow_mut().add_cycle();
-            self.retryq.push_back(cmd.clone());
-            self.retry_waitq.push_back(cmd.clone());
-        }
-        false
-    }
-
     fn try_send(&mut self) -> Result<usize, AsError> {
-        let mut size = 0usize;
-        while !self.retryq.is_empty() {
-            let before = size;
-            size += self.cluster.dispatch_all(&mut self.retryq)?;
-            if before == size && !self.retryq.is_empty() {
-                return Ok(size);
-            }
-        }
-        size += self.cluster.dispatch_all(&mut self.sendq)?;
-        Ok(size)
+        Ok(self.cluster.dispatch_all(&mut self.sendq)?)
     }
 
     fn try_recv(&mut self) -> Result<usize, AsError> {

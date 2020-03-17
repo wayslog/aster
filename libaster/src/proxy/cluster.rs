@@ -306,7 +306,7 @@ impl Cluster {
             }
             let cmd = cmds.pop_front().expect("cmds pop front never be empty");
             if !cmd.borrow().can_cycle() {
-                cmd.set_error(AsError::RequestReachMaxCycle);
+                cmd.set_error(AsError::ProxyFail);
                 continue;
             }
             let slot = {
@@ -315,17 +315,7 @@ impl Cluster {
                 signed % SLOTS_COUNT
             };
 
-            let addr = if !cmd.is_retry() {
-                self.get_addr(slot, cmd.borrow().is_read())
-            } else {
-                let cmd_borrow = cmd.borrow();
-                let exclusive = cmd_borrow
-                    .reply
-                    .as_ref()
-                    .map(|x| String::from_utf8_lossy(&x.data[1..x.data.len() - 2]).to_string())
-                    .unwrap_or("".to_string());
-                self.get_random_master(&exclusive)
-            };
+            let addr = self.get_addr(slot, cmd.borrow().is_read());
             let mut conns = self.conns.borrow_mut();
 
             if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {

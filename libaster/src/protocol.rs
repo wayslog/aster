@@ -24,7 +24,7 @@ bitflags! {
         const QUIET    = 0b00010000;
 
         // retry
-        const RETRY    = 0b00100000;
+        // const RETRY    = 0b00100000;
 
         const ERROR    = 0b10000000;
     }

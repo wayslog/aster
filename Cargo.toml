@@ -32,4 +32,4 @@ libaster = {path = "./libaster",  features=["metrics"]}
 
 [profile.release]
 debug = true
-# lto = true
+lto = true

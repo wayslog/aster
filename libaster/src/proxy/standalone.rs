@@ -380,7 +380,7 @@ impl<T: Request + 'static> Cluster<T> {
 
     pub fn dispatch_to(&self, addr: &str, cmd: T) -> Result<AsyncSink<T>, AsError> {
         if !cmd.can_cycle() {
-            // debug!("unable retry due can't cycle");
+            // debug!("unable recycle due can't cycle");
             cmd.set_error(&AsError::ProxyFail);
             return Ok(AsyncSink::NotReady(cmd));
         }

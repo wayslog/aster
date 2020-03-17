@@ -41,6 +41,9 @@ pub enum AsError {
     #[fail(display = "proxy fail")]
     ProxyFail,
 
+    #[fail(display = "connection closed of {}", _0)]
+    ConnClosed(String),
+
     #[fail(display = "fail due retry send, reached limit")]
     RequestReachMaxCycle,
 
@@ -76,9 +79,6 @@ pub enum AsError {
 
     #[fail(display = "there is nothing happening")]
     None,
-
-    #[fail(display = "{}", exclusive)]
-    RetryRandom { exclusive: String },
 }
 
 impl PartialEq for AsError {
@@ -112,12 +112,7 @@ impl PartialEq for AsError {
             }
             (Self::ConfigError(_), Self::ConfigError(_)) => true,
             (Self::SystemError, Self::SystemError) => true,
-            (
-                Self::RetryRandom { exclusive: ex },
-                Self::RetryRandom {
-                    exclusive: other_ex,
-                },
-            ) => ex == other_ex,
+            (Self::ConnClosed(addr1), Self::ConnClosed(addr2)) => addr1 == addr2,
             _ => false,
         }
     }
