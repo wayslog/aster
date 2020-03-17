@@ -14,7 +14,6 @@ use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
 use crate::proxy::cluster::fetcher::SingleFlightTrigger;
 use crate::utils::crc::crc16;
 
-#[cfg(feature = "metrics")]
 use crate::metrics::{front_conn_incr, thread_incr};
 
 // use failure::Error;
@@ -30,8 +29,6 @@ use tokio::prelude::FutureExt;
 use tokio::runtime::current_thread;
 use tokio::timer::Interval;
 use tokio_codec::Decoder;
-
-use rand::prelude::*;
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -82,7 +79,7 @@ pub use Redirect::{Ask, Move};
 pub struct RedirectFuture {}
 
 pub struct Cluster {
-    pub cc: ClusterConfig,
+    pub cc: RefCell<ClusterConfig>,
 
     slots: RefCell<Slots>,
     conns: RefCell<Conns>,
@@ -147,7 +144,7 @@ impl Cluster {
                     }
                 }
                 let cluster = Cluster {
-                    cc,
+                    cc: RefCell::new(cc),
                     hash_tag,
                     read_from_slave,
                     moved,
@@ -165,7 +162,7 @@ impl Cluster {
                 Ok(rc_cluster)
             })
             .and_then(|rc_cluster| {
-                let interval_millis = rc_cluster.cc.fetch_interval.unwrap_or(1000);
+                let interval_millis = rc_cluster.cc.borrow().fetch_interval.unwrap_or(1000);
                 let interval = Interval::new(
                     Instant::now() + Duration::from_millis(interval_millis),
                     Duration::from_millis(interval_millis),
@@ -177,9 +174,10 @@ impl Cluster {
                 let (tx, rx) = channel(1024);
                 let trigger = Rc::new(SingleFlightTrigger::new(1, tx));
                 let _ = rc_cluster.fetch.borrow_mut().replace(trigger);
-                let trigger = rx.map_err(|_| AsError::None);
+
+                let trigger_stream = rx.map_err(|_| AsError::None);
                 let fetch =
-                    fetcher::Fetch::new(rc_cluster.clone(), trigger.select(interval_stream));
+                    fetcher::Fetch::new(rc_cluster.clone(), trigger_stream.select(interval_stream));
                 current_thread::spawn(fetch);
                 Ok(rc_cluster)
             })
@@ -192,7 +190,8 @@ impl Cluster {
                         if let Err(err) = sock.set_nodelay(true) {
                             warn!(
                                 "cluster {} fail to set nodelay but skip, due to {:?}",
-                                cluster.cc.name, err
+                                cluster.cc.borrow().name,
+                                err
                             );
                         }
                         let client_str = match sock.peer_addr() {
@@ -200,14 +199,14 @@ impl Cluster {
                             Err(err) => {
                                 error!(
                                     "cluster {} fail to get client name due to {:?}",
-                                    cluster.cc.name, err
+                                    cluster.cc.borrow().name,
+                                    err
                                 );
                                 "unknown".to_string()
                             }
                         };
 
-                        #[cfg(feature = "metrics")]
-                        front_conn_incr(&cluster.cc.name);
+                        front_conn_incr(&cluster.cc.borrow().name);
                         let codec = RedisHandleCodec {};
                         let (output, input) = codec.framed(sock).split();
                         let fut = front::Front::new(client_str, cluster, input, output);
@@ -244,17 +243,17 @@ impl Cluster {
             .expect("master addr never be empty")
     }
 
-    fn get_random_master(&self, exclusive: &str) -> String {
-        self.slots
-            .borrow_mut()
-            .get_random_master(exclusive)
-            .map(|x| x.to_string())
-            .expect("master addr never be empty")
-    }
-
     pub fn trigger_fetch(&self, trigger_by: fetcher::TriggerBy) {
         if let Some(trigger) = self.fetch.borrow().clone() {
-            if trigger.try_trigger() {
+            let if_triggered = match trigger_by {
+                fetcher::TriggerBy::Moved => {
+                    trigger.try_trigger();
+                    true
+                }
+                _ => trigger.try_trigger(),
+            };
+
+            if if_triggered {
                 info!("succeed trigger fetch process by {:?}", trigger_by);
                 return;
             }
@@ -277,6 +276,7 @@ impl Cluster {
                     }
                     Err(_se) => {
                         warn!("fail to send to backend {} ", addr);
+                        self.connect(&addr, &mut conns)?;
                         return Err(AsError::BackendClosedError(addr.to_string()));
                     }
                 }
@@ -294,7 +294,7 @@ impl Cluster {
             }
             let cmd = cmds.pop_front().expect("cmds pop front never be empty");
             if !cmd.borrow().can_cycle() {
-                cmd.set_error(AsError::RequestReachMaxCycle);
+                cmd.set_error(AsError::ProxyFail);
                 continue;
             }
             let slot = {
@@ -303,17 +303,7 @@ impl Cluster {
                 signed % SLOTS_COUNT
             };
 
-            let addr = if !cmd.is_retry() {
-                self.get_addr(slot, cmd.borrow().is_read())
-            } else {
-                let cmd_borrow = cmd.borrow();
-                let exclusive = cmd_borrow
-                    .reply
-                    .as_ref()
-                    .map(|x| String::from_utf8_lossy(&x.data[1..x.data.len() - 2]).to_string())
-                    .unwrap_or("".to_string());
-                self.get_random_master(&exclusive)
-            };
+            let addr = self.get_addr(slot, cmd.borrow().is_read());
             let mut conns = self.conns.borrow_mut();
 
             if let Some(sender) = conns.get_mut(&addr).map(|x| x.sender()) {
@@ -351,22 +341,28 @@ impl Cluster {
         Ok(count)
     }
 
+    #[allow(unused)]
     pub(crate) fn since_latest(&self) -> Duration {
         self.latest.borrow().elapsed()
     }
 
     pub(crate) fn try_update_all_slots(&self, layout: ReplicaLayout) -> bool {
         let (masters, replicas) = layout;
-        let updated = self.slots.borrow_mut().try_update_all(masters, replicas);
+        let updated = self
+            .slots
+            .borrow_mut()
+            .try_update_all(masters.clone(), replicas);
         if updated {
-            info!("skip to update cluster cc due to unnecessary");
+            let handle = &mut self.cc.borrow_mut();
+            handle.servers.clear();
+            handle.servers.extend_from_slice(&masters);
         }
         updated
     }
 
-    pub(crate) fn update_slot(&self, slot: usize, addr: String) {
+    pub(crate) fn update_slot(&self, slot: usize, addr: String) -> bool {
         debug_assert!(slot <= SLOTS_COUNT);
-        self.slots.borrow_mut().update_slot(slot, addr);
+        self.slots.borrow_mut().update_slot(slot, addr)
     }
 
     pub(crate) fn connect(&self, addr: &str, conns: &mut Conns) -> Result<(), AsError> {
@@ -374,10 +370,10 @@ impl Cluster {
 
         let sender = ConnBuilder::new()
             .moved(self.moved.clone())
-            .cluster(self.cc.name.clone())
+            .cluster(self.cc.borrow().name.clone())
             .node(addr.to_string())
-            .read_timeout(self.cc.read_timeout.clone())
-            .write_timeout(self.cc.write_timeout.clone())
+            .read_timeout(self.cc.borrow().read_timeout.clone())
+            .write_timeout(self.cc.borrow().write_timeout.clone())
             .fetch(
                 self.fetch
                     .borrow()
@@ -433,7 +429,6 @@ impl<S> Conn<S> {
 struct Slots {
     masters: Vec<String>,
     replicas: Vec<Replica>,
-    rng: ThreadRng,
 
     all_masters: HashSet<String>,
     all_replicas: HashSet<String>,
@@ -465,24 +460,11 @@ impl Slots {
         changed
     }
 
-    fn update_slot(&mut self, slot: usize, addr: String) {
+    fn update_slot(&mut self, slot: usize, addr: String) -> bool {
+        let old = self.masters[slot].clone();
         self.masters[slot] = addr.clone();
-        self.all_masters.insert(addr);
-    }
-
-    fn get_random_master(&mut self, exclusive: &str) -> Option<&str> {
-        loop {
-            let cursor: usize = self.rng.gen_range(0, self.masters.len());
-            if self
-                .masters
-                .get(cursor)
-                .map(|x| x == exclusive)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            return self.masters.get(cursor).map(|x| x.as_str());
-        }
+        self.all_masters.insert(addr.clone());
+        old != addr
     }
 
     fn get_master(&self, slot: usize) -> Option<&str> {
@@ -513,7 +495,6 @@ impl Default for Slots {
         let mut replicas = Vec::with_capacity(SLOTS_COUNT);
         replicas.resize(SLOTS_COUNT, Replica::default());
         Slots {
-            rng: thread_rng(),
             masters,
             replicas,
             all_masters: HashSet::new(),
@@ -718,7 +699,6 @@ pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
                 .spawn(move || {
                     meta_init(cc.clone(), ip);
 
-                    #[cfg(feature = "metrics")]
                     thread_incr();
 
                     current_thread::block_on_all(

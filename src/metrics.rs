@@ -75,25 +75,25 @@ lazy_static! {
     };
 }
 
-pub(crate) fn front_conn_incr(cluster: &str) {
+pub fn front_conn_incr(cluster: &str) {
     ASTER_FRONT_INCR.with_label_values(&[cluster]).inc();
     ASTER_FRONT_CONNECTIONS.with_label_values(&[cluster]).inc()
 }
 
-pub(crate) fn front_conn_decr(cluster: &str) {
+pub fn front_conn_decr(cluster: &str) {
     ASTER_FRONT_CONNECTIONS.with_label_values(&[cluster]).dec()
 }
 
-pub(crate) fn global_error_incr() {
+pub fn global_error_incr() {
     ASTER_GLOBAL_ERROR.inc();
 }
 
-pub(crate) fn remote_tracker(cluster: &str) -> Tracker {
+pub fn remote_tracker(cluster: &str) -> Tracker {
     let hist = ASTER_REMOTE_TIMER.with_label_values(&[cluster]).clone();
     Tracker::new(hist)
 }
 
-pub(crate) fn total_tracker(cluster: &str) -> Tracker {
+pub fn total_tracker(cluster: &str) -> Tracker {
     let hist = ASTER_TOTAL_TIMER.with_label_values(&[cluster]).clone();
     Tracker::new(hist)
 }
@@ -106,11 +106,11 @@ fn show_metrics() -> impl Responder {
     HttpResponse::Ok().body(buffer)
 }
 
-pub(crate) fn thread_incr() {
+pub fn thread_incr() {
     ASTER_THREADS.inc();
 }
 
-pub(crate) fn measure_system() -> Result<(), AsError> {
+pub fn measure_system() -> Result<(), AsError> {
     // register global thread pool with only one thread to reduce thread number
     rayon::ThreadPoolBuilder::new()
         .num_threads(1)
@@ -149,7 +149,7 @@ pub(crate) fn measure_system() -> Result<(), AsError> {
     }
 }
 
-pub(crate) fn init(port: usize) -> Result<(), AsError> {
+pub fn init(port: usize) -> Result<(), AsError> {
     ASTER_VERSION.with_label_values(&[VERSION]).set(1.0);
     thread_incr();
     let addr = format!("0.0.0.0:{}", port);

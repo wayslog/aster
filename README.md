@@ -1,3 +1,5 @@
+# aster
+
 Aster [![Build Status](https://travis-ci.org/wayslog/aster.svg?branch=master)](https://travis-ci.org/wayslog/aster) [![LOC](https://tokei.rs/b1/github/wayslog/aster)](https://github.com/wayslog/aster)
 ======================
 
@@ -83,3 +85,7 @@ ping_fail_limit=3
 
 ping_interval=10000
 ```
+
+## changelog
+
+see [CHANGELOG.md](/CHANGELOG.md)

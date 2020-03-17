@@ -3,7 +3,6 @@ use futures::task::Task;
 
 use tokio::codec::{Decoder, Encoder};
 
-#[cfg(feature = "metrics")]
 use crate::metrics::*;
 
 use crate::com::AsError;
@@ -52,9 +51,9 @@ impl Request for Cmd {
             req: Message::version_request(),
             reply: None,
             subs: None,
-            #[cfg(feature = "metrics")]
+
             total_tracker: None,
-            #[cfg(feature = "metrics")]
+
             remote_tracker: None,
         };
         let mut notify = Notify::empty();
@@ -112,13 +111,11 @@ impl Request for Cmd {
         self.cmd.borrow_mut().set_error(reply);
     }
 
-    #[cfg(feature = "metrics")]
     fn mark_total(&self, cluster: &str) {
         let timer = total_tracker(cluster);
         self.cmd.borrow_mut().total_tracker.replace(timer);
     }
 
-    #[cfg(feature = "metrics")]
     fn mark_remote(&self, cluster: &str) {
         let timer = remote_tracker(cluster);
         self.cmd.borrow_mut().remote_tracker.replace(timer);
@@ -142,9 +139,9 @@ impl Cmd {
                     req: sub_msg,
                     reply: None,
                     subs: None,
-                    #[cfg(feature = "metrics")]
+
                     total_tracker: None,
-                    #[cfg(feature = "metrics")]
+
                     remote_tracker: None,
                 };
                 Cmd {
@@ -161,9 +158,9 @@ impl Cmd {
             req: msg,
             reply: None,
             subs,
-            #[cfg(feature = "metrics")]
+
             total_tracker: None,
-            #[cfg(feature = "metrics")]
+
             remote_tracker: None,
         };
         Cmd {
@@ -189,9 +186,9 @@ pub struct Command {
     reply: Option<Message>,
 
     subs: Option<Vec<Cmd>>,
-    #[cfg(feature = "metrics")]
+
     total_tracker: Option<Tracker>,
-    #[cfg(feature = "metrics")]
+
     remote_tracker: Option<Tracker>,
 }
 
@@ -215,7 +212,7 @@ impl Command {
     pub fn set_reply(&mut self, reply: Message) {
         self.reply = Some(reply);
         self.set_done();
-        #[cfg(feature = "metrics")]
+
         let _ = self.remote_tracker.take();
     }
 

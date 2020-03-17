@@ -1,17 +1,15 @@
 use crate::com::AsError;
-use crate::protocol::redis::{Cmd, Message};
-use crate::proxy::cluster::Redirection;
 
-use futures::unsync::mpsc::SendError;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
+
+use crate::proxy::standalone::Request;
 
 const MAX_PIPELINE: usize = 512;
 
 #[derive(Eq, PartialEq)]
 enum State {
     Running,
-    ActiveClosing,
     Closing,
     Closed,
 }
@@ -21,70 +19,46 @@ impl State {
         self == &State::Closing
     }
 
-    fn is_active_closing(&self) -> bool {
-        self == &State::ActiveClosing
-    }
-
     fn is_closed(&self) -> bool {
         self == &State::Closed
     }
 }
 
-#[allow(unused)]
-pub struct Back<I, O, R, M>
+pub struct Back<T, I, O, R>
 where
-    I: Stream<Item = Cmd, Error = ()>,
-    O: Sink<SinkItem = Cmd, SinkError = AsError>,
-    R: Stream<Item = Message, Error = AsError>,
-    M: Sink<SinkItem = Redirection, SinkError = SendError<Redirection>>,
+    T: Request,
+    I: Stream<Item = T, Error = ()>,
+    O: Sink<SinkItem = T, SinkError = AsError>,
+    R: Stream<Item = T::Reply, Error = AsError>,
 {
+    #[allow(unused)]
     cluster: String,
     addr: String,
     state: State,
 
-    ask_readed: bool,
-    redirect_store: Option<Redirection>,
-    store: Option<Cmd>,
-    cmdq: VecDeque<Cmd>,
-
-    inner_err: AsError,
+    store: Option<T>,
+    cmdq: VecDeque<T>,
 
     input: I,
     output: O,
     recv: R,
-    moved: M,
 }
 
-impl<I, O, R, M> Back<I, O, R, M>
+impl<T, I, O, R> Back<T, I, O, R>
 where
-    I: Stream<Item = Cmd, Error = ()>,
-    O: Sink<SinkItem = Cmd, SinkError = AsError>,
-    R: Stream<Item = Message, Error = AsError>,
-    M: Sink<SinkItem = Redirection, SinkError = SendError<Redirection>>,
+    T: Request,
+    I: Stream<Item = T, Error = ()>,
+    O: Sink<SinkItem = T, SinkError = AsError>,
+    R: Stream<Item = T::Reply, Error = AsError>,
 {
-    pub fn new(
-        cluster: String,
-        addr: String,
-        input: I,
-        output: O,
-        recv: R,
-        moved: M,
-    ) -> Back<I, O, R, M> {
-        let inner_err = AsError::RetryRandom {
-            exclusive: addr.clone(),
-        };
+    pub fn new(cluster: String, addr: String, input: I, output: O, recv: R) -> Back<T, I, O, R> {
         Back {
             cluster,
             addr,
             input,
             output,
             recv,
-            moved,
-            inner_err,
-
             state: State::Running,
-            ask_readed: false,
-            redirect_store: None,
             store: None,
             cmdq: VecDeque::with_capacity(MAX_PIPELINE),
         }
@@ -104,8 +78,8 @@ where
                     }
                     Ok(AsyncSink::Ready) => {
                         count += 1;
-                        #[cfg(feature = "metrics")]
-                        rcmd.cluster_mark_remote(&self.cluster);
+
+                        rcmd.mark_remote(&self.cluster);
                         self.cmdq.push_back(rcmd);
                     }
                     Err(err) => {
@@ -113,14 +87,10 @@ where
                             "fail to send cmd to backend to {} due to {}",
                             self.addr, err
                         );
-                        rcmd.set_reply(&err);
+                        rcmd.set_error(&err);
                         return Err(err);
                     }
                 }
-            }
-
-            if self.state.is_active_closing() {
-                break;
             }
 
             match self.input.poll() {
@@ -128,7 +98,7 @@ where
                     self.store = Some(cmd);
                 }
                 Ok(Async::Ready(None)) => {
-                    ret_state = State::ActiveClosing;
+                    ret_state = State::Closing;
                     break;
                 }
                 Ok(Async::NotReady) => {
@@ -149,33 +119,9 @@ where
     fn try_recv(&mut self) -> Result<Async<()>, AsError> {
         let mut count = 0usize;
         for _ in 0..MAX_PIPELINE {
-            if let Some(redirection) = self.redirect_store.take() {
-                match self.moved.start_send(redirection) {
-                    Ok(AsyncSink::NotReady(red)) => {
-                        self.redirect_store = Some(red);
-                        break;
-                    }
-                    Ok(AsyncSink::Ready) => {
-                        count += 1;
-                    }
-                    Err(se) => {
-                        let red: Redirection = se.into_inner();
-                        error!("fail to redirect cmd {:?}", red.target);
-                        red.cmd.set_error(AsError::RedirectFailError);
-                        return Err(AsError::RedirectFailError);
-                    }
-                }
-            }
-
             if self.cmdq.is_empty() {
                 break;
             }
-
-            let is_ask = self
-                .cmdq
-                .front()
-                .map(|x| x.borrow().is_ask())
-                .expect("front always have cmd");
 
             let msg = match self.recv.poll() {
                 Ok(Async::Ready(Some(msg))) => {
@@ -189,38 +135,13 @@ where
                     break;
                 }
                 Err(err) => {
-                    error!("fail to recv from back {} due {:?}", self.addr, err);
+                    error!("fail to recv from {} due {:?}", self.addr, err);
                     return Err(err.into());
                 }
             };
 
-            if is_ask {
-                self.ask_readed = !self.ask_readed;
-                if self.ask_readed {
-                    continue;
-                }
-            }
-
             let cmd = self.cmdq.pop_front().expect("cmdq never be empty");
-            if let Some(redirect) = msg.check_redirect() {
-                {
-                    let mut inner_cmd = cmd.borrow_mut();
-                    inner_cmd.add_cycle();
-                    if redirect.is_ask() {
-                        inner_cmd.set_ask();
-                        inner_cmd.unset_moved();
-                    } else {
-                        inner_cmd.set_moved();
-                        inner_cmd.unset_ask();
-                    }
-                }
-                self.redirect_store = Some(Redirection {
-                    target: redirect,
-                    cmd,
-                });
-            } else {
-                cmd.set_reply(msg);
-            }
+            cmd.set_reply(msg);
         }
         if count > 0 {
             Ok(Async::Ready(()))
@@ -230,25 +151,32 @@ where
     }
 
     fn on_closed(&mut self) {
-        if let Some(cmd) = self.store.take() {
-            cmd.set_error(&self.inner_err);
-        }
         for cmd in self.cmdq.drain(0..) {
-            cmd.set_error(&self.inner_err);
+            cmd.set_error(&AsError::BackendClosedError(self.addr.clone()));
         }
-    }
-
-    fn has_cmd(&mut self) -> bool {
-        self.store.is_some() || !self.cmdq.is_empty()
+        if let Some(cmd) = self.store.take() {
+            cmd.set_error(&AsError::BackendClosedError(self.addr.clone()));
+        }
+        loop {
+            match self.input.poll() {
+                Ok(Async::Ready(Some(cmd))) => {
+                    cmd.set_error(&AsError::BackendClosedError(self.addr.clone()));
+                }
+                Ok(Async::Ready(None)) | Ok(Async::NotReady) => {
+                    break;
+                }
+                Err(_) => unreachable!(),
+            }
+        }
     }
 }
 
-impl<I, O, R, M> Future for Back<I, O, R, M>
+impl<T, I, O, R> Future for Back<T, I, O, R>
 where
-    I: Stream<Item = Cmd, Error = ()>,
-    O: Sink<SinkItem = Cmd, SinkError = AsError>,
-    R: Stream<Item = Message, Error = AsError>,
-    M: Sink<SinkItem = Redirection, SinkError = SendError<Redirection>>,
+    T: Request,
+    I: Stream<Item = T, Error = ()>,
+    O: Sink<SinkItem = T, SinkError = AsError>,
+    R: Stream<Item = T::Reply, Error = AsError>,
 {
     type Item = ();
     type Error = ();
@@ -259,9 +187,13 @@ where
         loop {
             // trace!("tracing backend calls to {}", self.addr);
             if self.state.is_closing() {
-                // debug!("backend {} is closing", self.addr);
+                debug!("backend {} is closing", self.addr);
                 self.on_closed();
                 self.state = State::Closed;
+            }
+            if self.state.is_closed() {
+                debug!("backend {} is closed", self.addr);
+                return Ok(Async::Ready(()));
             }
 
             if !can_recv && !can_forward {
@@ -279,7 +211,7 @@ where
                         // trace!("backend recv is ready");
                     }
                     Err(err) => {
-                        warn!("backend {} recv is error {}", self.addr, err);
+                        warn!("fail to recv from {} error {}", self.addr, err);
                         self.state = State::Closing;
                         continue;
                     }
@@ -292,57 +224,48 @@ where
                         // trace!("backend forward is not ready");
                         can_forward = false;
                     }
-                    Ok(Async::Ready(State::ActiveClosing)) => {
+                    Ok(Async::Ready(State::Closing)) => {
                         // trace!("backend forward is active closing");
-                        self.state = State::ActiveClosing;
+                        self.state = State::Closing;
                     }
                     Ok(Async::Ready(_)) => {
                         can_recv = true;
                         // trace!("backend forward is ready");
                     }
                     Err(err) => {
-                        warn!("backend {} forward is error {}", self.addr, err);
+                        warn!("fail to forward to {} error {}", self.addr, err);
                         self.state = State::Closing;
                         continue;
                     }
-                }
-            }
-
-            if self.state.is_closed() {
-                // debug!("backend {} is closed", self.addr);
-                if !self.has_cmd() {
-                    return Ok(Async::Ready(()));
-                } else {
-                    self.state = State::Closing;
                 }
             }
         }
     }
 }
 
-pub struct Blackhole<S>
+pub struct Blackhole<T, S>
 where
-    S: Stream<Item = Cmd>,
+    T: Request,
+    S: Stream<Item = T>,
 {
-    inner_err: AsError,
+    addr: String,
     input: S,
 }
 
-impl<S> Blackhole<S>
+impl<T, S> Blackhole<T, S>
 where
-    S: Stream<Item = Cmd>,
+    T: Request,
+    S: Stream<Item = T>,
 {
-    pub fn new(addr: String, input: S) -> Blackhole<S> {
-        let inner_err = AsError::RetryRandom {
-            exclusive: addr.clone(),
-        };
-        Blackhole { input, inner_err }
+    pub fn new(addr: String, input: S) -> Blackhole<T, S> {
+        Blackhole { addr, input }
     }
 }
 
-impl<S> Future for Blackhole<S>
+impl<T, S> Future for Blackhole<T, S>
 where
-    S: Stream<Item = Cmd>,
+    T: Request,
+    S: Stream<Item = T>,
 {
     type Item = ();
     type Error = ();
@@ -351,16 +274,12 @@ where
         loop {
             match self.input.poll() {
                 Ok(Async::Ready(Some(cmd))) => {
-                    cmd.set_error(&self.inner_err);
+                    info!("backend bloackhole clear the connection for {}", self.addr);
+                    cmd.set_error(&AsError::BackendClosedError(self.addr.clone()));
                 }
-                Ok(Async::Ready(None)) => {
+                _ => {
+                    info!("backend blackhole exists of {}", self.addr);
                     return Ok(Async::Ready(()));
-                }
-                Ok(Async::NotReady) => {
-                    return Ok(Async::NotReady);
-                }
-                Err(_) => {
-                    unreachable!("rx chan is never be fail");
                 }
             }
         }

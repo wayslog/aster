@@ -30,8 +30,6 @@ where
 
     sendq: VecDeque<Cmd>,
     waitq: VecDeque<Cmd>,
-    retryq: VecDeque<Cmd>,
-    retry_waitq: VecDeque<Cmd>,
 
     state: State,
 }
@@ -49,8 +47,6 @@ where
             output,
             sendq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
-            retryq: VecDeque::with_capacity(MAX_BATCH_SIZE),
-            retry_waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             state: State::Running,
         }
     }
@@ -62,13 +58,7 @@ where
                 break;
             }
 
-            let cmd = if !self.retry_waitq.is_empty() {
-                self.retry_waitq
-                    .pop_front()
-                    .expect("retry command never be error")
-            } else {
-                self.waitq.pop_front().expect("command never be error")
-            };
+            let cmd = self.waitq.pop_front().expect("command never be error");
 
             if !cmd.borrow().is_done() {
                 self.waitq.push_front(cmd);
@@ -77,14 +67,6 @@ where
 
             if cmd.borrow().is_error() {
                 self.cluster.trigger_fetch(TriggerBy::Error);
-                if cmd.is_retry() {
-                    cmd.unset_done();
-                    cmd.unset_error();
-                    cmd.borrow_mut().add_cycle();
-                    self.retry_waitq.push_back(cmd.clone());
-                    self.retryq.push_back(cmd);
-                    continue;
-                }
             }
 
             match self.output.start_send(cmd) {
@@ -110,16 +92,7 @@ where
     }
 
     fn try_send(&mut self) -> Result<usize, AsError> {
-        let mut size = 0usize;
-        while !self.retryq.is_empty() {
-            let before = size;
-            size += self.cluster.dispatch_all(&mut self.retryq)?;
-            if before == size && !self.retryq.is_empty() {
-                return Ok(size);
-            }
-        }
-        size += self.cluster.dispatch_all(&mut self.sendq)?;
-        Ok(size)
+        Ok(self.cluster.dispatch_all(&mut self.sendq)?)
     }
 
     fn try_recv(&mut self) -> Result<usize, AsError> {
@@ -139,8 +112,7 @@ where
                 count += 1;
                 cmd.reregister(task::current());
 
-                #[cfg(feature = "metrics")]
-                cmd.cluster_mark_total(&self.cluster.cc.name);
+                cmd.cluster_mark_total(&self.cluster.cc.borrow().name);
 
                 if cmd.check_valid() && !cmd.borrow().is_done() {
                     // for done command, never send to backend
@@ -250,7 +222,6 @@ where
     O: Sink<SinkItem = Cmd, SinkError = AsError>,
 {
     fn drop(&mut self) {
-        #[cfg(feature = "metrics")]
-        crate::metrics::front_conn_decr(&self.cluster.cc.name);
+        crate::metrics::front_conn_decr(&self.cluster.cc.borrow().name);
     }
 }

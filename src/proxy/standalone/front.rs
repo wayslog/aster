@@ -7,7 +7,6 @@ use std::rc::Rc;
 use crate::proxy::standalone::Cluster;
 use crate::proxy::standalone::Request;
 
-#[cfg(feature = "metrics")]
 use crate::metrics::front_conn_decr;
 
 const MAX_BATCH_SIZE: usize = 2048;
@@ -106,7 +105,7 @@ where
             if let Some(mut cmd) = cmd {
                 count += 1;
                 cmd.reregister(task::current());
-                #[cfg(feature = "metrics")]
+
                 cmd.mark_total(&self.cluster.cc.borrow().name);
                 if cmd.valid() && !cmd.is_done() {
                     // for done command, never send to backend
@@ -218,7 +217,6 @@ where
     O: Sink<SinkItem = T, SinkError = AsError>,
 {
     fn drop(&mut self) {
-        #[cfg(feature = "metrics")]
         front_conn_decr(&self.cluster.cc.borrow().name);
     }
 }
