@@ -31,8 +31,6 @@ use tokio::runtime::current_thread;
 use tokio::timer::Interval;
 use tokio_codec::Decoder;
 
-use rand::prelude::*;
-
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -247,14 +245,6 @@ impl Cluster {
             .expect("master addr never be empty")
     }
 
-    fn get_random_master(&self, exclusive: &str) -> String {
-        self.slots
-            .borrow_mut()
-            .get_random_master(exclusive)
-            .map(|x| x.to_string())
-            .expect("master addr never be empty")
-    }
-
     pub fn trigger_fetch(&self, trigger_by: fetcher::TriggerBy) {
         if let Some(trigger) = self.fetch.borrow().clone() {
             let if_triggered = match trigger_by {
@@ -441,7 +431,6 @@ impl<S> Conn<S> {
 struct Slots {
     masters: Vec<String>,
     replicas: Vec<Replica>,
-    rng: ThreadRng,
 
     all_masters: HashSet<String>,
     all_replicas: HashSet<String>,
@@ -480,21 +469,6 @@ impl Slots {
         old != addr
     }
 
-    fn get_random_master(&mut self, exclusive: &str) -> Option<&str> {
-        loop {
-            let cursor: usize = self.rng.gen_range(0, self.masters.len());
-            if self
-                .masters
-                .get(cursor)
-                .map(|x| x == exclusive)
-                .unwrap_or(false)
-            {
-                continue;
-            }
-            return self.masters.get(cursor).map(|x| x.as_str());
-        }
-    }
-
     fn get_master(&self, slot: usize) -> Option<&str> {
         self.masters.get(slot).map(|x| x.as_str())
     }
@@ -523,7 +497,6 @@ impl Default for Slots {
         let mut replicas = Vec::with_capacity(SLOTS_COUNT);
         replicas.resize(SLOTS_COUNT, Replica::default());
         Slots {
-            rng: thread_rng(),
             masters,
             replicas,
             all_masters: HashSet::new(),
