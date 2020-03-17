@@ -14,7 +14,6 @@ use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
 use crate::proxy::cluster::fetcher::SingleFlightTrigger;
 use crate::utils::crc::crc16;
 
-#[cfg(feature = "metrics")]
 use crate::metrics::{front_conn_incr, thread_incr};
 
 // use failure::Error;
@@ -207,7 +206,6 @@ impl Cluster {
                             }
                         };
 
-                        #[cfg(feature = "metrics")]
                         front_conn_incr(&cluster.cc.borrow().name);
                         let codec = RedisHandleCodec {};
                         let (output, input) = codec.framed(sock).split();
@@ -701,7 +699,6 @@ pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
                 .spawn(move || {
                     meta_init(cc.clone(), ip);
 
-                    #[cfg(feature = "metrics")]
                     thread_incr();
 
                     current_thread::block_on_all(

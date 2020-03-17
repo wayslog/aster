@@ -26,7 +26,6 @@ use std::time::Duration;
 
 use crate::protocol::{mc, redis};
 
-#[cfg(feature = "metrics")]
 use crate::metrics::{front_conn_incr, thread_incr};
 
 use crate::com::meta::meta_init;
@@ -57,9 +56,8 @@ pub trait Request: Clone {
 
     fn subs(&self) -> Option<Vec<Self>>;
 
-    #[cfg(feature = "metrics")]
     fn mark_total(&self, cluster: &str);
-    #[cfg(feature = "metrics")]
+
     fn mark_remote(&self, cluster: &str);
 
     fn is_done(&self) -> bool;
@@ -175,7 +173,7 @@ impl<T: Request + 'static> Cluster<T> {
 
                         let codec = T::FrontCodec::default();
                         let (output, input) = codec.framed(sock).split();
-                        #[cfg(feature = "metrics")]
+
                         front_conn_incr(&cluster.cc.borrow().name);
                         let fut = front::Front::new(client_str, cluster_ref, input, output);
                         current_thread::spawn(fut);
@@ -636,7 +634,7 @@ pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
                 .name(cc.name.clone())
                 .spawn(move || {
                     meta_init(cc.clone(), ip);
-                    #[cfg(feature = "metrics")]
+
                     thread_incr();
                     match cc.cache_type {
                         CacheType::Redis => Cluster::<redis::Cmd>::run(cc).unwrap(),

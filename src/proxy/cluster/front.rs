@@ -112,7 +112,6 @@ where
                 count += 1;
                 cmd.reregister(task::current());
 
-                #[cfg(feature = "metrics")]
                 cmd.cluster_mark_total(&self.cluster.cc.borrow().name);
 
                 if cmd.check_valid() && !cmd.borrow().is_done() {
@@ -223,7 +222,6 @@ where
     O: Sink<SinkItem = Cmd, SinkError = AsError>,
 {
     fn drop(&mut self) {
-        #[cfg(feature = "metrics")]
         crate::metrics::front_conn_decr(&self.cluster.cc.borrow().name);
     }
 }

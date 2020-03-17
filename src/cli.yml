@@ -1,5 +1,4 @@
 name: aster
-version: "1.2.1"
 author: wayslog. <zxs867179@gmail.com>
 about: Aster is a light, fast and powerful cache proxy written in rust.
 args:
