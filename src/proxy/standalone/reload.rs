@@ -97,7 +97,7 @@ impl FileWatcher {
         let mut inotify = Inotify::init()?;
         let watch_dir = self.watch_dir();
         info!("start to watch dir {:?}", watch_dir);
-        inotify.add_watch(watch_dir, WatchMask::MODIFY | WatchMask::CREATE)?;
+        inotify.add_watch(watch_dir, WatchMask::MODIFY | WatchMask::CREATE | WatchMask::MOVED)?;
         let mut buf = [0u8; 1024];
         loop {
             let events = inotify.read_events_blocking(&mut buf)?;
