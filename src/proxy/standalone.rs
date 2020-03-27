@@ -20,7 +20,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
@@ -82,7 +82,6 @@ pub struct Cluster<T> {
     ring: RefCell<HashRing>,
     conns: RefCell<Conns<T>>,
     pings: RefCell<HashMap<String, Rc<Cell<bool>>>>,
-    myself: RefCell<Weak<Cluster<T>>>,
 }
 
 impl<T: Request + 'static> Cluster<T> {
@@ -107,12 +106,8 @@ impl<T: Request + 'static> Cluster<T> {
                     ring: RefCell::new(HashRing::empty()),
                     conns: RefCell::new(Conns::default()),
                     pings: RefCell::new(HashMap::new()),
-                    myself: RefCell::new(Weak::new()),
                 };
                 let rc_cluster = Rc::new(cluster);
-                let weak_ref = Rc::downgrade(&rc_cluster);
-                rc_cluster.myself.replace(weak_ref);
-
                 rc_cluster.reinit(cc).expect("fail to setup cluster");
                 Ok(rc_cluster)
             })
@@ -219,7 +214,7 @@ impl<T: Request + 'static> Cluster<T> {
     }
 
     fn setup_ping(
-        &self,
+        self: &Rc<Self>,
         alias: &str,
         node: &str,
         ping_interval: u64,
@@ -234,7 +229,7 @@ impl<T: Request + 'static> Cluster<T> {
         }
 
         let ping = ping::Ping::new(
-            self.myself.borrow().clone(),
+            Rc::downgrade(&self),
             alias.to_string(),
             node.to_string(),
             handle,
@@ -245,7 +240,7 @@ impl<T: Request + 'static> Cluster<T> {
         current_thread::spawn(ping);
     }
 
-    pub(crate) fn reinit(&self, cc: ClusterConfig) -> Result<(), AsError> {
+    pub(crate) fn reinit(self: &Rc<Self>, cc: ClusterConfig) -> Result<(), AsError> {
         let sls = ServerLine::parse_servers(&cc.servers)?;
         let (nodes, alias, weights) = ServerLine::unwrap_spot(&sls);
         let alias_map: HashMap<_, _> = alias
