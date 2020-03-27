@@ -1,6 +1,11 @@
 
 # change log
 
+## 1.3.1
+
+- fixed reload for file rename support
+- make clippy happy again XD
+
 ## 1.3.0
 
 - refactor aster project structure
