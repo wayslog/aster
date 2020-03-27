@@ -99,6 +99,8 @@ impl<T: Request + 'static> Future for Ping<T> {
                     } else {
                         self.count = self.count.wrapping_add(1);
                         debug!("ping state fail count={} limit={}", self.count, self.limit);
+
+                        #[allow(clippy::comparison_chain)]
                         if self.count == self.limit {
                             if let Some(cluster) = self.cluster.upgrade() {
                                 info!("remove node={} addr={} by ping error", self.name, self.addr);

@@ -293,7 +293,7 @@ impl Command {
     pub fn reply_cmd(&self, buf: &mut BytesMut) -> Result<usize, AsError> {
         if self.ctype.is_mset() {
             buf.extend_from_slice(BYTES_JUSTOK);
-            return Ok(BYTES_JUSTOK.len());
+            Ok(BYTES_JUSTOK.len())
         } else if self.ctype.is_mget() {
             if let Some(subs) = self.subs.as_ref() {
                 buf.extend_from_slice(BYTES_ARRAY);
@@ -306,11 +306,11 @@ impl Command {
                 for sub in subs {
                     sub.borrow().reply_raw(buf)?;
                 }
-                return Ok(buf.len() - begin);
+                Ok(buf.len() - begin)
             } else {
                 // debug!("subs is empty");
                 buf.extend_from_slice(BYTES_NULL_ARRAY);
-                return Ok(BYTES_NULL_ARRAY.len());
+                Ok(BYTES_NULL_ARRAY.len())
             }
         } else if self.ctype.is_del() || self.ctype.is_exists() {
             if let Some(subs) = self.subs.as_ref() {
@@ -325,22 +325,18 @@ impl Command {
                 }
                 myitoa(total, buf);
                 buf.extend_from_slice(BYTES_CRLF);
-                return Ok(buf.len() - begin);
+                Ok(buf.len() - begin)
             } else {
                 buf.extend_from_slice(BYTES_ZERO_INT);
-                return Ok(BYTES_ZERO_INT.len());
+                Ok(BYTES_ZERO_INT.len())
             }
         } else {
-            return self.reply_raw(buf);
+            self.reply_raw(buf)
         }
     }
 
     fn reply_raw(&self, buf: &mut BytesMut) -> Result<usize, AsError> {
-        if let Some(size) = self.reply.as_ref().map(|x| x.save(buf)) {
-            Ok(size)
-        } else {
-            Err(AsError::BadReply.into())
-        }
+        self.reply.as_ref().map(|x| x.save(buf)).ok_or_else(||AsError::BadReply)
     }
 }
 
@@ -893,7 +889,7 @@ impl<'a> IntoReply<Message> for &'a AsError {
 
 impl<'a> IntoReply<Message> for &'a str {
     fn into_reply(self) -> Message {
-        let value = format!("{}", self);
+        let value = self.to_string();
         Message::plain(value.as_bytes(), RESP_STRING)
     }
 }

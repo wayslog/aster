@@ -89,7 +89,6 @@ impl<T: Request + 'static> Cluster<T> {
     pub(crate) fn run(cc: ClusterConfig) -> Result<(), AsError> {
         let addr = cc
             .listen_addr
-            .clone()
             .parse::<SocketAddr>()
             .expect("parse socket never fail");
         let fut = ok::<ClusterConfig, AsError>(cc)
@@ -98,7 +97,7 @@ impl<T: Request + 'static> Cluster<T> {
                     .hash_tag
                     .as_ref()
                     .map(|x| x.as_bytes().to_vec())
-                    .unwrap_or(vec![]);
+                    .unwrap_or_else(|| vec![]);
                 let cluster = Cluster {
                     cc: RefCell::new(cc.clone()),
                     hash_tag,
@@ -207,7 +206,7 @@ impl<T: Request + 'static> Cluster<T> {
             .ping_interval
             .as_ref()
             .cloned()
-            .unwrap_or(300000)
+            .unwrap_or(300_000)
     }
 
     fn ping_succ_interval(&self) -> u64 {
@@ -216,7 +215,7 @@ impl<T: Request + 'static> Cluster<T> {
             .ping_succ_interval
             .as_ref()
             .cloned()
-            .unwrap_or(1000)
+            .unwrap_or(1_000)
     }
 
     fn setup_ping(
@@ -342,8 +341,8 @@ impl<T: Request + 'static> Cluster<T> {
             let conn = connect(
                 &self.cc.borrow().name,
                 &addr,
-                self.cc.borrow().read_timeout.clone(),
-                self.cc.borrow().write_timeout.clone(),
+                self.cc.borrow().read_timeout,
+                self.cc.borrow().write_timeout,
             )?;
             self.conns.borrow_mut().insert(&addr, conn);
             self.ring.borrow_mut().add_node(name, weight);
@@ -354,7 +353,7 @@ impl<T: Request + 'static> Cluster<T> {
     pub(crate) fn remove_node(&self, name: String) {
         self.ring.borrow_mut().del_node(&name);
         let node = self.get_node(name);
-        if let Some(_) = self.conns.borrow_mut().remove(&node) {
+        if self.conns.borrow_mut().remove(&node).is_some() {
             info!("dropping backend connection of {} due active delete", node);
         }
     }
@@ -366,8 +365,8 @@ impl<T: Request + 'static> Cluster<T> {
         match connect(
             &self.cc.borrow().name,
             &addr,
-            self.cc.borrow().read_timeout.clone(),
-            self.cc.borrow().write_timeout.clone(),
+            self.cc.borrow().read_timeout,
+            self.cc.borrow().write_timeout,
         ) {
             Ok(sender) => conns.insert(&addr, sender),
             Err(err) => {
@@ -403,8 +402,8 @@ impl<T: Request + 'static> Cluster<T> {
                 let sender = connect(
                     &self.cc.borrow().name,
                     &addr,
-                    self.cc.borrow().read_timeout.clone(),
-                    self.cc.borrow().write_timeout.clone(),
+                    self.cc.borrow().read_timeout,
+                    self.cc.borrow().write_timeout,
                 )?;
                 conns.insert(&addr, sender);
             }
@@ -448,8 +447,8 @@ impl<T: Request + 'static> Cluster<T> {
                         let sender = connect(
                             &self.cc.borrow().name,
                             &addr,
-                            self.cc.borrow().read_timeout.clone(),
-                            self.cc.borrow().write_timeout.clone(),
+                            self.cc.borrow().read_timeout,
+                            self.cc.borrow().write_timeout,
                         )?;
                         conns.insert(&addr, sender);
                         return Ok(count);
@@ -460,8 +459,8 @@ impl<T: Request + 'static> Cluster<T> {
                 let sender = connect(
                     &self.cc.borrow().name,
                     &addr,
-                    self.cc.borrow().read_timeout.clone(),
-                    self.cc.borrow().write_timeout.clone(),
+                    self.cc.borrow().read_timeout,
+                    self.cc.borrow().write_timeout,
                 )?;
                 conns.insert(&addr, sender);
                 return Ok(count);
@@ -625,7 +624,6 @@ impl ServerLine {
 pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
     let worker = cc.thread.unwrap_or(4);
     (0..worker)
-        .into_iter()
         .map(|_index| {
             let builder = Builder::new();
             let cc = cc.clone();

@@ -97,7 +97,6 @@ impl Cluster {
     pub(crate) fn run(cc: ClusterConfig, replica: ReplicaLayout) -> Result<(), AsError> {
         let addr = cc
             .listen_addr
-            .clone()
             .parse::<SocketAddr>()
             .expect("parse socket never fail");
         let fut = ok::<ClusterConfig, AsError>(cc)
@@ -107,7 +106,7 @@ impl Cluster {
                     .hash_tag
                     .clone()
                     .map(|x| x.as_bytes().to_vec())
-                    .unwrap_or(vec![]);
+                    .unwrap_or_else(|| vec![]);
                 let mut slots = Slots::default();
                 let (masters, replicas) = replica;
                 slots.try_update_all(masters, replicas);
@@ -115,7 +114,7 @@ impl Cluster {
 
                 let all_masters = slots.get_all_masters();
                 let mut all_lived = HashSet::new();
-                cc.servers = all_masters.iter().map(|x| x.clone()).collect();
+                cc.servers = all_masters.iter().cloned().collect();
                 let all_servers = cc.servers.clone();
                 let mut conns = Conns::default();
                 for master in all_servers.into_iter() {
@@ -385,7 +384,7 @@ impl Cluster {
                     .borrow()
                     .as_ref()
                     .map(|x| Rc::downgrade(x))
-                    .unwrap_or(Weak::new()),
+                    .unwrap_or_default(),
             )
             .replica(is_replica)
             .connect()?;
@@ -443,22 +442,22 @@ struct Slots {
 impl Slots {
     fn try_update_all(&mut self, masters: Vec<String>, replicas: Vec<Vec<String>>) -> bool {
         let mut changed = false;
-        for i in 0..SLOTS_COUNT {
-            if self.masters[i] != masters[i] {
+        for (i, master) in masters.iter().enumerate().take(SLOTS_COUNT) {
+            if &self.masters[i] != master {
                 changed = true;
-                self.masters[i] = masters[i].clone();
-                self.all_masters.insert(masters[i].clone());
+                self.masters[i] = master.clone();
+                self.all_masters.insert(master.clone());
             }
         }
 
-        for i in 0..SLOTS_COUNT {
-            let len_not_eqal = self.replicas[i].addrs.len() != replicas[i].len();
-            if len_not_eqal || self.replicas[i].addrs.as_slice() != replicas[i].as_slice() {
+        for (i, replica) in replicas.iter().enumerate().take(SLOTS_COUNT) {
+            let len_not_eqal = self.replicas[i].addrs.len() != replica.len();
+            if len_not_eqal || self.replicas[i].addrs.as_slice() != replica.as_slice() {
                 self.replicas[i] = Replica {
-                    addrs: replicas[i].clone(),
+                    addrs: replica.clone(),
                     current: Cell::new(0),
                 };
-                self.all_replicas.extend(replicas[i].clone().into_iter());
+                self.all_replicas.extend(replica.clone().into_iter());
                 changed = true;
             }
         }
@@ -604,7 +603,7 @@ impl ConnBuilder {
     }
 
     pub(crate) fn check_valid(&self) -> bool {
-        true && self.node.is_some() && self.cluster.is_some() && self.moved.is_some()
+        self.node.is_some() && self.cluster.is_some() && self.moved.is_some()
     }
 
     pub(crate) fn connect(self) -> Result<Sender<Cmd>, AsError> {
@@ -620,10 +619,9 @@ impl ConnBuilder {
         let node_addr_clone = node_addr.clone();
         let cluster = self
             .cluster
-            .expect("cluster name must be checked first")
-            .to_string();
-        let rt = self.rt.clone();
-        let wt = self.wt.clone();
+            .expect("cluster name must be checked first");
+        let rt = self.rt;
+        let wt = self.wt;
         let moved = self.moved.expect("must be checked first");
         let fetch = self.fetch.clone();
 
@@ -646,7 +644,7 @@ impl ConnBuilder {
                 if let Ok(sock) = sock {
                     let sock =
                         set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
-                    if let Err(_) = sock.set_nodelay(true) {
+                    if sock.set_nodelay(true).is_err() {
                         warn!("fail to set set nodelay when connect to backend but ignore");
                     }
 
@@ -695,7 +693,6 @@ impl ConnBuilder {
 pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
     let worker = cc.thread.unwrap_or(4);
     (0..worker)
-        .into_iter()
         .map(|_index| {
             let builder = thread::Builder::new();
             let cc = cc.clone();

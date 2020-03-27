@@ -31,7 +31,7 @@ pub fn run() -> Result<(), Error> {
     let yaml = load_yaml!("cli.yml");
     let matches = App::from_yaml(yaml).version(ASTER_VERSION).get_matches();
     let config = matches.value_of("config").unwrap_or("default.toml");
-    let watch_file = config.clone();
+    let watch_file = config.to_string();
     let ip = matches.value_of("ip").map(|x| x.to_string());
     let enable_reload = matches.is_present("reload");
     info!("[aster-{}] loading config from {}", ASTER_VERSION, config);
@@ -44,7 +44,7 @@ pub fn run() -> Result<(), Error> {
     crate::proxy::standalone::reload::init(&watch_file, cfg.clone(), enable_reload)?;
 
     let mut ths = Vec::new();
-    for cluster in cfg.clusters.clone().into_iter() {
+    for cluster in cfg.clusters.into_iter() {
         if cluster.servers.is_empty() {
             warn!(
                 "fail to running cluster {} in addr {} due filed `servers` is empty",

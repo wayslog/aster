@@ -166,46 +166,46 @@ lazy_static! {
 }
 
 impl CmdType {
-    pub fn is_read(&self) -> bool {
-        CmdType::Read == *self || self.is_mget() || self.is_exists()
+    pub fn is_read(self) -> bool {
+        CmdType::Read == self || self.is_mget() || self.is_exists()
     }
 
-    pub fn is_write(&self) -> bool {
-        CmdType::Write == *self
+    pub fn is_write(self) -> bool {
+        CmdType::Write == self
     }
 
-    pub fn is_mget(&self) -> bool {
-        CmdType::MGet == *self
+    pub fn is_mget(self) -> bool {
+        CmdType::MGet == self
     }
 
-    pub fn is_mset(&self) -> bool {
-        CmdType::MSet == *self
+    pub fn is_mset(self) -> bool {
+        CmdType::MSet == self
     }
 
-    pub fn is_exists(&self) -> bool {
-        CmdType::Exists == *self
+    pub fn is_exists(self) -> bool {
+        CmdType::Exists == self
     }
 
-    pub fn is_eval(&self) -> bool {
-        CmdType::Eval == *self
+    pub fn is_eval(self) -> bool {
+        CmdType::Eval == self
     }
 
-    pub fn is_del(&self) -> bool {
-        CmdType::Del == *self
+    pub fn is_del(self) -> bool {
+        CmdType::Del == self
     }
 
-    pub fn is_not_support(&self) -> bool {
-        CmdType::NotSupport == *self
+    pub fn is_not_support(self) -> bool {
+        CmdType::NotSupport == self
     }
 
-    pub fn is_ctrl(&self) -> bool {
-        CmdType::Ctrl == *self
+    pub fn is_ctrl(self) -> bool {
+        CmdType::Ctrl == self
     }
 
     pub fn get_cmd_type(msg: &Message) -> CmdType {
         if let Some(data) = msg.nth(0) {
             if let Some(ctype) = CMD_TYPE.get(data) {
-                return ctype.clone();
+                return *ctype;
             }
         }
         CmdType::NotSupport

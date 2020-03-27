@@ -40,7 +40,7 @@ pub fn get_if_addr() -> String {
 pub fn meta_init(cc: ClusterConfig, ip: Option<String>) {
     let port = cc
         .listen_addr
-        .split(":")
+        .split(':')
         .nth(1)
         .expect("listen_addr must contains port")
         .to_string();

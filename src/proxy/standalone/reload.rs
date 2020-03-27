@@ -111,6 +111,7 @@ impl FileWatcher {
 
                 if !if_changed {
                     debug!("skip reload for no change");
+                    continue;
                 }
 
                 info!(

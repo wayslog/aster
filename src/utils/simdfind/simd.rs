@@ -2,7 +2,7 @@ use crate::utils::simdfind::normal::find_lf_iter;
 
 use std::arch::x86_64::*;
 
-const NEEDLE: &'static [u8] = b"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
+const NEEDLE: &[u8] = b"\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n";
 
 #[inline(always)]
 pub fn find_lf_simd(data: &[u8]) -> Option<usize> {

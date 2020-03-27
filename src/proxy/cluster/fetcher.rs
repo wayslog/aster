@@ -65,18 +65,16 @@ impl SingleFlightTrigger {
 
     fn trigger(&self) {
         let mut fetch = self.fetch.borrow_mut();
-        if let Ok(_) = fetch.start_send(TriggerBy::Error) {
-            if let Ok(_) = fetch.poll_complete() {
-                info!("succeed trigger fetch process");
-                return;
-            }
+        if fetch.start_send(TriggerBy::Error).is_ok() && fetch.poll_complete().is_ok() {
+            info!("succeed trigger fetch process");
+            return;
         }
         warn!("fail to trigger fetch process due fetch channel is full or closed.");
     }
 
     fn incr_counter(&self) -> bool {
         let now = self.counter.get().wrapping_add(1);
-        if Self::check_gap(now & 0x0000ffff) {
+        if Self::check_gap(now & 0x00_00f_fff) {
             return true;
         }
         self.counter.set(now);
@@ -172,8 +170,7 @@ where
                         .cc
                         .borrow()
                         .servers
-                        .iter()
-                        .nth(position)
+                        .get(position)
                         .cloned()
                         .unwrap();
                     info!("start fetch from remote address {}", addr);

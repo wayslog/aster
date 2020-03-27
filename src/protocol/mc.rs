@@ -133,8 +133,8 @@ impl Cmd {
             .into_iter()
             .map(|sub_msg| {
                 let command = Command {
-                    ctype: ctype.clone(),
-                    flags: flags.clone(),
+                    ctype,
+                    flags,
                     cycle: 0,
                     req: sub_msg,
                     reply: None,

@@ -100,7 +100,7 @@ impl MessageMut {
             RESP_BULK => {
                 let csize = match btoi::btoi::<isize>(&src[cursor + 1..cursor + pos - 1]) {
                     Ok(csize) => csize,
-                    Err(_err) => return Err(AsError::BadMessage.into()),
+                    Err(_err) => return Err(AsError::BadMessage),
                 };
 
                 if csize == -1 {
@@ -112,7 +112,7 @@ impl MessageMut {
                         size: 5,
                     }));
                 } else if csize < 0 {
-                    return Err(AsError::BadMessage.into());
+                    return Err(AsError::BadMessage);
                 }
 
                 let total_size = (pos + 1) + (csize as usize) + 2;
@@ -130,7 +130,7 @@ impl MessageMut {
             RESP_ARRAY => {
                 let csize = match btoi::btoi::<isize>(&src[cursor + 1..cursor + pos - 1]) {
                     Ok(csize) => csize,
-                    Err(_err) => return Err(AsError::BadMessage.into()),
+                    Err(_err) => return Err(AsError::BadMessage),
                 };
                 if csize == -1 {
                     return Ok(Some(MsgPack {
@@ -138,7 +138,7 @@ impl MessageMut {
                         size: 5,
                     }));
                 } else if csize < 0 {
-                    return Err(AsError::BadMessage.into());
+                    return Err(AsError::BadMessage);
                 }
                 let mut mycursor = cursor + pos + 1;
                 let mut items = Vec::new();
@@ -241,7 +241,7 @@ impl MessageMut {
                 let mut end = rng.end();
                 let len = rng.range();
                 if len == 0 {
-                    return Some(rng.clone());
+                    return Some(*rng);
                 }
                 if len > 0 && self.data[len - 1] == BYTE_LF {
                     end -= 1;
@@ -431,7 +431,7 @@ impl Message {
                 let mut end = rng.end();
                 let len = rng.range();
                 if rng.begin() == rng.end() {
-                    return Some(rng.clone());
+                    return Some(*rng);
                 }
                 if len > 0 && self.data[len - 1] == BYTE_LF {
                     end -= 1;
@@ -503,7 +503,7 @@ impl Message {
 }
 
 const BYTE_SPACE: u8 = b' ';
-const PATTERNS: &[&'static str] = &["ASK", "MOVED"];
+const PATTERNS: &[&str] = &["ASK", "MOVED"];
 
 lazy_static! {
     static ref FINDER: AhoCorasick = { AhoCorasick::new(PATTERNS) };
@@ -515,15 +515,12 @@ fn parse_redirect(data: &[u8]) -> Option<Redirect> {
         let end = mat.end();
         let rdata = &data[end + 1..];
 
-        let pos = if let Some(pos) = rdata.iter().position(|&x| x == BYTE_SPACE) {
-            pos
-        } else {
-            return None;
-        };
+
+        let pos = rdata.iter().position(|&x| x == BYTE_SPACE)?;
 
         let sdata = &rdata[..pos];
         let tdata = &rdata[pos + 1..];
-        if let Some(slot) = btoi::btoi::<usize>(sdata).ok() {
+        if let Ok(slot) = btoi::btoi::<usize>(sdata) {
             let to = String::from_utf8_lossy(tdata);
             let to = to.to_string();
             if pat == 0 {

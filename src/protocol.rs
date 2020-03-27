@@ -15,18 +15,18 @@ impl<T> IntoReply<T> for T {
 
 bitflags! {
     pub struct CmdFlags: u8 {
-        const DONE     = 0b00000001;
+        const DONE     = 0b00_000_001;
         // redis cluster only
-        const ASK      = 0b00000010;
-        const MOVED    = 0b00000100;
+        const ASK      = 0b00_000_010;
+        const MOVED    = 0b00_000_100;
         // mc only
-        const NOREPLY  = 0b00001000;
-        const QUIET    = 0b00010000;
+        const NOREPLY  = 0b00_001_000;
+        const QUIET    = 0b00_010_000;
 
         // retry
         // const RETRY    = 0b00100000;
 
-        const ERROR    = 0b10000000;
+        const ERROR    = 0b10_000_000;
     }
 }
 

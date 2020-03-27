@@ -7,8 +7,7 @@ pub use failure::Error;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
-use std::fs::File;
-use std::io::Read;
+use std::fs;
 use std::num;
 use std::path::Path;
 
@@ -182,9 +181,7 @@ impl Config {
 
     pub fn load<P: AsRef<Path>>(p: P) -> Result<Config, AsError> {
         let path = p.as_ref();
-        let mut data = String::new();
-        let mut fd = File::open(path)?;
-        fd.read_to_string(&mut data)?;
+        let data = fs::read_to_string(path)?;
         let mut cfg: Config = toml::from_str(&data)?;
         let thread = Config::load_thread_from_env();
         for cluster in &mut cfg.clusters[..] {
@@ -196,9 +193,8 @@ impl Config {
     }
 
     fn load_thread_from_env() -> usize {
-        let thread_str = env::var(ENV_ASTER_DEFAULT_THREADS).unwrap_or("4".to_string());
-        let thread = thread_str.parse::<usize>().unwrap_or(4);
-        thread
+        let thread_str = env::var(ENV_ASTER_DEFAULT_THREADS).unwrap_or_else(|_| "4".to_string());
+        thread_str.parse::<usize>().unwrap_or_else(|_|4)
     }
 }
 

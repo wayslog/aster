@@ -89,13 +89,11 @@ pub fn global_error_incr() {
 }
 
 pub fn remote_tracker(cluster: &str) -> Tracker {
-    let hist = ASTER_REMOTE_TIMER.with_label_values(&[cluster]).clone();
-    Tracker::new(hist)
+    Tracker::new(ASTER_REMOTE_TIMER.with_label_values(&[cluster]))
 }
 
 pub fn total_tracker(cluster: &str) -> Tracker {
-    let hist = ASTER_TOTAL_TIMER.with_label_values(&[cluster]).clone();
-    Tracker::new(hist)
+    Tracker::new(ASTER_TOTAL_TIMER.with_label_values(&[cluster]))
 }
 
 fn show_metrics() -> impl Responder {

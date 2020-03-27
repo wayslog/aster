@@ -96,7 +96,6 @@ impl Future for Initializer {
                     if let Err(_err) = sender.close() {
                         warn!("init waitting connection can't be closed properly, skip");
                     }
-                    std::mem::drop(sender); // must drop when the while state is done;
                     debug!("CLUSTER SLOTS get response as {:?}", cmd);
                     self.state = State::Done(cmd.clone());
                 }

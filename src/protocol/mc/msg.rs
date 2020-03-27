@@ -22,7 +22,7 @@ const BYTES_NOREPLY: &[u8] = b"noreply";
 
 const BIN_STATUS_KEY_NOT_FOUND: u16 = 0x0001u16;
 
-const TEXT_CMDS: &[&'static str] = &[
+const TEXT_CMDS: &[&str] = &[
     "set", "add", "replace", "append", "prepend", "cas", // storage [0, 5]
     "gets", "get",    // retrieval [6, 7]
     "delete", // delete [8, 8]
@@ -55,7 +55,7 @@ const TEXT_PAT_GATS: usize = 12;
 const TEXT_PAT_VERSION: usize = 14;
 const TEXT_PAT_QUIT: usize = 15;
 
-const TEXT_RESPS: &[&'static str] = &[
+const TEXT_RESPS: &[&str] = &[
     "VALUE", // response value sets
     "END",
 ];
@@ -116,21 +116,21 @@ impl TextCmd {
 
         match self {
             Set(rng) | Add(rng) | Replace(rng) | Append(rng) | Prepend(rng) | Cas(rng)
-            | Delete(rng) | Incr(rng) | Decr(rng) | Touch(rng) => rng.clone(),
+            | Delete(rng) | Incr(rng) | Decr(rng) | Touch(rng) => *rng,
             Get(rngs) | Gets(rngs) | Gats(_, rngs) | Gat(_, rngs) => {
                 if rngs.is_empty() {
                     return Range::new(0, 0);
                 }
                 if rngs.len() > 1 {
-                    return rngs.first().unwrap().clone();
+                    return *rngs.first().unwrap();
                 }
-                rngs.first().unwrap().clone()
+                *rngs.first().unwrap()
             }
             _ => Range::new(0, 0),
         }
     }
 
-    fn cmd_slice(&self) -> &'static [u8] {
+    fn cmd_slice(&self) -> &[u8] {
         use TextCmd::*;
         match &self {
             Set(_) => &b"set"[..],
@@ -250,7 +250,7 @@ pub enum BinMsgType {
 }
 
 impl BinMsgType {
-    pub(crate) fn is_quiet(&self) -> bool {
+    pub(crate) fn is_quiet(self) -> bool {
         use BinMsgType::*;
         match &self {
             GetQ | GetKQ => true,
@@ -435,67 +435,67 @@ impl Message {
         match pat {
             TEXT_PAT_SET => {
                 let cmd = TextCmd::Set(Range::default());
-                return Self::parse_text_storage(data, cmd, line, pat);
+                Self::parse_text_storage(data, cmd, line, pat)
             }
             TEXT_PAT_ADD => {
                 let cmd = TextCmd::Add(Range::default());
-                return Self::parse_text_storage(data, cmd, line, pat);
+                Self::parse_text_storage(data, cmd, line, pat)
             }
             TEXT_PAT_REPLACE => {
                 let cmd = TextCmd::Replace(Range::default());
-                return Self::parse_text_storage(data, cmd, line, pat);
+                Self::parse_text_storage(data, cmd, line, pat)
             }
             TEXT_PAT_APPEND => {
                 let cmd = TextCmd::Append(Range::default());
-                return Self::parse_text_storage(data, cmd, line, pat);
+                Self::parse_text_storage(data, cmd, line, pat)
             }
             TEXT_PAT_PREPEND => {
                 let cmd = TextCmd::Prepend(Range::default());
-                return Self::parse_text_storage(data, cmd, line, pat);
+                Self::parse_text_storage(data, cmd, line, pat)
             }
             TEXT_PAT_CAS => {
                 let cmd = TextCmd::Cas(Range::default());
-                return Self::parse_text_storage(data, cmd, line, pat);
+                Self::parse_text_storage(data, cmd, line, pat)
             }
             TEXT_PAT_GET => {
                 let cmd = TextCmd::Get(Vec::new());
-                return Self::parse_text_retrieval(data, cmd, line, pat);
+                Self::parse_text_retrieval(data, cmd, line, pat)
             }
             TEXT_PAT_GETS => {
                 let cmd = TextCmd::Gets(Vec::new());
-                return Self::parse_text_retrieval(data, cmd, line, pat);
+                Self::parse_text_retrieval(data, cmd, line, pat)
             }
             TEXT_PAT_DELETE => {
                 let cmd = TextCmd::Delete(Range::default());
-                return Self::parse_text_one_line(data, cmd, line, pat);
+                Self::parse_text_one_line(data, cmd, line, pat)
             }
             TEXT_PAT_INCR => {
                 let cmd = TextCmd::Incr(Range::default());
-                return Self::parse_text_one_line(data, cmd, line, pat);
+                Self::parse_text_one_line(data, cmd, line, pat)
             }
             TEXT_PAT_DECR => {
                 let cmd = TextCmd::Decr(Range::default());
-                return Self::parse_text_one_line(data, cmd, line, pat);
+                Self::parse_text_one_line(data, cmd, line, pat)
             }
             TEXT_PAT_TOUCH => {
                 let cmd = TextCmd::Touch(Range::default());
-                return Self::parse_text_one_line(data, cmd, line, pat);
+                Self::parse_text_one_line(data, cmd, line, pat)
             }
             TEXT_PAT_GAT => {
                 let cmd = TextCmd::Gat(Range::default(), Vec::new());
-                return Self::parse_text_get_and_touch(data, cmd, line, pat);
+                Self::parse_text_get_and_touch(data, cmd, line, pat)
             }
             TEXT_PAT_GATS => {
                 let cmd = TextCmd::Gats(Range::default(), Vec::new());
-                return Self::parse_text_get_and_touch(data, cmd, line, pat);
+                Self::parse_text_get_and_touch(data, cmd, line, pat)
             }
             TEXT_PAT_VERSION => {
                 let cmd = TextCmd::Version;
-                return Self::parse_text_one_line(data, cmd, line, pat);
+                Self::parse_text_one_line(data, cmd, line, pat)
             }
             TEXT_PAT_QUIT => {
                 let cmd = TextCmd::Quit;
-                return Self::parse_text_one_line(data, cmd, line, pat);
+                Self::parse_text_one_line(data, cmd, line, pat)
             }
             _ => unreachable!(),
         }
@@ -929,7 +929,7 @@ impl Message {
                     for rg in ranges.iter() {
                         subs.push(Message {
                             data: self.data.clone(),
-                            mtype: MsgType::TextReq(TextCmd::Get(vec![rg.clone()])),
+                            mtype: MsgType::TextReq(TextCmd::Get(vec![*rg])),
                             flags: self.flags,
                         })
                     }
@@ -938,7 +938,7 @@ impl Message {
                     for rg in ranges.iter() {
                         subs.push(Message {
                             data: self.data.clone(),
-                            mtype: MsgType::TextReq(TextCmd::Gets(vec![rg.clone()])),
+                            mtype: MsgType::TextReq(TextCmd::Gets(vec![*rg])),
                             flags: self.flags,
                         })
                     }
@@ -947,10 +947,7 @@ impl Message {
                     for rg in ranges.iter() {
                         subs.push(Message {
                             data: self.data.clone(),
-                            mtype: MsgType::TextReq(TextCmd::Gats(
-                                expire.clone(),
-                                vec![rg.clone()],
-                            )),
+                            mtype: MsgType::TextReq(TextCmd::Gats(*expire, vec![*rg])),
                             flags: self.flags,
                         })
                     }
@@ -959,7 +956,7 @@ impl Message {
                     for rg in ranges.iter() {
                         subs.push(Message {
                             data: self.data.clone(),
-                            mtype: MsgType::TextReq(TextCmd::Gat(expire.clone(), vec![rg.clone()])),
+                            mtype: MsgType::TextReq(TextCmd::Gat(*expire, vec![*rg])),
                             flags: self.flags,
                         })
                     }
@@ -973,7 +970,7 @@ impl Message {
 
     pub(crate) fn version_request() -> Message {
         Message {
-            data: Bytes::from("version\r\n".as_bytes()),
+            data: Bytes::from(&b"version\r\n"[..]),
             mtype: MsgType::TextReq(TextCmd::Version),
             flags: CmdFlags::empty(),
         }
@@ -1006,7 +1003,7 @@ impl Message {
     pub(crate) fn get_key(&self) -> &[u8] {
         let key = match &self.mtype {
             MsgType::TextReq(cmd) => cmd.key_range(),
-            MsgType::Binary { key, .. } => key.clone(),
+            MsgType::Binary { key, .. } => *key,
             MsgType::TextInline => Range::new(0, 0),
             _ => unreachable!(),
         };
@@ -1025,13 +1022,11 @@ impl Message {
             | MsgType::TextReq(TextCmd::Gat(_, _))
             | MsgType::TextReq(TextCmd::Gats(_, _)) => {
                 let data = reply.data.as_ref();
-                if data.len() >= BYTES_END.len() {
-                    if &data[data.len() - BYTES_END.len()..] == BYTES_END {
-                        target.extend_from_slice(
-                            &reply.data.as_ref()[..data.len() - BYTES_END.len()],
-                        );
-                        return Ok(());
-                    }
+                if data.len() >= BYTES_END.len()
+                    && &data[data.len() - BYTES_END.len()..] == BYTES_END
+                {
+                    target.extend_from_slice(&reply.data.as_ref()[..data.len() - BYTES_END.len()]);
+                    return Ok(());
                 }
             }
 

@@ -1,5 +1,3 @@
-use md5;
-
 use std::cmp::Ordering;
 
 use crate::com::AsError;

@@ -138,9 +138,9 @@ where
 
         if count > 0 {
             self.output.poll_complete()?;
-            return Ok(Async::Ready(ret_state));
+            Ok(Async::Ready(ret_state))
         } else {
-            return Ok(Async::NotReady);
+            Ok(Async::NotReady)            
         }
     }
 
@@ -188,7 +188,7 @@ where
                 }
                 Err(err) => {
                     error!("fail to recv from back {} due {:?}", self.addr, err);
-                    return Err(err.into());
+                    return Err(err);
                 }
             };
 

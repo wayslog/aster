@@ -79,17 +79,17 @@ impl Range {
     }
 
     #[inline(always)]
-    pub fn begin(&self) -> usize {
+    pub fn begin(self) -> usize {
         self.begin as usize
     }
 
     #[inline(always)]
-    pub fn end(&self) -> usize {
+    pub fn end(self) -> usize {
         self.end as usize
     }
 
     #[inline]
-    pub fn range(&self) -> usize {
+    pub fn range(self) -> usize {
         (self.end - self.begin) as usize
     }
 }
