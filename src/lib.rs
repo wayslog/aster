@@ -26,6 +26,8 @@ pub(crate) mod utils;
 
 use failure::Error;
 
+use std::time::Duration;
+
 pub fn run() -> Result<(), Error> {
     env_logger::init();
     let yaml = load_yaml!("cli.yml");
@@ -93,6 +95,8 @@ pub fn run() -> Result<(), Error> {
 use std::thread;
 
 fn spawn_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
+    // wait for worker thread to be ready
+    thread::sleep(Duration::from_secs(3));
     vec![
         thread::Builder::new()
             .name("aster-http-srv".to_string())
