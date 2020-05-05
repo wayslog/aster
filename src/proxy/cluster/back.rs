@@ -140,7 +140,7 @@ where
             self.output.poll_complete()?;
             Ok(Async::Ready(ret_state))
         } else {
-            Ok(Async::NotReady)            
+            Ok(Async::NotReady)
         }
     }
 

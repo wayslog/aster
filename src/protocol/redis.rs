@@ -336,7 +336,10 @@ impl Command {
     }
 
     fn reply_raw(&self, buf: &mut BytesMut) -> Result<usize, AsError> {
-        self.reply.as_ref().map(|x| x.save(buf)).ok_or_else(||AsError::BadReply)
+        self.reply
+            .as_ref()
+            .map(|x| x.save(buf))
+            .ok_or_else(|| AsError::BadReply)
     }
 }
 

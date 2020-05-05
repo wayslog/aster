@@ -617,9 +617,7 @@ impl ConnBuilder {
 
         let node_addr = self.node.expect("addr must be checked first");
         let node_addr_clone = node_addr.clone();
-        let cluster = self
-            .cluster
-            .expect("cluster name must be checked first");
+        let cluster = self.cluster.expect("cluster name must be checked first");
         let rt = self.rt;
         let wt = self.wt;
         let moved = self.moved.expect("must be checked first");

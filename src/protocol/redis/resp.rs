@@ -506,7 +506,7 @@ const BYTE_SPACE: u8 = b' ';
 const PATTERNS: &[&str] = &["ASK", "MOVED"];
 
 lazy_static! {
-    static ref FINDER: AhoCorasick = { AhoCorasick::new(PATTERNS) };
+    static ref FINDER: AhoCorasick = AhoCorasick::new(PATTERNS);
 }
 
 fn parse_redirect(data: &[u8]) -> Option<Redirect> {
@@ -514,7 +514,6 @@ fn parse_redirect(data: &[u8]) -> Option<Redirect> {
         let pat = mat.pattern();
         let end = mat.end();
         let rdata = &data[end + 1..];
-
 
         let pos = rdata.iter().position(|&x| x == BYTE_SPACE)?;
 

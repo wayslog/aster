@@ -194,7 +194,7 @@ impl Config {
 
     fn load_thread_from_env() -> usize {
         let thread_str = env::var(ENV_ASTER_DEFAULT_THREADS).unwrap_or_else(|_| "4".to_string());
-        thread_str.parse::<usize>().unwrap_or_else(|_|4)
+        thread_str.parse::<usize>().unwrap_or_else(|_| 4)
     }
 }
 
