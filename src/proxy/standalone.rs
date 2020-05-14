@@ -23,6 +23,7 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
+use std::process;
 
 use crate::protocol::{mc, redis};
 
@@ -31,7 +32,7 @@ use crate::metrics::{front_conn_incr, thread_incr};
 use crate::com::meta::meta_init;
 use crate::com::AsError;
 use crate::com::{create_reuse_port_listener, set_read_write_timeout};
-use crate::com::{CacheType, ClusterConfig};
+use crate::com::{CacheType, ClusterConfig, CODE_PORT_IN_USE};
 use crate::protocol::IntoReply;
 
 use fnv::fnv1a64;
@@ -141,7 +142,13 @@ impl<T: Request + 'static> Cluster<T> {
             })
             .and_then(|cluster| {
                 let rc_cluster = cluster.clone();
-                let listen = create_reuse_port_listener(&addr).expect("bind never fail");
+                let listen = match create_reuse_port_listener(&addr) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!("listen {} error: {}", addr, e);
+                        process::exit(CODE_PORT_IN_USE);
+                    },
+                };
                 let service = listen
                     .incoming()
                     .for_each(move |sock| {

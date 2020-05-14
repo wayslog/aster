@@ -15,6 +15,8 @@ pub mod meta;
 
 pub const ENV_ASTER_DEFAULT_THREADS: &str = "ASTER_DEFAULT_THREAD";
 
+pub const CODE_PORT_IN_USE: i32 = 1;
+
 #[derive(Debug, Fail)]
 pub enum AsError {
     #[fail(display = "config is bad for fields {}", _0)]
