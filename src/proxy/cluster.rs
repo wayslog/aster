@@ -38,6 +38,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const DEFAULT_FETCH_INTERVAL_MS: u64 = 10 * 60 * 1000; // 10 min
+const MAX_NODE_PIPELINE_SIZE: usize = 16*1024; // 16k
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
@@ -623,7 +624,7 @@ impl ConnBuilder {
         let moved = self.moved.expect("must be checked first");
         let fetch = self.fetch.clone();
 
-        let (mut tx, rx) = channel(1024 * 8);
+        let (mut tx, rx) = channel(MAX_NODE_PIPELINE_SIZE);
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
             .and_then(move |_| {
                 let node_clone = node_addr.clone();
