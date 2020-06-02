@@ -697,13 +697,10 @@ impl ConnBuilder {
                 debug!("success dispatch to read only replica node");
             }
             Ok(AsyncSink::NotReady(_)) => {
-                warn!("fail to initial backend connection of replica due to send fail");
+                warn!("fail to init connection of replica due to send fail");
             }
             Err(err) => {
-                warn!(
-                    "fail to initial backend connection of replica due to {}",
-                    err
-                );
+                warn!("fail to init connection of replica due to {}", err);
             }
         }
     }
