@@ -37,7 +37,7 @@ pub fn get_if_addr() -> String {
     "127.0.0.1".to_string()
 }
 
-pub fn meta_init(cc: ClusterConfig, ip: Option<String>) {
+pub fn load_meta(cc: ClusterConfig, ip: Option<String>) -> Meta {
     let port = cc
         .listen_addr
         .split(':')
@@ -45,22 +45,16 @@ pub fn meta_init(cc: ClusterConfig, ip: Option<String>) {
         .expect("listen_addr must contains port")
         .to_string();
 
-    let meta = if let Some(ip) = ip {
-        Meta {
-            cluster: cc.name,
-            port,
-            ip,
-        }
-    } else {
-        let ip = get_if_addr();
-        Meta {
-            cluster: cc.name,
-            port,
-            ip,
-        }
-    };
-    info!("setup meta info with {:?}", meta);
+    let ip = ip.unwrap_or_else(get_if_addr);
 
+    Meta {
+        cluster: cc.name,
+        port,
+        ip,
+    }
+}
+
+pub fn meta_init(meta: Meta) {
     TLS_META.with(|gkd| {
         let mut handler = gkd.borrow_mut();
         handler.replace(meta);

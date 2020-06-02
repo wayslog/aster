@@ -21,14 +21,12 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::thread::{Builder, JoinHandle};
 use std::time::Duration;
 
 use crate::protocol::{mc, redis};
 
-use crate::metrics::{front_conn_incr, thread_incr};
+use crate::metrics::front_conn_incr;
 
-use crate::com::meta::meta_init;
 use crate::com::AsError;
 use crate::com::{create_reuse_port_listener, set_read_write_timeout};
 use crate::com::{CacheType, ClusterConfig};
@@ -616,28 +614,10 @@ impl ServerLine {
     }
 }
 
-pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
-    let worker = cc.thread.unwrap_or(4);
-    (0..worker)
-        .map(|_index| {
-            let builder = Builder::new();
-            let cc = cc.clone();
-            let ip = ip.clone();
-            builder
-                .name(cc.name.clone())
-                .spawn(move || {
-                    meta_init(cc.clone(), ip);
-
-                    thread_incr();
-                    match cc.cache_type {
-                        CacheType::Redis => Cluster::<redis::Cmd>::run(cc).unwrap(),
-                        CacheType::Memcache | CacheType::MemcacheBinary => {
-                            Cluster::<mc::Cmd>::run(cc).unwrap()
-                        }
-                        _ => unreachable!(),
-                    }
-                })
-                .expect("fail to spawn worker thread")
-        })
-        .collect()
+pub(crate) fn spawn(cc: ClusterConfig) {
+    match cc.cache_type {
+        CacheType::Redis => Cluster::<redis::Cmd>::run(cc).unwrap(),
+        CacheType::Memcache | CacheType::MemcacheBinary => Cluster::<mc::Cmd>::run(cc).unwrap(),
+        _ => unreachable!(),
+    };
 }
