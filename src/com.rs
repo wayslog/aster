@@ -14,6 +14,7 @@ use std::path::Path;
 pub mod meta;
 
 pub const ENV_ASTER_DEFAULT_THREADS: &str = "ASTER_DEFAULT_THREAD";
+const DEFAULT_FETCH_INTERVAL_MS: u64 = 30 * 60 * 1000;
 
 #[derive(Debug, Fail)]
 pub enum AsError {
@@ -249,6 +250,19 @@ pub struct ClusterConfig {
 
     // dead option: always 1
     pub node_connections: Option<usize>,
+}
+
+impl ClusterConfig {
+    pub(crate) fn hash_tag_bytes(&self) -> Vec<u8> {
+        self.hash_tag
+            .as_ref()
+            .map(|x| x.as_bytes().to_vec())
+            .unwrap_or_else(|| vec![])
+    }
+
+    pub(crate) fn fetch_interval_ms(&self) -> u64 {
+        self.fetch_interval.unwrap_or(DEFAULT_FETCH_INTERVAL_MS)
+    }
 }
 
 #[cfg(windows)]

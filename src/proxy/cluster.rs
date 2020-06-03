@@ -5,7 +5,6 @@ pub mod init;
 pub mod redirect;
 
 use crate::com::create_reuse_port_listener;
-use crate::com::meta::meta_init;
 use crate::com::set_read_write_timeout;
 use crate::com::AsError;
 use crate::com::ClusterConfig;
@@ -14,13 +13,13 @@ use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
 use crate::proxy::cluster::fetcher::SingleFlightTrigger;
 use crate::utils::crc::crc16;
 
-use crate::metrics::{front_conn_incr, thread_incr};
+use crate::metrics::front_conn_incr;
 
 // use failure::Error;
 use futures::future::ok;
 use futures::future::*;
 use futures::task;
-use futures::unsync::mpsc::{channel, Sender};
+use futures::unsync::mpsc::{channel, Receiver, Sender};
 use futures::AsyncSink;
 use futures::{Sink, Stream};
 
@@ -34,10 +33,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::rc::{Rc, Weak};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const DEFAULT_FETCH_INTERVAL_MS: u64 = 10 * 60 * 1000; // 10 min
 const MAX_NODE_PIPELINE_SIZE: usize = 16*1024; // 16k
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,6 +91,102 @@ pub struct Cluster {
     latest: RefCell<Instant>,
 }
 
+type MovedRecv = Receiver<Redirection>;
+
+impl Cluster {
+    fn init_build_cluster(
+        mut cc: ClusterConfig,
+        replica: ReplicaLayout,
+    ) -> Result<(Cluster, MovedRecv), AsError> {
+        let read_from_slave = cc.read_from_slave.clone().unwrap_or(false);
+        let hash_tag = cc.hash_tag_bytes();
+        let mut slots = Slots::default();
+        let (masters, replicas) = replica;
+        slots.try_update_all(masters, replicas);
+        let (moved, moved_rx) = channel(10240);
+
+        let all_masters = slots.get_all_masters();
+        let mut all_lived = HashSet::new();
+        cc.servers = all_masters.iter().cloned().collect();
+
+        let all_servers = cc.servers.clone();
+        let mut conns = Conns::default();
+        for master in all_servers.into_iter() {
+            let conn = ConnBuilder::new_master(&cc, &master, moved.clone()).connect()?;
+            conns.insert(&master, conn);
+            all_lived.insert(master.clone());
+        }
+
+        if read_from_slave {
+            let all_slaves = slots.get_all_replicas();
+            for slave in all_slaves.into_iter() {
+                let conn = ConnBuilder::new_replica(&cc, &slave, moved.clone()).connect()?;
+                conns.insert(&slave, conn);
+                all_lived.insert(slave.clone());
+            }
+        }
+
+        let cluster = Cluster {
+            cc: RefCell::new(cc),
+            hash_tag,
+            read_from_slave,
+            moved,
+            slots: RefCell::new(slots),
+            conns: RefCell::new(conns),
+            fetch: RefCell::new(None),
+            latest: RefCell::new(Instant::now()),
+        };
+        Ok((cluster, moved_rx))
+    }
+
+    fn setup_fetch_trigger(self: &Rc<Self>) {
+        let interval_millis = self.cc.borrow().fetch_interval_ms();
+        let interval = Interval::new(
+            Instant::now() + Duration::from_millis(interval_millis),
+            Duration::from_millis(interval_millis),
+        );
+
+        let interval_stream = interval
+            .map(|_| fetcher::TriggerBy::Interval)
+            .map_err(|_| AsError::None);
+
+        let (tx, rx) = channel(1024);
+        let trigger = Rc::new(SingleFlightTrigger::new(1, tx));
+        let _ = self.fetch.borrow_mut().replace(trigger);
+
+        let trigger_stream = rx.map_err(|_| AsError::None);
+        let fetch = fetcher::Fetch::new(self.clone(), trigger_stream.select(interval_stream));
+        current_thread::spawn(fetch);
+    }
+
+    fn handle_front_conn(self: &Rc<Self>, sock: TcpStream) {
+        let cluster_name = self.cc.borrow().name.clone();
+        sock.set_nodelay(true).unwrap_or_else(|err| {
+            warn!(
+                "cluster {} fail to set nodelay but skip, due to {:?}",
+                cluster_name, err
+            );
+        });
+
+        let client_str = match sock.peer_addr() {
+            Ok(client) => client.to_string(),
+            Err(err) => {
+                error!(
+                    "cluster {} fail to get client name err {:?}",
+                    cluster_name, err
+                );
+                "unknown".to_string()
+            }
+        };
+
+        front_conn_incr(&cluster_name);
+        let codec = RedisHandleCodec {};
+        let (output, input) = codec.framed(sock).split();
+        let fut = front::Front::new(client_str, self.clone(), input, output);
+        current_thread::spawn(fut);
+    }
+}
+
 impl Cluster {
     pub(crate) fn run(cc: ClusterConfig, replica: ReplicaLayout) -> Result<(), AsError> {
         let addr = cc
@@ -101,62 +194,7 @@ impl Cluster {
             .parse::<SocketAddr>()
             .expect("parse socket never fail");
         let fut = ok::<ClusterConfig, AsError>(cc)
-            .and_then(|mut cc| {
-                let read_from_slave = cc.read_from_slave.clone().unwrap_or(false);
-                let hash_tag = cc
-                    .hash_tag
-                    .clone()
-                    .map(|x| x.as_bytes().to_vec())
-                    .unwrap_or_else(|| vec![]);
-                let mut slots = Slots::default();
-                let (masters, replicas) = replica;
-                slots.try_update_all(masters, replicas);
-                let (moved, moved_rx) = channel(10240);
-
-                let all_masters = slots.get_all_masters();
-                let mut all_lived = HashSet::new();
-                cc.servers = all_masters.iter().cloned().collect();
-                let all_servers = cc.servers.clone();
-                let mut conns = Conns::default();
-                for master in all_servers.into_iter() {
-                    let conn = ConnBuilder::new()
-                        .moved(moved.clone())
-                        .cluster(cc.name.clone())
-                        .node(master.clone())
-                        .read_timeout(cc.read_timeout.clone())
-                        .write_timeout(cc.write_timeout.clone())
-                        .connect()?;
-                    conns.insert(&master, conn);
-                    all_lived.insert(master.clone());
-                }
-
-                if read_from_slave {
-                    let all_slaves = slots.get_all_replicas();
-                    for slave in all_slaves.into_iter() {
-                        let conn = ConnBuilder::new()
-                            .moved(moved.clone())
-                            .cluster(cc.name.clone())
-                            .node(slave.clone())
-                            .read_timeout(cc.read_timeout.clone())
-                            .write_timeout(cc.write_timeout.clone())
-                            .replica(true)
-                            .connect()?;
-                        conns.insert(&slave, conn);
-                        all_lived.insert(slave.clone());
-                    }
-                }
-                let cluster = Cluster {
-                    cc: RefCell::new(cc),
-                    hash_tag,
-                    read_from_slave,
-                    moved,
-                    slots: RefCell::new(slots),
-                    conns: RefCell::new(conns),
-                    fetch: RefCell::new(None),
-                    latest: RefCell::new(Instant::now()),
-                };
-                Ok((cluster, moved_rx))
-            })
+            .and_then(|cc| Cluster::init_build_cluster(cc, replica))
             .and_then(|(cluster, moved_rx)| {
                 let rc_cluster = Rc::new(cluster);
                 let redirect_handler = redirect::RedirectHandler::new(rc_cluster.clone(), moved_rx);
@@ -164,27 +202,7 @@ impl Cluster {
                 Ok(rc_cluster)
             })
             .and_then(|rc_cluster| {
-                let interval_millis = rc_cluster
-                    .cc
-                    .borrow()
-                    .fetch_interval
-                    .unwrap_or(DEFAULT_FETCH_INTERVAL_MS);
-                let interval = Interval::new(
-                    Instant::now() + Duration::from_millis(interval_millis),
-                    Duration::from_millis(interval_millis),
-                );
-                let interval_stream = interval
-                    .map(|_| fetcher::TriggerBy::Interval)
-                    .map_err(|_| AsError::None);
-
-                let (tx, rx) = channel(1024);
-                let trigger = Rc::new(SingleFlightTrigger::new(1, tx));
-                let _ = rc_cluster.fetch.borrow_mut().replace(trigger);
-
-                let trigger_stream = rx.map_err(|_| AsError::None);
-                let fetch =
-                    fetcher::Fetch::new(rc_cluster.clone(), trigger_stream.select(interval_stream));
-                current_thread::spawn(fetch);
+                rc_cluster.setup_fetch_trigger();
                 Ok(rc_cluster)
             })
             .and_then(move |cluster| {
@@ -193,30 +211,7 @@ impl Cluster {
                     .incoming()
                     .for_each(move |sock| {
                         let cluster = cluster.clone();
-                        if let Err(err) = sock.set_nodelay(true) {
-                            warn!(
-                                "cluster {} fail to set nodelay but skip, due to {:?}",
-                                cluster.cc.borrow().name,
-                                err
-                            );
-                        }
-                        let client_str = match sock.peer_addr() {
-                            Ok(client) => format!("{}", client),
-                            Err(err) => {
-                                error!(
-                                    "cluster {} fail to get client name due to {:?}",
-                                    cluster.cc.borrow().name,
-                                    err
-                                );
-                                "unknown".to_string()
-                            }
-                        };
-
-                        front_conn_incr(&cluster.cc.borrow().name);
-                        let codec = RedisHandleCodec {};
-                        let (output, input) = codec.framed(sock).split();
-                        let fut = front::Front::new(client_str, cluster, input, output);
-                        current_thread::spawn(fut);
+                        cluster.handle_front_conn(sock);
                         Ok(())
                     })
                     .map_err(|err| {
@@ -549,6 +544,33 @@ pub(crate) struct ConnBuilder {
 }
 
 impl ConnBuilder {
+    pub(crate) fn new_master(
+        cc: &ClusterConfig,
+        node: &str,
+        moved: Sender<Redirection>,
+    ) -> ConnBuilder {
+        ConnBuilder::new()
+            .moved(moved.clone())
+            .node(node.to_string())
+            .cluster(cc.name.clone())
+            .read_timeout(cc.read_timeout.clone())
+            .write_timeout(cc.write_timeout.clone())
+    }
+
+    pub(crate) fn new_replica(
+        cc: &ClusterConfig,
+        node: &str,
+        moved: Sender<Redirection>,
+    ) -> ConnBuilder {
+        ConnBuilder::new()
+            .moved(moved.clone())
+            .node(node.to_string())
+            .cluster(cc.name.clone())
+            .read_timeout(cc.read_timeout.clone())
+            .write_timeout(cc.write_timeout.clone())
+            .replica(true)
+    }
+
     pub(crate) fn new() -> ConnBuilder {
         ConnBuilder {
             cluster: None,
@@ -677,39 +699,18 @@ impl ConnBuilder {
                 debug!("success dispatch to read only replica node");
             }
             Ok(AsyncSink::NotReady(_)) => {
-                warn!("fail to initial backend connection of replica due to send fail");
+                warn!("fail to init connection of replica due to send fail");
             }
             Err(err) => {
-                warn!(
-                    "fail to initial backend connection of replica due to {}",
-                    err
-                );
+                warn!("fail to init connection of replica due to {}", err);
             }
         }
     }
 }
 
-pub fn run(cc: ClusterConfig, ip: Option<String>) -> Vec<JoinHandle<()>> {
-    let worker = cc.thread.unwrap_or(4);
-    (0..worker)
-        .map(|_index| {
-            let builder = thread::Builder::new();
-            let cc = cc.clone();
-            let ip = ip.clone();
-            builder
-                .name(cc.name.clone())
-                .spawn(move || {
-                    meta_init(cc.clone(), ip);
-
-                    thread_incr();
-
-                    current_thread::block_on_all(
-                        init::Initializer::new(cc)
-                            .map_err(|err| error!("fail to init cluster due to {}", err)),
-                    )
-                    .unwrap();
-                })
-                .expect("fail to spawn worker thread")
-        })
-        .collect()
+pub(crate) fn spawn(cc: ClusterConfig) {
+    current_thread::block_on_all(
+        init::Initializer::new(cc).map_err(|err| error!("fail to init cluster due to {}", err)),
+    )
+    .unwrap();
 }
