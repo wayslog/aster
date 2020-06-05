@@ -16,6 +16,8 @@ pub mod meta;
 pub const ENV_ASTER_DEFAULT_THREADS: &str = "ASTER_DEFAULT_THREAD";
 const DEFAULT_FETCH_INTERVAL_MS: u64 = 30 * 60 * 1000;
 
+pub const CODE_PORT_IN_USE: i32 = 1;
+
 #[derive(Debug, Fail)]
 pub enum AsError {
     #[fail(display = "config is bad for fields {}", _0)]

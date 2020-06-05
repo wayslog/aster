@@ -7,7 +7,7 @@ pub mod redirect;
 use crate::com::create_reuse_port_listener;
 use crate::com::set_read_write_timeout;
 use crate::com::AsError;
-use crate::com::ClusterConfig;
+use crate::com::{ClusterConfig, CODE_PORT_IN_USE};
 use crate::protocol::redis::{new_read_only_cmd, RedisHandleCodec, RedisNodeCodec};
 use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
 use crate::proxy::cluster::fetcher::SingleFlightTrigger;
@@ -34,6 +34,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
+use std::process;
 
 const MAX_NODE_PIPELINE_SIZE: usize = 16*1024; // 16k
 
@@ -206,7 +207,13 @@ impl Cluster {
                 Ok(rc_cluster)
             })
             .and_then(move |cluster| {
-                let listen = create_reuse_port_listener(&addr).expect("bind never fail");
+                let listen = match create_reuse_port_listener(&addr) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!("listen {} error: {}", addr, e);
+                        process::exit(CODE_PORT_IN_USE);
+                    },
+                };
                 let service = listen
                     .incoming()
                     .for_each(move |sock| {
