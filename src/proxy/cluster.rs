@@ -35,6 +35,8 @@ use std::net::SocketAddr;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
+const MAX_NODE_PIPELINE_SIZE: usize = 16*1024; // 16k
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
     Move { slot: usize, to: String },
@@ -644,7 +646,7 @@ impl ConnBuilder {
         let moved = self.moved.expect("must be checked first");
         let fetch = self.fetch.clone();
 
-        let (mut tx, rx) = channel(1024 * 8);
+        let (mut tx, rx) = channel(MAX_NODE_PIPELINE_SIZE);
         let amt = lazy(|| -> Result<(), ()> { Ok(()) })
             .and_then(move |_| {
                 let node_clone = node_addr.clone();
