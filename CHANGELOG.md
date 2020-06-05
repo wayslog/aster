@@ -1,6 +1,12 @@
 
 # change log
 
+# 1.3.2
+
+- replace inotify library with hotwatch
+- change setup meta process as one thread
+- fixed typo
+
 ## 1.3.1
 
 - fixed reload for file rename support
