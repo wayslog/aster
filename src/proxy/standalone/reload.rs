@@ -1,11 +1,9 @@
 use futures::{Async, Future, Stream};
-use inotify::{EventMask, Inotify, WatchMask};
+use hotwatch::{Event, Hotwatch};
 use log::Level;
 use tokio::timer::Interval;
 
 use std::collections::HashMap;
-use std::env;
-use std::path::Path;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
@@ -78,54 +76,34 @@ impl FileWatcher {
         Ok(())
     }
 
-    fn watch_dir(&self) -> String {
-        let pth = Path::new(&self.watchfile);
-        let pb = if pth.is_absolute() {
-            pth.to_path_buf()
-        } else {
-            let current = env::current_dir().expect("must get current dir");
-            current.join(pth)
-        };
-
-        let watch_dir = pb.parent().expect("not valid path for config");
-        let ret = watch_dir.to_str().expect("not valid path").to_string();
-        info!("watch file address is {:p}", &self.watchfile);
-        ret
-    }
-
     pub fn watch(&self) -> Result<(), AsError> {
-        let mut inotify = Inotify::init()?;
-        let watch_dir = self.watch_dir();
-        info!("start to watch dir {:?}", watch_dir);
-        inotify.add_watch(
-            watch_dir,
-            WatchMask::MODIFY | WatchMask::CREATE | WatchMask::MOVE,
-        )?;
-        let mut buf = [0u8; 1024];
-        loop {
-            let events = inotify.read_events_blocking(&mut buf)?;
-            for event in events {
-                let if_changed = event.mask.contains(EventMask::MODIFY) 
-                    || event.mask.contains(EventMask::MOVED_TO)
-                    || event.mask.contains(EventMask::MOVED_FROM);
-
-                if !if_changed {
-                    debug!("skip reload for no change");
-                    continue;
+        let delay = Duration::from_secs(3);
+        let mut hwatch = Hotwatch::new_with_custom_delay(delay)
+            .expect("file watcher must be initied by required reload");
+        let watchfile = self.watchfile.clone();
+        hwatch
+            .watch(watchfile, |event: Event| {
+                let fw = unsafe { G_FW.as_ref().unwrap() };
+                match event {
+                    Event::Write(path) | Event::Create(path) | Event::Rename(_, path) => {
+                        info!("aware file changed for {:?}", path.as_os_str());
+                        info!(
+                            "start reload version from {}",
+                            fw.current.load(Ordering::SeqCst)
+                        );
+                        if let Err(err) = fw.reload() {
+                            error!("reload fail due to {:?}", err);
+                        } else {
+                            info!("success reload config");
+                        }
+                    }
+                    _ => {}
                 }
-
-                info!(
-                    "start reload version from {}",
-                    self.current.load(Ordering::SeqCst)
-                );
-                if let Err(err) = self.reload() {
-                    error!("reload fail due to {:?}", err);
-                } else {
-                    info!("success reload config");
-                }
-                break;
-            }
-        }
+            })
+            .map_err(|err| {
+                warn!("fail to watch file due to {:?}", err);
+                AsError::BadConfig("reload".to_string())
+            })
     }
 }
 

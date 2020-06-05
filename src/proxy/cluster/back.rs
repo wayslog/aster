@@ -6,7 +6,7 @@ use futures::unsync::mpsc::SendError;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
 
-const MAX_PIPELINE: usize = 512;
+const MAX_PIPELINE: usize = 8*1024;
 
 #[derive(Eq, PartialEq)]
 enum State {
@@ -140,7 +140,7 @@ where
             self.output.poll_complete()?;
             Ok(Async::Ready(ret_state))
         } else {
-            Ok(Async::NotReady)            
+            Ok(Async::NotReady)
         }
     }
 

@@ -515,7 +515,6 @@ fn parse_redirect(data: &[u8]) -> Option<Redirect> {
         let end = mat.end();
         let rdata = &data[end + 1..];
 
-
         let pos = rdata.iter().position(|&x| x == BYTE_SPACE)?;
 
         let sdata = &rdata[..pos];

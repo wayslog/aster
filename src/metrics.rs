@@ -23,7 +23,6 @@ lazy_static! {
         );
         register_gauge_vec!(opt, &["cluster"]).unwrap()
     };
-
     static ref ASTER_FRONT_INCR: IntCounterVec = {
         let opt = opts!(
             "aster_front_connection_incr",
@@ -35,10 +34,6 @@ lazy_static! {
         let opt = opts!("aster_version", "aster current running version");
         register_gauge_vec!(opt, &["version"]).unwrap()
     };
-    // static ref ASTER_PID: GaugeVec = {
-    //     let opt = opts!("aster_pid", "aster current processs id");
-    //     register_gauge_vec!(opt, &["pid"]).unwrap()
-    // };
     static ref ASTER_MEMORY: Gauge = {
         let opt = opts!("aster_memory_usage", "aster current memory usage");
         register_gauge!(opt).unwrap()
@@ -124,9 +119,6 @@ pub fn measure_system() -> Result<(), AsError> {
         }
     };
 
-    // ASTER_PID
-    //     .with_label_values(&[&format!("{}", pid.as_u32())])
-    //     .set(1.0);
     let sleep_interval = Duration::from_secs(30); // 30s to sleep;
     let mut system = sysinfo::System::new();
     system.refresh_all();

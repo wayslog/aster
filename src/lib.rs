@@ -24,8 +24,13 @@ pub mod protocol;
 pub mod proxy;
 pub(crate) mod utils;
 
+use std::thread::{self, Builder, JoinHandle};
+
 use failure::Error;
 
+use com::meta::{load_meta, meta_init};
+use com::ClusterConfig;
+use metrics::thread_incr;
 use std::time::Duration;
 
 pub fn run() -> Result<(), Error> {
@@ -70,11 +75,11 @@ pub fn run() -> Result<(), Error> {
 
         match cluster.cache_type {
             com::CacheType::RedisCluster => {
-                let jhs = proxy::cluster::run(cluster, ip.clone());
+                let jhs = spwan_worker(&cluster, ip.clone(), proxy::cluster::spawn);
                 ths.extend(jhs);
             }
             _ => {
-                let jhs = proxy::standalone::run(cluster, ip.clone());
+                let jhs = spwan_worker(&cluster, ip.clone(), proxy::standalone::spawn);
                 ths.extend(jhs);
             }
         }
@@ -92,7 +97,28 @@ pub fn run() -> Result<(), Error> {
     Ok(())
 }
 
-use std::thread;
+fn spwan_worker<T>(cc: &ClusterConfig, ip: Option<String>, spawn_fn: T) -> Vec<JoinHandle<()>>
+where
+    T: Fn(ClusterConfig) + Copy + Send + 'static,
+{
+    let worker = cc.thread.unwrap_or(4);
+    let meta = load_meta(cc.clone(), ip);
+    info!("setup meta info with {:?}", meta);
+    (0..worker)
+        .map(|_index| {
+            let cc = cc.clone();
+            let meta = meta.clone();
+            Builder::new()
+                .name(cc.name.clone())
+                .spawn(move || {
+                    thread_incr();
+                    meta_init(meta);
+                    spawn_fn(cc);
+                })
+                .expect("fail to spawn worker thread")
+        })
+        .collect()
+}
 
 fn spawn_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
     // wait for worker thread to be ready

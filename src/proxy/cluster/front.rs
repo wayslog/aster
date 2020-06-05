@@ -8,7 +8,7 @@ use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-const MAX_BATCH_SIZE: usize = 2048;
+const MAX_BATCH_SIZE: usize = 8*1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {

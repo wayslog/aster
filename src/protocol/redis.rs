@@ -13,7 +13,7 @@ use crate::utils::{myitoa, trim_hash_tag, upper};
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
-
+use std::u64;
 use std::collections::{BTreeMap, HashSet};
 
 pub const SLOTS_COUNT: usize = 16384;
@@ -336,7 +336,10 @@ impl Command {
     }
 
     fn reply_raw(&self, buf: &mut BytesMut) -> Result<usize, AsError> {
-        self.reply.as_ref().map(|x| x.save(buf)).ok_or_else(||AsError::BadReply)
+        self.reply
+            .as_ref()
+            .map(|x| x.save(buf))
+            .ok_or_else(|| AsError::BadReply)
     }
 }
 
@@ -396,8 +399,7 @@ impl Command {
         if let Some(key_data) = self.req.nth(pos) {
             method(trim_hash_tag(key_data, hash_tag)) as u64
         } else {
-            // TODO: set bad request error
-            unreachable!()
+            return u64::MAX;
         }
     }
 

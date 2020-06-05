@@ -14,6 +14,7 @@ use std::path::Path;
 pub mod meta;
 
 pub const ENV_ASTER_DEFAULT_THREADS: &str = "ASTER_DEFAULT_THREAD";
+const DEFAULT_FETCH_INTERVAL_MS: u64 = 30 * 60 * 1000;
 
 pub const CODE_PORT_IN_USE: i32 = 1;
 
@@ -28,7 +29,7 @@ pub enum AsError {
     BadMessage,
 
     #[fail(display = "message is ok but request bad or not allowed")]
-    BadReqeust,
+    BadRequest,
 
     #[fail(display = "request not supported")]
     RequestNotSupport,
@@ -87,7 +88,7 @@ impl PartialEq for AsError {
         match (self, other) {
             (Self::None, Self::None) => true,
             (Self::BadMessage, Self::BadMessage) => true,
-            (Self::BadReqeust, Self::BadReqeust) => true,
+            (Self::BadRequest, Self::BadRequest) => true,
             (Self::RequestNotSupport, Self::RequestNotSupport) => true,
             (Self::RequestInlineWithMultiKeys, Self::RequestInlineWithMultiKeys) => true,
             (Self::BadReply, Self::BadReply) => true,
@@ -196,7 +197,7 @@ impl Config {
 
     fn load_thread_from_env() -> usize {
         let thread_str = env::var(ENV_ASTER_DEFAULT_THREADS).unwrap_or_else(|_| "4".to_string());
-        thread_str.parse::<usize>().unwrap_or_else(|_|4)
+        thread_str.parse::<usize>().unwrap_or_else(|_| 4)
     }
 }
 
@@ -251,6 +252,19 @@ pub struct ClusterConfig {
 
     // dead option: always 1
     pub node_connections: Option<usize>,
+}
+
+impl ClusterConfig {
+    pub(crate) fn hash_tag_bytes(&self) -> Vec<u8> {
+        self.hash_tag
+            .as_ref()
+            .map(|x| x.as_bytes().to_vec())
+            .unwrap_or_else(|| vec![])
+    }
+
+    pub(crate) fn fetch_interval_ms(&self) -> u64 {
+        self.fetch_interval.unwrap_or(DEFAULT_FETCH_INTERVAL_MS)
+    }
 }
 
 #[cfg(windows)]
