@@ -4,7 +4,6 @@ language: rust
 
 rust:
   - nightly
-  - stable
 
 addons:
   apt:
@@ -21,15 +20,10 @@ services:
 before_install:
   - curl -L https://github.com/mozilla/grcov/releases/latest/download/grcov-linux-x86_64.tar.bz2 | tar jxf -
 
-matrix:
+jobs:
   allow_failures:
     - rust: stable
   fast_finish: true
-  include:
-    - os: linux
-      rust: nightly
-
-jobs:
   include:
     -stage:
       script:
