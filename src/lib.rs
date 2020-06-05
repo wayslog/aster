@@ -31,6 +31,7 @@ use failure::Error;
 use com::meta::{load_meta, meta_init};
 use com::ClusterConfig;
 use metrics::thread_incr;
+use std::time::Duration;
 
 pub fn run() -> Result<(), Error> {
     env_logger::init();
@@ -120,6 +121,8 @@ where
 }
 
 fn spawn_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
+    // wait for worker thread to be ready
+    thread::sleep(Duration::from_secs(3));
     vec![
         thread::Builder::new()
             .name("aster-http-srv".to_string())
