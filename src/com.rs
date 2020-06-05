@@ -27,7 +27,7 @@ pub enum AsError {
     BadMessage,
 
     #[fail(display = "message is ok but request bad or not allowed")]
-    BadReqeust,
+    BadRequest,
 
     #[fail(display = "request not supported")]
     RequestNotSupport,
@@ -86,7 +86,7 @@ impl PartialEq for AsError {
         match (self, other) {
             (Self::None, Self::None) => true,
             (Self::BadMessage, Self::BadMessage) => true,
-            (Self::BadReqeust, Self::BadReqeust) => true,
+            (Self::BadRequest, Self::BadRequest) => true,
             (Self::RequestNotSupport, Self::RequestNotSupport) => true,
             (Self::RequestInlineWithMultiKeys, Self::RequestInlineWithMultiKeys) => true,
             (Self::BadReply, Self::BadReply) => true,

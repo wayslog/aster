@@ -300,8 +300,13 @@ impl Cluster {
             }
             let slot = {
                 let hash_tag = self.hash_tag.as_ref();
-                let signed = cmd.borrow().key_hash(hash_tag, crc16) as usize;
-                signed % SLOTS_COUNT
+                let signed = cmd.borrow().key_hash(hash_tag, crc16);
+                if signed == std::u64::MAX {
+                    cmd.set_error(AsError::BadRequest);
+                    continue;
+                }
+    
+                (signed as usize) % SLOTS_COUNT
             };
 
             let addr = self.get_addr(slot, cmd.borrow().is_read());
