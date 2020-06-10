@@ -1,5 +1,5 @@
 use futures::{Async, Future, Stream};
-use hotwatch::{Event, Hotwatch};
+use hotwatch::{blocking::{Flow, Hotwatch}, Event};
 use log::Level;
 use tokio::timer::Interval;
 
@@ -58,7 +58,7 @@ impl FileWatcher {
 
     fn reload(&self) -> Result<(), AsError> {
         thread::sleep(Duration::from_millis(200));
-        debug!("reload from file {:p}", &self.watchfile);
+        debug!("reload from file {}", &self.watchfile);
         let config = Config::load(&self.watchfile)?;
         config.valid()?;
         let current_config = self.current_config();
@@ -99,11 +99,13 @@ impl FileWatcher {
                     }
                     _ => {}
                 }
+                Flow::Continue
             })
             .map_err(|err| {
                 warn!("fail to watch file due to {:?}", err);
                 AsError::BadConfig("reload".to_string())
-            })
+            })?;
+        Ok(hwatch.run())
     }
 }
 
