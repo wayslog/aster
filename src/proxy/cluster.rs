@@ -14,12 +14,14 @@ use crate::proxy::cluster::fetcher::SingleFlightTrigger;
 use crate::utils::crc::crc16;
 
 use crate::metrics::front_conn_incr;
+use crate::metrics::slowlog::Entry;
 
 // use failure::Error;
 use futures::future::ok;
 use futures::future::*;
 use futures::task;
 use futures::unsync::mpsc::{channel, Receiver, Sender};
+use futures::sync::mpsc::Sender as SyncSender;
 use futures::AsyncSink;
 use futures::{Sink, Stream};
 
@@ -160,7 +162,7 @@ impl Cluster {
         current_thread::spawn(fetch);
     }
 
-    fn handle_front_conn(self: &Rc<Self>, sock: TcpStream) {
+    fn handle_front_conn(self: &Rc<Self>, sock: TcpStream, slowlog_tx: SyncSender<Entry>) {
         let cluster_name = self.cc.borrow().name.clone();
         sock.set_nodelay(true).unwrap_or_else(|err| {
             warn!(
@@ -183,13 +185,13 @@ impl Cluster {
         front_conn_incr(&cluster_name);
         let codec = RedisHandleCodec {};
         let (output, input) = codec.framed(sock).split();
-        let fut = front::Front::new(client_str, self.clone(), input, output);
+        let fut = front::Front::new(client_str, self.clone(), input, output, slowlog_tx);
         current_thread::spawn(fut);
     }
 }
 
 impl Cluster {
-    pub(crate) fn run(cc: ClusterConfig, replica: ReplicaLayout) -> Result<(), AsError> {
+    pub(crate) fn run(cc: ClusterConfig, replica: ReplicaLayout, slowlog_tx: SyncSender<Entry>) -> Result<(), AsError> {
         let addr = cc
             .listen_addr
             .parse::<SocketAddr>()
@@ -218,7 +220,7 @@ impl Cluster {
                     .incoming()
                     .for_each(move |sock| {
                         let cluster = cluster.clone();
-                        cluster.handle_front_conn(sock);
+                        cluster.handle_front_conn(sock, slowlog_tx.clone());
                         Ok(())
                     })
                     .map_err(|err| {
@@ -720,9 +722,9 @@ impl ConnBuilder {
     }
 }
 
-pub(crate) fn spawn(cc: ClusterConfig) {
+pub(crate) fn spawn(cc: ClusterConfig, slowlog_tx: SyncSender<Entry>) {
     current_thread::block_on_all(
-        init::Initializer::new(cc).map_err(|err| error!("fail to init cluster due to {}", err)),
+        init::Initializer::new(cc, slowlog_tx).map_err(|err| error!("fail to init cluster due to {}", err)),
     )
     .unwrap();
 }

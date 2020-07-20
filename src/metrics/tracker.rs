@@ -3,7 +3,7 @@ use prometheus::Histogram;
 use std::time::Instant;
 
 pub struct Tracker {
-    start: Instant,
+    pub start: Instant,
     hist: Histogram,
 }
 

@@ -252,6 +252,8 @@ pub struct ClusterConfig {
 
     // dead option: always 1
     pub node_connections: Option<usize>,
+
+    pub slowlog_slow_than: Option<u128>,
 }
 
 impl ClusterConfig {
@@ -264,6 +266,12 @@ impl ClusterConfig {
 
     pub(crate) fn fetch_interval_ms(&self) -> u64 {
         self.fetch_interval.unwrap_or(DEFAULT_FETCH_INTERVAL_MS)
+    }
+
+    pub fn set_slowlog_slow_than(&mut self, value: u128) {
+        if self.slowlog_slow_than.is_none() {
+            self.slowlog_slow_than.replace(value);
+        }
     }
 }
 

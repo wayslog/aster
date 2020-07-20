@@ -1,11 +1,14 @@
 use futures::task;
 use futures::unsync::mpsc::{channel, Sender};
+use futures::sync::mpsc::Sender as SyncSender;
 use futures::{Async, AsyncSink, Future, Sink};
 
 use crate::com::AsError;
 use crate::com::ClusterConfig;
 use crate::protocol::redis::{new_cluster_slots_cmd, slots_reply_to_replicas, Cmd};
 use crate::proxy::cluster::{Cluster, ConnBuilder};
+use crate::metrics::slowlog::Entry;
+
 
 enum State {
     Pending,
@@ -19,14 +22,16 @@ pub struct Initializer {
     cc: ClusterConfig,
     current: usize,
     state: State,
+    slowlog_tx: SyncSender<Entry>,
 }
 
 impl Initializer {
-    pub fn new(cc: ClusterConfig) -> Initializer {
+    pub fn new(cc: ClusterConfig, slowlog_tx: SyncSender<Entry>) -> Initializer {
         Initializer {
             cc,
             current: 0,
             state: State::Pending,
+            slowlog_tx,
         }
     }
 }
@@ -101,7 +106,7 @@ impl Future for Initializer {
                 }
                 State::Done(cmd) => match slots_reply_to_replicas(cmd.clone()) {
                     Ok(Some(replica)) => {
-                        let cluster = Cluster::run(self.cc.clone(), replica);
+                        let cluster = Cluster::run(self.cc.clone(), replica, self.slowlog_tx.clone());
                         match cluster {
                             Ok(_) => {
                                 info!("succeed to create cluster {}", self.cc.name);

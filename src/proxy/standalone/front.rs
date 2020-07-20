@@ -1,6 +1,8 @@
 use crate::com::AsError;
 use futures::task;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
+use futures::sync::mpsc::Sender;
+
 use std::collections::VecDeque;
 use std::rc::Rc;
 
@@ -8,6 +10,7 @@ use crate::proxy::standalone::Cluster;
 use crate::proxy::standalone::Request;
 
 use crate::metrics::front_conn_decr;
+use crate::metrics::slowlog::Entry;
 
 const MAX_BATCH_SIZE: usize = 2048;
 
@@ -33,6 +36,8 @@ where
     sendq: VecDeque<T>,
     waitq: VecDeque<T>,
     state: State,
+
+    slowlog_tx: Sender<Entry>,
 }
 
 impl<T, I, O> Front<T, I, O>
@@ -41,7 +46,7 @@ where
     I: Stream<Item = T, Error = AsError>,
     O: Sink<SinkItem = T, SinkError = AsError>,
 {
-    pub fn new(client: String, cluster: Rc<Cluster<T>>, input: I, output: O) -> Front<T, I, O> {
+    pub fn new(client: String, cluster: Rc<Cluster<T>>, input: I, output: O, slowlog_tx: Sender<Entry>) -> Front<T, I, O> {
         Front {
             cluster,
             client,
@@ -50,6 +55,7 @@ where
             sendq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             state: State::Running,
+            slowlog_tx,
         }
     }
     fn try_reply(&mut self) -> Result<Async<usize>, AsError> {
@@ -63,6 +69,13 @@ where
                 self.waitq.push_front(cmd);
                 break;
             }
+
+            if let Some(entry) = cmd.slowlog_entry(self.cluster.cc.borrow()) {
+                if let Err(err) = self.slowlog_tx.start_send(entry) {
+                    error!("fail to record slowlog: {}", err);
+                }
+            }
+
             match self.output.start_send(cmd) {
                 Ok(AsyncSink::Ready) => {
                     count += 1;

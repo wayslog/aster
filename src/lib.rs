@@ -31,12 +31,20 @@ use failure::Error;
 use com::meta::{load_meta, meta_init};
 use com::ClusterConfig;
 use metrics::thread_incr;
+use metrics::slowlog::{self, Entry};
+
 use std::time::Duration;
+
+use futures::sync::mpsc::{channel, Sender};
 
 pub fn run() -> Result<(), Error> {
     env_logger::init();
     let yaml = load_yaml!("cli.yml");
     let matches = App::from_yaml(yaml).version(ASTER_VERSION).get_matches();
+    if matches.is_present("version") {
+        println!("{}", ASTER_VERSION);
+        return Ok(())
+    }
     let config = matches.value_of("config").unwrap_or("default.toml");
     let watch_file = config.to_string();
     let ip = matches.value_of("ip").map(|x| x.to_string());
@@ -50,8 +58,12 @@ pub fn run() -> Result<(), Error> {
     );
     crate::proxy::standalone::reload::init(&watch_file, cfg.clone(), enable_reload)?;
 
+    let (tx, rx) = channel(1024);
+
+    let slowlog_slower_than = matches.value_of("slowlog-slower-than").unwrap_or("10").parse::<u128>().unwrap();
+
     let mut ths = Vec::new();
-    for cluster in cfg.clusters.into_iter() {
+    for mut cluster in cfg.clusters.into_iter() {
         if cluster.servers.is_empty() {
             warn!(
                 "fail to running cluster {} in addr {} due filed `servers` is empty",
@@ -68,22 +80,30 @@ pub fn run() -> Result<(), Error> {
             continue;
         }
 
+        cluster.set_slowlog_slow_than(slowlog_slower_than);
+
         info!(
             "starting aster cluster {} in addr {}",
             cluster.name, cluster.listen_addr
         );
 
+        
         match cluster.cache_type {
             com::CacheType::RedisCluster => {
-                let jhs = spwan_worker(&cluster, ip.clone(), proxy::cluster::spawn);
+                let jhs = spwan_worker(&cluster, ip.clone(), tx.clone(), proxy::cluster::spawn);
                 ths.extend(jhs);
             }
             _ => {
-                let jhs = spwan_worker(&cluster, ip.clone(), proxy::standalone::spawn);
+                let jhs = spwan_worker(&cluster, ip.clone(), tx.clone(), proxy::standalone::spawn);
                 ths.extend(jhs);
             }
         }
     }
+
+    let slowlog_file_path = matches.value_of("slowlog-file-path").unwrap_or("aster-slowlog.log").to_string();
+    let slowlog_file_size = matches.value_of("slowlog-file-size").unwrap_or("200").parse::<u32>().unwrap();
+    let slowlog_file_backup = matches.value_of("slowlog-file-backup").unwrap_or("3").parse::<u8>().unwrap();
+    thread::spawn(move || slowlog::run(slowlog_file_path, slowlog_file_size, slowlog_file_backup, rx));
 
     {
         let port_str = matches.value_of("metrics").unwrap_or("2110");
@@ -97,9 +117,9 @@ pub fn run() -> Result<(), Error> {
     Ok(())
 }
 
-fn spwan_worker<T>(cc: &ClusterConfig, ip: Option<String>, spawn_fn: T) -> Vec<JoinHandle<()>>
+fn spwan_worker<T>(cc: &ClusterConfig, ip: Option<String>, slowlog_tx: Sender<Entry>, spawn_fn: T) -> Vec<JoinHandle<()>>
 where
-    T: Fn(ClusterConfig) + Copy + Send + 'static,
+    T: Fn(ClusterConfig, Sender<Entry>) + Copy + Send + 'static,
 {
     let worker = cc.thread.unwrap_or(4);
     let meta = load_meta(cc.clone(), ip);
@@ -108,12 +128,13 @@ where
         .map(|_index| {
             let cc = cc.clone();
             let meta = meta.clone();
+            let tx = slowlog_tx.clone();
             Builder::new()
                 .name(cc.name.clone())
                 .spawn(move || {
                     thread_incr();
                     meta_init(meta);
-                    spawn_fn(cc);
+                    spawn_fn(cc, tx);
                 })
                 .expect("fail to spawn worker thread")
         })

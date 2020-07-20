@@ -1,10 +1,11 @@
 use bytes::{Bytes, BytesMut};
 use futures::task::Task;
 use tokio::codec::{Decoder, Encoder};
+use chrono::{Duration, Local};
 
 use crate::metrics::*;
-
-use crate::com::{meta, AsError};
+use crate::metrics::slowlog::Entry;
+use crate::com::{meta, AsError, ClusterConfig};
 use crate::protocol::IntoReply;
 use crate::protocol::{CmdFlags, CmdType};
 use crate::proxy::standalone::Request;
@@ -15,6 +16,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
 use std::u64;
 use std::collections::{BTreeMap, HashSet};
+use std::time;
 
 pub const SLOTS_COUNT: usize = 16384;
 
@@ -70,6 +72,7 @@ impl Request for Cmd {
             total_tracker: None,
 
             remote_tracker: None,
+            remote_dur: None,
         };
         cmd.into_cmd(notify)
     }
@@ -133,6 +136,44 @@ impl Request for Cmd {
         let timer = remote_tracker(cluster);
         self.cmd.borrow_mut().remote_tracker.replace(timer);
     }
+
+    fn slowlog_entry(&self, cc: Ref<ClusterConfig>) -> Option<Entry> {
+        let cmd = self.cmd.borrow();
+        let total_dur = match &cmd.total_tracker {
+            Some(tracker) => tracker.start.elapsed().as_micros(),
+            None => return None,
+        };
+
+        match cc.slowlog_slow_than {
+            Some(slow_than) => {
+                if total_dur < slow_than {
+                    return None
+                }
+            },
+            None => return None,
+        };
+
+        let start = (Local::now() - Duration::microseconds(total_dur as i64)).format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let remote_dur = match cmd.remote_dur {
+            Some(dur) => dur.as_micros(),
+            None => return None,
+        };
+
+        let subs = match &cmd.subs {
+            Some(cmds) => Some(cmds.iter().map(|x|x.borrow().req.str_data()).collect()),
+            None => None,
+        };
+
+        Some(Entry {
+            cluster: cc.name.clone(),
+            cmd: cmd.req.str_data(),
+            total_dur,
+            remote_dur,
+            start,
+            subs,
+        })
+    }
 }
 
 impl Cmd {
@@ -145,7 +186,46 @@ impl Cmd {
         let timer = remote_tracker(cluster);
         if self.cmd.borrow().remote_tracker.is_none() {
             self.cmd.borrow_mut().remote_tracker.replace(timer);
+
         }
+    }
+
+    pub fn slowlog_entry(&self, cc: Ref<ClusterConfig>) -> Option<Entry> {
+        let cmd = self.borrow();
+        let total_dur = match &cmd.total_tracker {
+            Some(tracker) => tracker.start.elapsed().as_micros(),
+            None => return None,
+        };
+
+        match cc.slowlog_slow_than {
+            Some(slow_than) => {
+                if total_dur < slow_than {
+                    return None
+                }
+            },
+            None => return None,
+        };
+
+        let start = (Local::now() - Duration::microseconds(total_dur as i64)).format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let remote_dur = match cmd.remote_dur {
+            Some(dur) => dur.as_micros(),
+            None => return None,
+        };
+
+        let subs = match &cmd.subs {
+            Some(cmds) => Some(cmds.iter().map(|x|x.borrow().req.str_data()).collect()),
+            None => None,
+        };
+
+        Some(Entry {
+            cluster: cc.name.clone(),
+            cmd: cmd.req.str_data(),
+            total_dur,
+            remote_dur,
+            start,
+            subs,
+        })
     }
 
     pub fn incr_notify(&self, count: u16) {
@@ -258,6 +338,7 @@ pub struct Command {
     total_tracker: Option<Tracker>,
 
     remote_tracker: Option<Tracker>,
+    remote_dur: Option<time::Duration>,
 }
 
 const BYTES_JUSTOK: &[u8] = b"+OK\r\n";
@@ -430,7 +511,9 @@ impl Command {
         self.reply = Some(reply.into_reply());
         self.set_done();
 
-        let _ = self.remote_tracker.take();
+        if let Some(tracker) = self.remote_tracker.take() {
+            self.remote_dur.replace(tracker.start.elapsed());
+        }
     }
 
     fn set_done(&mut self) {
@@ -535,6 +618,7 @@ impl Command {
                     total_tracker: None,
 
                     remote_tracker: None,
+                    remote_dur: None,
                 };
 
                 subs.push(subcmd.into_cmd(notify.clone()));
@@ -550,6 +634,7 @@ impl Command {
                 total_tracker: None,
 
                 remote_tracker: None,
+                remote_dur: None,
             };
             command.into_cmd(notify)
         } else {
@@ -564,6 +649,7 @@ impl Command {
                 total_tracker: None,
 
                 remote_tracker: None,
+                remote_dur: None,
             };
             let cmd = cmd.into_cmd(notify);
             cmd.set_reply(&AsError::RequestInlineWithMultiKeys);
@@ -599,6 +685,7 @@ impl Command {
                     total_tracker: None,
 
                     remote_tracker: None,
+                    remote_dur: None,
                 };
 
                 subs.push(subcmd.into_cmd(notify.clone()));
@@ -615,6 +702,7 @@ impl Command {
                 total_tracker: None,
 
                 remote_tracker: None,
+                remote_dur: None,
             };
             cmd.into_cmd(notify)
         } else {
@@ -629,6 +717,7 @@ impl Command {
                 total_tracker: None,
 
                 remote_tracker: None,
+                remote_dur: None,
             };
             let cmd = cmd.into_cmd(notify);
             cmd.set_reply(&AsError::RequestInlineWithMultiKeys);
@@ -665,6 +754,7 @@ impl From<MessageMut> for Cmd {
                 total_tracker: None,
 
                 remote_tracker: None,
+                remote_dur: None,
             };
             let cmd: Cmd = command.into_cmd(notify);
             cmd.set_reply(AsError::RequestNotSupport);
@@ -692,6 +782,7 @@ impl From<MessageMut> for Cmd {
             total_tracker: None,
 
             remote_tracker: None,
+            remote_dur: None,
         };
         if ctype.is_ctrl() {
             if let Some(data) = msg.nth(COMMAND_POS) {
@@ -768,6 +859,7 @@ pub fn new_read_only_cmd() -> Cmd {
         total_tracker: None,
 
         remote_tracker: None,
+        remote_dur: None,
     };
     cmd.into_cmd(notify)
 }
@@ -790,6 +882,7 @@ pub fn new_cluster_slots_cmd() -> Cmd {
         total_tracker: None,
 
         remote_tracker: None,
+        remote_dur: None,
     };
     cmd.into_cmd(notify)
 }
