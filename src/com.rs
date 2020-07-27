@@ -330,6 +330,6 @@ pub fn set_read_write_timeout(
     nsock.set_write_timeout(nwt)?;
     let hd = tokio::reactor::Handle::default();
     let stream = TcpStream::from_std(nsock, &hd)?;
-    
+
     return Ok(stream);
 }
