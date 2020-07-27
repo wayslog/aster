@@ -20,16 +20,16 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
-use std::rc::Rc;
-use std::time::Duration;
 use std::process;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use crate::protocol::{mc, redis};
 
 use crate::metrics::front_conn_incr;
 
+use crate::com::create_reuse_port_listener;
 use crate::com::AsError;
-use crate::com::{create_reuse_port_listener, set_read_write_timeout};
 use crate::com::{CacheType, ClusterConfig, CODE_PORT_IN_USE};
 use crate::protocol::IntoReply;
 
@@ -69,6 +69,8 @@ pub trait Request: Clone {
 
     fn set_reply<R: IntoReply<Self::Reply>>(&self, t: R);
     fn set_error(&self, t: &AsError);
+
+    fn get_sendtime(&self) -> Option<Instant>;
 }
 
 pub struct Cluster<T> {
@@ -145,7 +147,7 @@ impl<T: Request + 'static> Cluster<T> {
                     Err(e) => {
                         error!("listen {} error: {}", addr, e);
                         process::exit(CODE_PORT_IN_USE);
-                    },
+                    }
                 };
                 let service = listen
                     .incoming()
@@ -521,7 +523,7 @@ fn connect<T>(
     cluster: &str,
     node: &str,
     rt: Option<u64>,
-    wt: Option<u64>,
+    _wt: Option<u64>,
 ) -> Result<Sender<T>, AsError>
 where
     T: Request + 'static,
@@ -545,11 +547,11 @@ where
         })
         .then(move |srslt: Result<TcpStream, ()>| {
             if let Ok(sock) = srslt {
-                let sock = set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
                 sock.set_nodelay(true).expect("set nodelay must ok");
                 let codec = T::BackCodec::default();
                 let (sink, stream) = codec.framed(sock).split();
-                let backend = back::Back::new(cluster, node_new, rx, sink, stream);
+                let backend =
+                    back::Back::new(cluster, node_new, rx, sink, stream, rt.unwrap_or(1000));
                 current_thread::spawn(backend);
             } else {
                 let blackhole = back::Blackhole::new(node_new, rx);

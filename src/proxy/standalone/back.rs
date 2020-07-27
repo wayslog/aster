@@ -5,6 +5,9 @@ use std::collections::VecDeque;
 
 use crate::proxy::standalone::Request;
 
+use std::time::Duration;
+use tokio::timer::Interval;
+
 const MAX_PIPELINE: usize = 512;
 
 #[derive(Eq, PartialEq)]
@@ -42,6 +45,10 @@ where
     input: I,
     output: O,
     recv: R,
+
+    rt: Duration,
+    interval: Interval,
+    delayed: u64,
 }
 
 impl<T, I, O, R> Back<T, I, O, R>
@@ -51,7 +58,14 @@ where
     O: Sink<SinkItem = T, SinkError = AsError>,
     R: Stream<Item = T::Reply, Error = AsError>,
 {
-    pub fn new(cluster: String, addr: String, input: I, output: O, recv: R) -> Back<T, I, O, R> {
+    pub fn new(
+        cluster: String,
+        addr: String,
+        input: I,
+        output: O,
+        recv: R,
+        rt: u64,
+    ) -> Back<T, I, O, R> {
         Back {
             cluster,
             addr,
@@ -61,6 +75,9 @@ where
             state: State::Running,
             store: None,
             cmdq: VecDeque::with_capacity(MAX_PIPELINE),
+            rt: Duration::from_millis(rt),
+            interval: Interval::new_interval(Duration::from_millis(rt / 2)),
+            delayed: 0,
         }
     }
 
@@ -78,7 +95,6 @@ where
                     }
                     Ok(AsyncSink::Ready) => {
                         count += 1;
-
                         rcmd.mark_remote(&self.cluster);
                         self.cmdq.push_back(rcmd);
                     }
@@ -123,6 +139,15 @@ where
                 break;
             }
 
+            if let Some(send_at) = self.cmdq.front().unwrap().get_sendtime() {
+                if send_at.elapsed() > self.rt {
+                    let cmd = self.cmdq.pop_front().unwrap();
+                    cmd.set_error(&AsError::CmdTimeout);
+                    self.delayed += 1;
+                    continue;
+                }
+            }
+
             let msg = match self.recv.poll() {
                 Ok(Async::Ready(Some(msg))) => {
                     count += 1;
@@ -139,6 +164,11 @@ where
                     return Err(err);
                 }
             };
+
+            if self.delayed > 0 {
+                self.delayed -= 1;
+                continue;
+            }
 
             let cmd = self.cmdq.pop_front().expect("cmdq never be empty");
             cmd.set_reply(msg);
@@ -185,6 +215,7 @@ where
         let mut can_recv = true;
         let mut can_forward = true;
         loop {
+            let _ = self.interval.poll();
             // trace!("tracing backend calls to {}", self.addr);
             if self.state.is_closing() {
                 debug!("backend {} is closing", self.addr);
