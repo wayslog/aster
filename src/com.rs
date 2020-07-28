@@ -298,7 +298,7 @@ pub(crate) fn create_reuse_port_listener(addr: &SocketAddr) -> Result<TcpListene
     TcpListener::from_std(std_listener, &hd)
 }
 
-#[cfg(not(linux))]
+#[cfg(not(unix))]
 #[inline]
 pub fn set_read_write_timeout(
     sock: TcpStream,
@@ -308,25 +308,28 @@ pub fn set_read_write_timeout(
     Ok(sock)
 }
 
-#[cfg(linux)]
+#[cfg(unix)]
 #[inline]
 pub fn set_read_write_timeout(
-    mut sock: TcpStream,
+    sock: TcpStream,
     rt: Option<u64>,
     wt: Option<u64>,
 ) -> Result<TcpStream, AsError> {
-    // use std::os::unix::AsRawFd;
-    // use std::os::unix::FromRawFd;
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::io::FromRawFd;
     use std::time::Duration;
 
     let nrt = rt.map(Duration::from_millis);
     let nwt = wt.map(Duration::from_millis);
-    // let fd = sock.as_raw_fd();
-    // let mut nsock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
-    let mut nsock = std::net::TcpStream::connect::<SocketAddr>(sock.peer_addr().unwrap()).unwrap();
+    let fd = sock.as_raw_fd();
+
+    let nsock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+    std::mem::forget(sock);
+
     nsock.set_read_timeout(nrt)?;
     nsock.set_write_timeout(nwt)?;
     let hd = tokio::reactor::Handle::default();
     let stream = TcpStream::from_std(nsock, &hd)?;
+    
     return Ok(stream);
 }
