@@ -40,6 +40,9 @@ pub enum AsError {
     #[fail(display = "message reply is bad")]
     BadReply,
 
+    #[fail(display = "command timeout")]
+    CmdTimeout,
+
     #[fail(display = "proxy fail")]
     ProxyFail,
 

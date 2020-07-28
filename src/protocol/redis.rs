@@ -12,9 +12,12 @@ use crate::utils::notify::Notify;
 use crate::utils::{myitoa, trim_hash_tag, upper};
 
 use std::cell::{Ref, RefCell, RefMut};
+use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use std::u64;
-use std::collections::{BTreeMap, HashSet};
+
+use std::fmt::Debug;
+use std::time::Instant;
 
 pub const SLOTS_COUNT: usize = 16384;
 
@@ -132,6 +135,18 @@ impl Request for Cmd {
     fn mark_remote(&self, cluster: &str) {
         let timer = remote_tracker(cluster);
         self.cmd.borrow_mut().remote_tracker.replace(timer);
+    }
+
+    fn get_sendtime(&self) -> Option<Instant> {
+        let mut c = self.borrow_mut();
+        match c.remote_tracker.take() {
+            Some(t) => {
+                let s = t.start.clone();
+                c.remote_tracker = Some(t);
+                Some(s)
+            }
+            None => None,
+        }
     }
 }
 

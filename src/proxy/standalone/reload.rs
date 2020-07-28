@@ -1,5 +1,8 @@
 use futures::{Async, Future, Stream};
-use hotwatch::{blocking::{Flow, Hotwatch}, Event};
+use hotwatch::{
+    blocking::{Flow, Hotwatch},
+    Event,
+};
 use log::Level;
 use tokio::timer::Interval;
 

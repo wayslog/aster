@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 pub mod msg;
 pub use self::msg::Message;
+use std::time::Instant;
 
 const MAX_CYCLE: u8 = 1;
 
@@ -119,6 +120,18 @@ impl Request for Cmd {
     fn mark_remote(&self, cluster: &str) {
         let timer = remote_tracker(cluster);
         self.cmd.borrow_mut().remote_tracker.replace(timer);
+    }
+
+    fn get_sendtime(&self) -> Option<Instant> {
+        let mut c = self.cmd.borrow_mut();
+        match c.remote_tracker.take() {
+            Some(t) => {
+                let s = t.start.clone();
+                c.remote_tracker = Some(t);
+                Some(s)
+            }
+            None => None,
+        }
     }
 }
 
