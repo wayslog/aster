@@ -2,11 +2,14 @@ use crate::com::AsError;
 use crate::protocol::redis::{Cmd, Message};
 use crate::proxy::cluster::Redirection;
 
+use crate::proxy::standalone::Request;
 use futures::unsync::mpsc::SendError;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
+use std::time::Duration;
+use tokio::timer::Interval;
 
-const MAX_PIPELINE: usize = 8*1024;
+const MAX_PIPELINE: usize = 8 * 1024;
 
 #[derive(Eq, PartialEq)]
 enum State {
@@ -53,6 +56,10 @@ where
     output: O,
     recv: R,
     moved: M,
+
+    rt: Duration,
+    interval: Interval,
+    delayed: u64,
 }
 
 impl<I, O, R, M> Back<I, O, R, M>
@@ -69,6 +76,7 @@ where
         output: O,
         recv: R,
         moved: M,
+        rt: u64,
     ) -> Back<I, O, R, M> {
         let inner_err = AsError::ConnClosed(addr.clone());
         Back {
@@ -85,6 +93,9 @@ where
             redirect_store: None,
             store: None,
             cmdq: VecDeque::with_capacity(MAX_PIPELINE),
+            rt: Duration::from_millis(rt),
+            interval: Interval::new_interval(Duration::from_millis(rt / 2)),
+            delayed: 0,
         }
     }
 
@@ -102,7 +113,6 @@ where
                     }
                     Ok(AsyncSink::Ready) => {
                         count += 1;
-
                         rcmd.cluster_mark_remote(&self.cluster);
                         self.cmdq.push_back(rcmd);
                     }
@@ -169,11 +179,14 @@ where
                 break;
             }
 
-            let is_ask = self
-                .cmdq
-                .front()
-                .map(|x| x.borrow().is_ask())
-                .expect("front always have cmd");
+            if let Some(send_at) = self.cmdq.front().unwrap().get_sendtime() {
+                if send_at.elapsed() > self.rt {
+                    let cmd = self.cmdq.pop_front().unwrap();
+                    cmd.set_error(AsError::CmdTimeout);
+                    self.delayed += 1;
+                    continue;
+                }
+            }
 
             let msg = match self.recv.poll() {
                 Ok(Async::Ready(Some(msg))) => {
@@ -192,11 +205,22 @@ where
                 }
             };
 
+            let is_ask = self
+                .cmdq
+                .front()
+                .map(|x| x.borrow().is_ask())
+                .expect("front always have cmd");
+
             if is_ask {
                 self.ask_readed = !self.ask_readed;
                 if self.ask_readed {
                     continue;
                 }
+            }
+
+            if self.delayed > 0 {
+                self.delayed -= 1;
+                continue;
             }
 
             let cmd = self.cmdq.pop_front().expect("cmdq never be empty");
@@ -255,6 +279,8 @@ where
         let mut can_recv = true;
         let mut can_forward = true;
         loop {
+            let _ = self.interval.poll();
+
             // trace!("tracing backend calls to {}", self.addr);
             if self.state.is_closing() {
                 // debug!("backend {} is closing", self.addr);

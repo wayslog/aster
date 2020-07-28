@@ -40,6 +40,9 @@ pub enum AsError {
     #[fail(display = "message reply is bad")]
     BadReply,
 
+    #[fail(display = "command timeout")]
+    CmdTimeout,
+
     #[fail(display = "proxy fail")]
     ProxyFail,
 
@@ -312,14 +315,15 @@ pub fn set_read_write_timeout(
     rt: Option<u64>,
     wt: Option<u64>,
 ) -> Result<TcpStream, AsError> {
-    use std::os::unix::AsRawFd;
-    use std::os::unix::FromRawFd;
+    // use std::os::unix::AsRawFd;
+    // use std::os::unix::FromRawFd;
     use std::time::Duration;
 
     let nrt = rt.map(Duration::from_millis);
     let nwt = wt.map(Duration::from_millis);
-    let fd = sock.as_raw_fd();
-    let mut nsock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+    // let fd = sock.as_raw_fd();
+    // let mut nsock = unsafe { std::net::TcpStream::from_raw_fd(fd) };
+    let mut nsock = std::net::TcpStream::connect::<SocketAddr>(sock.peer_addr().unwrap()).unwrap();
     nsock.set_read_timeout(nrt)?;
     nsock.set_write_timeout(nwt)?;
     let hd = tokio::reactor::Handle::default();
