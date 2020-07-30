@@ -5,7 +5,6 @@ pub mod init;
 pub mod redirect;
 
 use crate::com::create_reuse_port_listener;
-use crate::com::set_read_write_timeout;
 use crate::com::AsError;
 use crate::com::{ClusterConfig, CODE_PORT_IN_USE};
 use crate::protocol::redis::{new_read_only_cmd, RedisHandleCodec, RedisNodeCodec};
@@ -34,11 +33,11 @@ use tokio_codec::Decoder;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
+use std::process;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
-use std::process;
 
-const MAX_NODE_PIPELINE_SIZE: usize = 16*1024; // 16k
+const MAX_NODE_PIPELINE_SIZE: usize = 16 * 1024; // 16k
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Redirect {
@@ -214,7 +213,7 @@ impl Cluster {
                     Err(e) => {
                         error!("listen {} error: {}", addr, e);
                         process::exit(CODE_PORT_IN_USE);
-                    },
+                    }
                 };
                 let service = listen
                     .incoming()
@@ -314,7 +313,7 @@ impl Cluster {
                     cmd.set_error(AsError::BadRequest);
                     continue;
                 }
-    
+
                 (signed as usize) % SLOTS_COUNT
             };
 
@@ -655,8 +654,8 @@ impl ConnBuilder {
         let node_addr = self.node.expect("addr must be checked first");
         let node_addr_clone = node_addr.clone();
         let cluster = self.cluster.expect("cluster name must be checked first");
-        let rt = self.rt;
-        let wt = self.wt;
+        let rt = self.rt.unwrap_or(1000);
+        let _wt = self.wt;
         let moved = self.moved.expect("must be checked first");
         let fetch = self.fetch.clone();
 
@@ -677,8 +676,6 @@ impl ConnBuilder {
             })
             .then(move |sock| {
                 if let Ok(sock) = sock {
-                    let sock =
-                        set_read_write_timeout(sock, rt, wt).expect("set timeout must be ok");
                     if sock.set_nodelay(true).is_err() {
                         warn!("fail to set set nodelay when connect to backend but ignore");
                     }
@@ -686,7 +683,7 @@ impl ConnBuilder {
                     let codec = RedisNodeCodec {};
                     let (sink, stream) = codec.framed(sock).split();
                     let backend =
-                        back::Back::new(cluster, node_addr_clone, rx, sink, stream, moved);
+                        back::Back::new(cluster, node_addr_clone, rx, sink, stream, moved, rt);
                     current_thread::spawn(backend);
                 } else {
                     error!("fail to conenct to backend {}", node_addr_clone);

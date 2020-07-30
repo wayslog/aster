@@ -10,7 +10,7 @@ use futures::sync::mpsc::Sender;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-const MAX_BATCH_SIZE: usize = 8*1024;
+const MAX_BATCH_SIZE: usize = 8 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
@@ -95,7 +95,6 @@ where
                 }
             }
         }
-
         if count > 0 {
             self.output.poll_complete()?;
         }
@@ -122,7 +121,6 @@ where
             if let Some(mut cmd) = cmd {
                 count += 1;
                 cmd.reregister(task::current());
-
                 cmd.cluster_mark_total(&self.cluster.cc.borrow().name);
 
                 if cmd.check_valid() && !cmd.borrow().is_done() {

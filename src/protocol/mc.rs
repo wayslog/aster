@@ -19,6 +19,7 @@ use std::time;
 
 pub mod msg;
 pub use self::msg::Message;
+use std::time::Instant;
 
 const MAX_CYCLE: u8 = 1;
 
@@ -161,6 +162,18 @@ impl Request for Cmd {
             start,
             subs,
         })
+    }
+
+    fn get_sendtime(&self) -> Option<Instant> {
+        let mut c = self.cmd.borrow_mut();
+        match c.remote_tracker.take() {
+            Some(t) => {
+                let s = t.start.clone();
+                c.remote_tracker = Some(t);
+                Some(s)
+            }
+            None => None,
+        }
     }
 }
 
