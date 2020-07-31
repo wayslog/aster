@@ -24,13 +24,13 @@ args:
       help: enable reload feature for standalone proxy mode.
   - slowlog-slower-than:
       long: slowlog-slower-than
-      help: slowlog-slower-than is the microseconds which slowlog must slower than. DEFAULT 100ms
+      help: slowlog-slower-than is the microseconds which slowlog must slower than. DEFAULT 100_000
   - slowlog-file-path:
       long: slowlog-file_path
       help: the file where slowlog output.
-  - slowlog-file-size:
-      long: slowlog-file-size
-      help: single slowlog file size in Mb. DEFAULT 200Mb
+  - slowlog-max-file-size:
+      long: slowlog-max-file-size
+      help: max size in Mb for single slowlog file. DEFAULT 200Mb
   - slowlog-file-backup:
       long: slowlog-file-backup
       help: single slowlog file backup. DEFAULT 3

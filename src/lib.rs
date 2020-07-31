@@ -60,7 +60,7 @@ pub fn run() -> Result<(), Error> {
 
     let (tx, rx) = channel(1024);
 
-    let slowlog_slower_than = matches.value_of("slowlog-slower-than").unwrap_or("10").parse::<u128>().unwrap();
+    let slowlog_slower_than = matches.value_of("slowlog-slower-than").unwrap_or("100000").parse::<u64>().unwrap();
 
     let mut ths = Vec::new();
     for mut cluster in cfg.clusters.into_iter() {
@@ -101,9 +101,9 @@ pub fn run() -> Result<(), Error> {
     }
 
     let slowlog_file_path = matches.value_of("slowlog-file-path").unwrap_or("aster-slowlog.log").to_string();
-    let slowlog_file_size = matches.value_of("slowlog-file-size").unwrap_or("200").parse::<u32>().unwrap();
+    let slowlog_max_file_size = matches.value_of("slowlog-max-file-size").unwrap_or("200").parse::<u64>().unwrap();
     let slowlog_file_backup = matches.value_of("slowlog-file-backup").unwrap_or("3").parse::<u8>().unwrap();
-    thread::spawn(move || slowlog::run(slowlog_file_path, slowlog_file_size, slowlog_file_backup, rx));
+    thread::spawn(move || slowlog::run(slowlog_file_path, slowlog_max_file_size, slowlog_file_backup, rx));
 
     {
         let port_str = matches.value_of("metrics").unwrap_or("2110");

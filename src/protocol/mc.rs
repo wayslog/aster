@@ -135,7 +135,7 @@ impl Request for Cmd {
 
         match cc.slowlog_slow_than {
             Some(slow_than) => {
-                if total_dur < slow_than {
+                if total_dur < slow_than as u128 {
                     return None
                 }
             },
@@ -144,14 +144,31 @@ impl Request for Cmd {
 
         let start = (Local::now() - Duration::microseconds(total_dur as i64)).format("%Y-%m-%d %H:%M:%S").to_string();
 
-        let remote_dur = match cmd.remote_dur {
-            Some(dur) => dur.as_micros(),
-            None => return None,
-        };
-
-        let subs = match &cmd.subs {
-            Some(cmds) => Some(cmds.iter().map(|x|x.cmd.borrow().req.str_data()).collect()),
-            None => None,
+        let (subs, remote_dur) = match &cmd.subs {
+            Some(subs) => {
+                let subs = subs.iter()
+                        .map(|x| {
+                            let sub_cmd = x.cmd.borrow();
+                            let remote_dur = sub_cmd.remote_dur.map(|x|x.as_micros()).unwrap_or(0);
+                            Entry {
+                                cluster: cc.name.clone(),
+                                cmd: sub_cmd.req.str_data(),
+                                total_dur,
+                                remote_dur,
+                                start: start.clone(),
+                                subs: None,
+                            }
+                        })
+                        .collect::<Vec<Entry>>();
+                (Some(subs), 0)
+            },
+            None => {
+                let remote_dur = match cmd.remote_dur {
+                    Some(dur) => dur.as_micros(),
+                    None => return None,
+                };
+                (None, remote_dur)
+            },
         };
 
         Some(Entry {

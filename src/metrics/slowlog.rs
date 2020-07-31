@@ -11,8 +11,8 @@ use futures::{Async, Future, Stream};
 use futures::sync::mpsc::Receiver;
 use tokio::runtime::current_thread;
 
-const BUFF_SIZE: usize = 200usize;
-const FLUSH_INTERVAL: u64 = 1; // seconds
+const BUFF_SIZE: usize = 512usize;
+const FLUSH_INTERVAL: u64 = 2; // seconds
 
 #[derive(Serialize, Deserialize)]
 pub struct Entry {
@@ -21,7 +21,7 @@ pub struct Entry {
     pub start: String, 
     pub total_dur: u128,
     pub remote_dur: u128,
-    pub subs: Option<Vec<String>>,
+    pub subs: Option<Vec<Entry>>,
 }
 
 pub struct SlowlogHandle<I>
@@ -31,7 +31,8 @@ where
     input: I,
 
     file_path: String,
-    file_size: u32,  // MB
+    file_size: u64,  
+    max_file_size: u64,
     file_bakckup: u8,
 
     bw: BufWriter<File>,
@@ -46,22 +47,18 @@ where
 {
     pub fn new(
         file_path: String,
-        file_size: u32,
+        max_file_size: u64,
         file_bakckup: u8,
         input: I,
     ) -> SlowlogHandle<I> {
-        let file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(file_path.clone())
-                .unwrap();
-        let bw = BufWriter::new(file);
+        let (file_size, bw) = Self::open(file_path.clone());
 
         let delay = Delay::new(Instant::now());
 
         SlowlogHandle {
             file_path,
             file_size,
+            max_file_size: max_file_size*1024*1024,
             file_bakckup,
             bw,
             buff_size: 0usize,
@@ -70,17 +67,27 @@ where
         }
     }
 
-    fn try_rotate(&mut self) {
-        let file_size = match fs::metadata(self.file_path.clone()) {
-            Ok(meta) => meta.len(),
-            Err(_) => return,
-        };
+    fn open(file_path: String) -> (u64, BufWriter<File>) {
+        let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)
+                .expect("fail to open slowlog file");
 
-        if self.file_size <= 0 {
+        let file_size = file
+                .metadata()
+                .unwrap()
+                .len();
+
+        (file_size, BufWriter::new(file))
+    }
+
+    fn try_rotate(&mut self) {
+        if self.max_file_size <= 0 {
             return
         }
 
-        if file_size < (self.file_size * 1024 * 1024) as u64 {
+        if self.file_size < self.max_file_size {
             return
         }
 
@@ -95,13 +102,9 @@ where
                     let _ = fs::rename(from, to);
                 });
             
-            self.bw = BufWriter::new(
-                OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.file_path.clone())
-                .unwrap()
-            );
+             let (file_size, bw) = Self::open(self.file_path.clone());
+             self.file_size = file_size;
+             self.bw = bw;
         }
     }
 
@@ -109,10 +112,12 @@ where
         loop {
             match self.input.poll() {
                 Ok(Async::Ready(entry)) => {
-                    if let Ok(entry) = serde_json::to_string(&entry) {
-                        let _ = self.bw.write(entry.as_bytes());
-                        let _ = self.bw.write(b"\r\n");
-                        self.buff_size += 1;
+                    if let Ok(mut entry) = serde_json::to_string(&entry) {
+                        entry.push_str("\r\n");
+                        if let Ok(size) = self.bw.write(entry.as_bytes()) {
+                            self.buff_size += size;
+                            self.file_size += size as u64;
+                        }
                     }
                 },
                 Ok(Async::NotReady) => return,
@@ -157,14 +162,14 @@ where
 
 pub fn run(
     file_path: String,
-    file_size: u32,
+    max_file_size: u64,
     file_bakckup: u8,
     input: Receiver<Entry>,
 ) 
 {
     thread_incr();
     current_thread::block_on_all(
-        SlowlogHandle::new(file_path, file_size, file_bakckup, input).map_err(|_| error!("fail to init slowlog handle")),
+        SlowlogHandle::new(file_path, max_file_size, file_bakckup, input).map_err(|_| error!("fail to init slowlog handle")),
     ).unwrap();
     
 }
