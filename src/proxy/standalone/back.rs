@@ -4,9 +4,8 @@ use futures::{Async, AsyncSink, Future, Sink, Stream};
 use std::collections::VecDeque;
 
 use crate::proxy::standalone::Request;
-
-use std::time::Duration;
-use tokio::timer::Interval;
+use std::time::{Duration, Instant};
+use tokio::timer::Delay;
 
 const MAX_PIPELINE: usize = 512;
 
@@ -47,7 +46,7 @@ where
     recv: R,
 
     rt: Duration,
-    interval: Interval,
+    timeout: Delay,
     delayed: u64,
 }
 
@@ -76,7 +75,7 @@ where
             store: None,
             cmdq: VecDeque::with_capacity(MAX_PIPELINE),
             rt: Duration::from_millis(rt),
-            interval: Interval::new_interval(Duration::from_millis(rt / 2)),
+            timeout: Delay::new(Instant::now()),
             delayed: 0,
         }
     }
@@ -215,7 +214,6 @@ where
         let mut can_recv = true;
         let mut can_forward = true;
         loop {
-            let _ = self.interval.poll();
             // trace!("tracing backend calls to {}", self.addr);
             if self.state.is_closing() {
                 debug!("backend {} is closing", self.addr);
@@ -228,7 +226,7 @@ where
             }
 
             if !can_recv && !can_forward {
-                return Ok(Async::NotReady);
+                break;
             }
 
             if can_recv {
@@ -271,6 +269,14 @@ where
                 }
             }
         }
+
+        if self.cmdq.len() > 0 {
+            // we are waiting for the reply of the 1st cmd in the waiting queue.
+            // set a waker to wake us up in case of a timeout of that reply occurs.
+            self.timeout.reset(Instant::now() + self.rt);
+            let _ = self.timeout.poll();
+        }
+        Ok(Async::NotReady)
     }
 }
 
