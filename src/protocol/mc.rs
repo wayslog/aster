@@ -2,17 +2,20 @@ use bytes::BytesMut;
 use futures::task::Task;
 
 use tokio::codec::{Decoder, Encoder};
+use chrono::{Duration, Local};
 
 use crate::metrics::*;
+use crate::metrics::slowlog::Entry;
 
-use crate::com::AsError;
+use crate::com::{AsError, ClusterConfig};
 use crate::protocol::{CmdFlags, CmdType, IntoReply};
 use crate::proxy::standalone::Request;
 use crate::utils::notify::Notify;
 use crate::utils::trim_hash_tag;
 
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
+use std::time;
 
 pub mod msg;
 pub use self::msg::Message;
@@ -56,6 +59,7 @@ impl Request for Cmd {
             total_tracker: None,
 
             remote_tracker: None,
+            remote_dur: None,
         };
         let mut notify = Notify::empty();
         notify.set_expect(1);
@@ -106,7 +110,7 @@ impl Request for Cmd {
         let reply = t.into_reply();
         self.cmd.borrow_mut().set_reply(reply);
     }
-
+    
     fn set_error(&self, t: &AsError) {
         let reply: Message = t.into_reply();
         self.cmd.borrow_mut().set_error(reply);
@@ -120,6 +124,61 @@ impl Request for Cmd {
     fn mark_remote(&self, cluster: &str) {
         let timer = remote_tracker(cluster);
         self.cmd.borrow_mut().remote_tracker.replace(timer);
+    }
+
+    fn slowlog_entry(&self, cc: Ref<ClusterConfig>) -> Option<Entry> {
+        let cmd = self.cmd.borrow();
+        let total_dur = match &cmd.total_tracker {
+            Some(tracker) => tracker.start.elapsed().as_micros(),
+            None => return None,
+        };
+
+        match cc.slowlog_slow_than {
+            Some(slow_than) => {
+                if total_dur < slow_than as u128 {
+                    return None
+                }
+            },
+            None => return None,
+        };
+
+        let start = (Local::now() - Duration::microseconds(total_dur as i64)).format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let (subs, remote_dur) = match &cmd.subs {
+            Some(subs) => {
+                let subs = subs.iter()
+                        .map(|x| {
+                            let sub_cmd = x.cmd.borrow();
+                            let remote_dur = sub_cmd.remote_dur.map(|x|x.as_micros()).unwrap_or(0);
+                            Entry {
+                                cluster: cc.name.clone(),
+                                cmd: sub_cmd.req.str_data(),
+                                total_dur,
+                                remote_dur,
+                                start: start.clone(),
+                                subs: None,
+                            }
+                        })
+                        .collect::<Vec<Entry>>();
+                (Some(subs), 0)
+            },
+            None => {
+                let remote_dur = match cmd.remote_dur {
+                    Some(dur) => dur.as_micros(),
+                    None => return None,
+                };
+                (None, remote_dur)
+            },
+        };
+
+        Some(Entry {
+            cluster: cc.name.clone(),
+            cmd: cmd.req.str_data(),
+            total_dur,
+            remote_dur,
+            start,
+            subs,
+        })
     }
 
     fn get_sendtime(&self) -> Option<Instant> {
@@ -156,6 +215,7 @@ impl Cmd {
                     total_tracker: None,
 
                     remote_tracker: None,
+                    remote_dur: None,
                 };
                 Cmd {
                     notify: notify.clone(),
@@ -175,6 +235,7 @@ impl Cmd {
             total_tracker: None,
 
             remote_tracker: None,
+            remote_dur: None,
         };
         Cmd {
             cmd: Rc::new(RefCell::new(command)),
@@ -203,6 +264,8 @@ pub struct Command {
     total_tracker: Option<Tracker>,
 
     remote_tracker: Option<Tracker>,
+
+    remote_dur: Option<time::Duration>,
 }
 
 impl Command {
@@ -226,7 +289,9 @@ impl Command {
         self.reply = Some(reply);
         self.set_done();
 
-        let _ = self.remote_tracker.take();
+        if let Some(tracker) = self.remote_tracker.take() {
+            self.remote_dur.replace(tracker.start.elapsed());
+        }
     }
 
     pub fn set_error(&mut self, reply: Message) {

@@ -6,7 +6,6 @@ args:
       value_name: FILE
       help: Sets a custom config file
       takes_value: true
-      required: true
   - ip:
       short: i
       long: ip
@@ -23,3 +22,16 @@ args:
       short: r
       long: reload
       help: enable reload feature for standalone proxy mode.
+  - slowlog-slower-than:
+      long: slowlog-slower-than
+      help: slowlog-slower-than is the microseconds which slowlog must slower than. DEFAULT 100_000
+  - slowlog-file-path:
+      long: slowlog-file_path
+      help: the file where slowlog output.
+  - slowlog-max-file-size:
+      long: slowlog-max-file-size
+      help: max size in Mb for single slowlog file. DEFAULT 200Mb
+  - slowlog-file-backup:
+      long: slowlog-file-backup
+      help: single slowlog file backup. DEFAULT 3
+

@@ -41,6 +41,7 @@ futures= "0.1"
 toml="0.4"
 serde="1.0"
 serde_derive="1.0"
+serde_json = "1.0"
 itoa= "0.4.4"
 net2="0.2"
 md5="0.6"
@@ -59,6 +60,7 @@ actix-rt =  "0.2.5"
 sysinfo =  "0.9.5"
 rayon = "1.2.0"
 hotwatch = "0.4.3"
+chrono = "0.4.13"
 
 [profile.release]
 debug = true

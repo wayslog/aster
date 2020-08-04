@@ -725,6 +725,10 @@ impl Message {
             flags,
         }))
     }
+
+    pub fn str_data(&self) -> String {
+        String::from_utf8(self.data.iter().map(|x|*x).collect::<Vec<u8>>()).unwrap_or("".to_string())
+    }
 }
 
 #[cfg(test)]

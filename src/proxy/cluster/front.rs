@@ -2,9 +2,11 @@ use crate::com::AsError;
 use crate::protocol::redis::Cmd;
 use crate::proxy::cluster::fetcher::TriggerBy;
 use crate::proxy::cluster::Cluster;
+use crate::metrics::slowlog::Entry;
 
 use futures::task;
 use futures::{Async, AsyncSink, Future, Sink, Stream};
+use futures::sync::mpsc::Sender;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
@@ -32,6 +34,8 @@ where
     waitq: VecDeque<Cmd>,
 
     state: State,
+
+    slowlog_tx: Sender<Entry>,
 }
 
 impl<I, O> Front<I, O>
@@ -39,7 +43,7 @@ where
     I: Stream<Item = Cmd, Error = AsError>,
     O: Sink<SinkItem = Cmd, SinkError = AsError>,
 {
-    pub fn new(client: String, cluster: Rc<Cluster>, input: I, output: O) -> Front<I, O> {
+    pub fn new(client: String, cluster: Rc<Cluster>, input: I, output: O, slowlog_tx: Sender<Entry>) -> Front<I, O> {
         Front {
             cluster,
             client,
@@ -48,6 +52,7 @@ where
             sendq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             waitq: VecDeque::with_capacity(MAX_BATCH_SIZE),
             state: State::Running,
+            slowlog_tx,
         }
     }
 
@@ -67,6 +72,12 @@ where
 
             if cmd.borrow().is_error() {
                 self.cluster.trigger_fetch(TriggerBy::Error);
+            }
+
+            if let Some(entry) = cmd.slowlog_entry(self.cluster.cc.borrow()) {
+                if let Err(err) = self.slowlog_tx.start_send(entry) {
+                    error!("fail to record slowlog: {}", err);
+                }
             }
 
             match self.output.start_send(cmd) {

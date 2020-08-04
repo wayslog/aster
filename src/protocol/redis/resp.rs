@@ -405,6 +405,10 @@ impl Message {
         self.data.as_ref()
     }
 
+    pub fn str_data(&self) -> String {
+        String::from_utf8(self.data.iter().map(|x|*x).collect::<Vec<u8>>()).unwrap_or("".to_string())
+    }
+
     pub fn data(&self) -> Option<&[u8]> {
         let range = self.get_range(Some(&self.rtype));
         range.map(|rg| &self.data.as_ref()[rg.begin()..rg.end()])

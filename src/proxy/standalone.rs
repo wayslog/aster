@@ -9,6 +9,7 @@ use futures::future::ok;
 use futures::lazy;
 use futures::task::Task;
 use futures::unsync::mpsc::{channel, Sender};
+use futures::sync::mpsc::Sender as SyncSender;
 use futures::{AsyncSink, Future, Sink, Stream};
 
 use tokio::codec::{Decoder, Encoder};
@@ -21,6 +22,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::process;
+use std::cell::Ref;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -32,6 +34,7 @@ use crate::com::create_reuse_port_listener;
 use crate::com::AsError;
 use crate::com::{CacheType, ClusterConfig, CODE_PORT_IN_USE};
 use crate::protocol::IntoReply;
+use crate::metrics::slowlog::Entry;
 
 use fnv::fnv1a64;
 use ketama::HashRing;
@@ -70,6 +73,8 @@ pub trait Request: Clone {
     fn set_reply<R: IntoReply<Self::Reply>>(&self, t: R);
     fn set_error(&self, t: &AsError);
 
+    fn slowlog_entry(&self, cc: Ref<ClusterConfig>) -> Option<Entry>;
+ 
     fn get_sendtime(&self) -> Option<Instant>;
 }
 
@@ -86,7 +91,7 @@ pub struct Cluster<T> {
 }
 
 impl<T: Request + 'static> Cluster<T> {
-    pub(crate) fn run(cc: ClusterConfig) -> Result<(), AsError> {
+    pub(crate) fn run(cc: ClusterConfig, slowlog_tx: SyncSender<Entry>) -> Result<(), AsError> {
         let addr = cc
             .listen_addr
             .parse::<SocketAddr>()
@@ -176,7 +181,7 @@ impl<T: Request + 'static> Cluster<T> {
                         let (output, input) = codec.framed(sock).split();
 
                         front_conn_incr(&cluster.cc.borrow().name);
-                        let fut = front::Front::new(client_str, cluster_ref, input, output);
+                        let fut = front::Front::new(client_str, cluster_ref, input, output, slowlog_tx.clone());
                         current_thread::spawn(fut);
                         Ok(())
                     })
@@ -623,10 +628,10 @@ impl ServerLine {
     }
 }
 
-pub(crate) fn spawn(cc: ClusterConfig) {
+pub(crate) fn spawn(cc: ClusterConfig, slowlog_tx: SyncSender<Entry>) {
     match cc.cache_type {
-        CacheType::Redis => Cluster::<redis::Cmd>::run(cc).unwrap(),
-        CacheType::Memcache | CacheType::MemcacheBinary => Cluster::<mc::Cmd>::run(cc).unwrap(),
+        CacheType::Redis => Cluster::<redis::Cmd>::run(cc, slowlog_tx).unwrap(),
+        CacheType::Memcache | CacheType::MemcacheBinary => Cluster::<mc::Cmd>::run(cc, slowlog_tx).unwrap(),
         _ => unreachable!(),
     };
 }

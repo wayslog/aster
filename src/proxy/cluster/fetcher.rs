@@ -66,6 +66,7 @@ impl SingleFlightTrigger {
     fn trigger(&self) {
         let mut fetch = self.fetch.borrow_mut();
         if fetch.start_send(TriggerBy::Error).is_ok() && fetch.poll_complete().is_ok() {
+            // TODO: self.latest = Instant::now();
             info!("succeed trigger fetch process");
             return;
         }
