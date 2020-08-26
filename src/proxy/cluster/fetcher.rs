@@ -190,7 +190,7 @@ where
                         self.state = State::Waiting(addr.clone(), cmd.clone());
                     }
                     Err(err) => {
-                        // error!("fail to fetch CLUSTER SLOTS from {} due to {}", addr, err);
+                        error!("fail to fetch CLUSTER SLOTS from {} due to {}", addr, err);
                         self.state = State::Interval;
                     }
                 },
