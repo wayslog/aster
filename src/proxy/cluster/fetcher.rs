@@ -24,7 +24,7 @@ pub(crate) type TriggerSender = Sender<TriggerBy>;
 
 pub struct SingleFlightTrigger {
     ticker: Duration,
-    latest: Instant,
+    latest: RefCell<Instant>,
 
     counter: Cell<u32>,
     fetch: RefCell<TriggerSender>,
@@ -44,14 +44,14 @@ impl SingleFlightTrigger {
     pub fn new(interval: u64, fetch: TriggerSender) -> Self {
         SingleFlightTrigger {
             ticker: Duration::from_secs(interval),
-            latest: Instant::now(),
+            latest: RefCell::new(Instant::now()),
             counter: Cell::new(0),
             fetch: RefCell::new(fetch),
         }
     }
 
     pub fn try_trigger(&self) -> bool {
-        if self.incr_counter() || self.latest.elapsed() > self.ticker {
+        if self.incr_counter() || self.latest.borrow().elapsed() > self.ticker {
             self.trigger();
             true
         } else {
@@ -66,6 +66,8 @@ impl SingleFlightTrigger {
     fn trigger(&self) {
         let mut fetch = self.fetch.borrow_mut();
         if fetch.start_send(TriggerBy::Error).is_ok() && fetch.poll_complete().is_ok() {
+            self.latest.replace(Instant::now());
+            self.counter.replace(0);
             info!("succeed trigger fetch process");
             return;
         }
@@ -74,10 +76,10 @@ impl SingleFlightTrigger {
 
     fn incr_counter(&self) -> bool {
         let now = self.counter.get().wrapping_add(1);
+        self.counter.set(now);
         if Self::check_gap(now & 0x00_00f_fff) {
             return true;
         }
-        self.counter.set(now);
         false
     }
 
@@ -188,7 +190,7 @@ where
                         self.state = State::Waiting(addr.clone(), cmd.clone());
                     }
                     Err(err) => {
-                        error!("fail to fetch CLUSTER SLOTS from {} due to {}", addr, err);
+                        // error!("fail to fetch CLUSTER SLOTS from {} due to {}", addr, err);
                         self.state = State::Interval;
                     }
                 },
