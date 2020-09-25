@@ -75,11 +75,11 @@ pub fn run() -> Result<(), Error> {
 
         match cluster.cache_type {
             com::CacheType::RedisCluster => {
-                let jhs = spwan_worker(&cluster, ip.clone(), proxy::cluster::spawn);
+                let jhs = spawn_worker(&cluster, ip.clone(), proxy::cluster::spawn);
                 ths.extend(jhs);
             }
             _ => {
-                let jhs = spwan_worker(&cluster, ip.clone(), proxy::standalone::spawn);
+                let jhs = spawn_worker(&cluster, ip.clone(), proxy::standalone::spawn);
                 ths.extend(jhs);
             }
         }
@@ -97,7 +97,7 @@ pub fn run() -> Result<(), Error> {
     Ok(())
 }
 
-fn spwan_worker<T>(cc: &ClusterConfig, ip: Option<String>, spawn_fn: T) -> Vec<JoinHandle<()>>
+fn spawn_worker<T>(cc: &ClusterConfig, ip: Option<String>, spawn_fn: T) -> Vec<JoinHandle<()>>
 where
     T: Fn(ClusterConfig) + Copy + Send + 'static,
 {
