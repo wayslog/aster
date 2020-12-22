@@ -25,16 +25,32 @@ pub mod proxy;
 pub(crate) mod utils;
 
 use std::thread::{self, Builder, JoinHandle};
+use std::time::Duration;
+use std::io::Write;
 
 use failure::Error;
+use chrono::Local;
 
 use com::meta::{load_meta, meta_init};
 use com::ClusterConfig;
 use metrics::thread_incr;
-use std::time::Duration;
 
 pub fn run() -> Result<(), Error> {
-    env_logger::init();
+    env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info");
+    env_logger::builder()
+        .format(|buf, r| {
+            writeln!(
+                buf,
+                "{} {} [{}:{}] {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                r.level(),
+                r.module_path().unwrap_or("<unnamed>"),
+                r.line().unwrap_or(0),
+                r.args(),
+            )
+        })
+        .init();
+
     let yaml = load_yaml!("cli.yml");
     let matches = App::from_yaml(yaml).version(ASTER_VERSION).get_matches();
     let config = matches.value_of("config").unwrap_or("default.toml");
