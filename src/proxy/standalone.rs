@@ -28,8 +28,8 @@ use crate::protocol::{mc, redis};
 
 use crate::metrics::front_conn_incr;
 
-use crate::com::create_reuse_port_listener;
 use crate::com::AsError;
+use crate::com::{create_reuse_port_listener, gethostbyname};
 use crate::com::{CacheType, ClusterConfig, CODE_PORT_IN_USE};
 use crate::protocol::IntoReply;
 
@@ -533,18 +533,22 @@ where
     let cluster = cluster.to_string();
     let (tx, rx) = channel(1024 * 8);
     let amt = lazy(|| -> Result<(), ()> { Ok(()) })
-        .and_then(move |_| {
-            let node_clone = node_addr.clone();
-            node_addr
-                .as_str()
-                .parse()
-                .map_err(|err| error!("fail to parse addr {} due to {:?}", node_clone, err))
-        })
-        .and_then(|addr: SocketAddr| {
+        .map_err(|_| AsError::None)
+        .map(move |_| gethostbyname(node_addr.as_str()))
+        .flatten()
+        .and_then(|addr| {
+            let report_addr = format!("{:?}", &addr);
             TcpStream::connect(&addr)
-                .timeout(Duration::from_secs(1))
-                .map_err(move |err| error!("fail to connect to {} due to {:?}", &addr, err))
+                .timeout(Duration::from_millis(100))
+                .map_err(move |terr| {
+                    error!(
+                        "fail to connect ot backend due to {} err {}",
+                        report_addr, terr
+                    );
+                    AsError::SystemError
+                })
         })
+        .map_err(|err| error!("connect failed by error {}", err))
         .then(move |srslt: Result<TcpStream, ()>| {
             if let Ok(sock) = srslt {
                 sock.set_nodelay(true).expect("set nodelay must ok");

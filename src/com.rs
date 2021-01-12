@@ -8,6 +8,7 @@ pub use failure::Error;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
+use std::net::ToSocketAddrs;
 use std::num;
 use std::path::Path;
 
@@ -332,4 +333,16 @@ pub fn set_read_write_timeout(
     let stream = TcpStream::from_std(nsock, &hd)?;
 
     return Ok(stream);
+}
+
+pub(crate) fn gethostbyname(name: &str) -> Result<SocketAddr, AsError> {
+    let mut iter = name.to_socket_addrs().map_err(|err| {
+        error!("fail to resolve addr to {} by {}", name, err);
+        AsError::BadConfig("servers".to_string())
+    })?;
+    let addr = iter
+        .next()
+        .ok_or_else(|| AsError::BadConfig(format!("servers:{}", name)))?;
+
+    Ok(addr)
 }
