@@ -1,6 +1,11 @@
 
 # change log
 
+# 1.3.3
+
+- avoid infinite call when cluster endpoint was down
+- enable DNS resolver for backend
+
 # 1.3.2
 
 - replace inotify library with hotwatch
