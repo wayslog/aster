@@ -5,6 +5,7 @@
 
 - avoid infinite call when cluster endpoint was down
 - enable DNS resolver for backend
+- upgrade dependencies to 2021-01-19
 
 # 1.3.2
 
