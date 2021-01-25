@@ -13,6 +13,10 @@ keywords = [ "cache", "redis", "memcache", "twemproxy"]
 edition="2018"
 
 [[bin]]
+name = "cached"
+path = "bin/cached.rs"
+
+[[bin]]
 name = "aster-proxy"
 path = "bin/proxy.rs"
 
