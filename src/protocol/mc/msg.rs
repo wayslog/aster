@@ -1106,7 +1106,7 @@ impl From<AsError> for Message {
 impl<'a> Into<Message> for &'a AsError {
     fn into(self) -> Message {
         Message {
-            data: Bytes::from(format!("error {}\r\n", self).as_bytes()),
+            data: Bytes::from(format!("ERROR {}\r\n", self).as_bytes()),
             mtype: MsgType::TextInline,
             flags: CmdFlags::empty(),
         }
