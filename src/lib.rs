@@ -5,6 +5,7 @@ use com::AsError;
 
 pub mod com;
 pub mod config;
+pub mod proto;
 
 pub fn run() -> std::result::Result<(), AsError> {
     Ok(())

@@ -15,6 +15,9 @@ pub enum AsError {
 
     #[fail(display = "there is nothing happening")]
     None,
+
+    #[fail(display = "not error, need re-read from socket")]
+    More,
 }
 
 impl From<std::io::Error> for AsError {
