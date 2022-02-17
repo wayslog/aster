@@ -7,7 +7,7 @@ pub mod redirect;
 use crate::com::create_reuse_port_listener;
 use crate::com::{gethostbyname, AsError};
 use crate::com::{ClusterConfig, CODE_PORT_IN_USE};
-use crate::protocol::redis::{new_read_only_cmd, RedisHandleCodec, RedisNodeCodec};
+use crate::protocol::redis::{new_read_only_cmd, new_auth_cmd, RedisHandleCodec, RedisNodeCodec};
 use crate::protocol::redis::{Cmd, ReplicaLayout, SLOTS_COUNT};
 use crate::proxy::cluster::fetcher::SingleFlightTrigger;
 use crate::utils::crc::crc16;
@@ -111,8 +111,17 @@ impl Cluster {
 
         let all_servers = cc.servers.clone();
         let mut conns = Conns::default();
+        let auth = cc.auth.clone();
+
         for master in all_servers.into_iter() {
-            let conn = ConnBuilder::new_master(&cc, &master, moved.clone()).connect()?;
+            let mut conn = ConnBuilder::new_master(&cc, &master, moved.clone()).connect()?;
+
+            if auth != "" {
+                let mut cmd = new_auth_cmd(&auth);
+                cmd.reregister(task::current());
+                Self::silence_send_req(cmd, &mut conn);
+            }
+    
             conns.insert(&master, conn);
             all_lived.insert(master.clone());
         }
@@ -120,8 +129,15 @@ impl Cluster {
         if read_from_slave {
             let all_slaves = slots.get_all_replicas();
             for slave in all_slaves.into_iter() {
-                let conn = ConnBuilder::new_replica(&cc, &slave, moved.clone()).connect()?;
-                conns.insert(&slave, conn);
+                let mut conn = ConnBuilder::new_replica(&cc, &slave, moved.clone()).connect()?;
+
+                if auth != "" {
+                    let mut cmd = new_auth_cmd(&auth);
+                    cmd.reregister(task::current());
+                    Self::silence_send_req(cmd, &mut conn);
+                }
+
+            conns.insert(&slave, conn);
                 all_lived.insert(slave.clone());
             }
         }
@@ -380,12 +396,13 @@ impl Cluster {
     pub(crate) fn connect(&self, addr: &str, conns: &mut Conns) -> Result<(), AsError> {
         let is_replica = !self.slots.borrow().is_master(addr);
 
-        let sender = ConnBuilder::new()
+        let mut sender = ConnBuilder::new()
             .moved(self.moved.clone())
             .cluster(self.cc.borrow().name.clone())
             .node(addr.to_string())
             .read_timeout(self.cc.borrow().read_timeout.clone())
             .write_timeout(self.cc.borrow().write_timeout.clone())
+            .auth(self.cc.borrow().auth.clone())
             .fetch(
                 self.fetch
                     .borrow()
@@ -395,8 +412,30 @@ impl Cluster {
             )
             .replica(is_replica)
             .connect()?;
+        
+        let auth = self.cc.borrow().auth.clone();
+        if auth != "" {
+            let mut cmd = new_auth_cmd(&auth);
+            cmd.reregister(task::current());
+            Self::silence_send_req(cmd, &mut sender);
+        }
+
         conns.insert(&addr, sender);
         Ok(())
+    }
+
+    fn silence_send_req(cmd: Cmd, tx: &mut Sender<Cmd>) {
+        match tx.start_send(cmd) {
+            Ok(AsyncSink::Ready) => {
+                debug!("success dispatch to cluster");
+            }
+            Ok(AsyncSink::NotReady(_)) => {
+                warn!("fail to init connection of cluster due to send fail");
+            }
+            Err(err) => {
+                warn!("fail to init connection of cluster due to {}", err);
+            }
+        }
     }
 }
 
@@ -552,6 +591,7 @@ pub(crate) struct ConnBuilder {
     wt: Option<u64>,
     replica: bool,
     fetch: Weak<SingleFlightTrigger>,
+    auth: Option<String>,
 }
 
 impl ConnBuilder {
@@ -591,6 +631,7 @@ impl ConnBuilder {
             wt: Some(1000),
             replica: false,
             fetch: Weak::new(),
+            auth: None,
         }
     }
 
@@ -636,6 +677,14 @@ impl ConnBuilder {
         cb
     }
 
+    pub(crate) fn auth(self, auth: String) -> Self {
+        let mut cb = self;
+        if auth != "" {
+            cb.auth = Some(auth);
+        }
+        cb
+    }
+
     pub(crate) fn check_valid(&self) -> bool {
         self.node.is_some() && self.cluster.is_some() && self.moved.is_some()
     }
@@ -643,7 +692,7 @@ impl ConnBuilder {
     pub(crate) fn connect(self) -> Result<Sender<Cmd>, AsError> {
         if !self.check_valid() {
             error!(
-                "fail to open connection to backend {} due param is valid",
+                "fail to open connection to backend {} due param is invalid",
                 self.node.as_ref().map(|x| x.as_ref()).unwrap_or("unknown")
             );
             return Err(AsError::BadConfig("backend connection config".to_string()));
@@ -665,7 +714,7 @@ impl ConnBuilder {
             .and_then(|addr| {
                 let report_addr = format!("{:?}", &addr);
                 TcpStream::connect(&addr)
-                    .timeout(Duration::from_millis(100))
+                    .timeout(Duration::from_millis(1000))
                     .map_err(move |terr| {
                         error!(
                             "fail to connect ot backend due to {} err {}",
@@ -697,12 +746,33 @@ impl ConnBuilder {
                 Ok(())
             });
         current_thread::spawn(amt);
+
+        if let Some(auth) = self.auth {
+            let mut cmd = new_auth_cmd(&auth);
+            cmd.reregister(task::current());
+            Self::silence_send_auth(cmd, &mut tx);
+        }
+
         if self.replica {
             let mut cmd = new_read_only_cmd();
             cmd.reregister(task::current());
             Self::silence_send_req(cmd, &mut tx);
         }
         Ok(tx)
+    }
+
+    fn silence_send_auth(cmd: Cmd, tx: &mut Sender<Cmd>) {
+        match tx.start_send(cmd) {
+            Ok(AsyncSink::Ready) => {
+                debug!("success dispatch to node");
+            }
+            Ok(AsyncSink::NotReady(_)) => {
+                warn!("fail to init connection of node due to send fail");
+            }
+            Err(err) => {
+                warn!("fail to init connection of node due to {}", err);
+            }
+        }
     }
 
     fn silence_send_req(cmd: Cmd, tx: &mut Sender<Cmd>) {

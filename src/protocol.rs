@@ -43,4 +43,5 @@ pub enum CmdType {
     Exists, // Read
     Eval,   // Write
     Del,    // Write
+    Auth,   // Auth
 }

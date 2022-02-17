@@ -50,6 +50,8 @@
     listen_proto = "tcp"
     node_connections = 1
 
+    auth = "mypassw"
+
 [[clusters]]
     name = "test-cluster"
     listen_addr = "0.0.0.0:7788"
@@ -70,3 +72,5 @@
     dial_timeout = 500
     listen_proto = "tcp"
     node_connections = 1
+
+    auth = "mypassw"

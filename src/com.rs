@@ -256,6 +256,9 @@ pub struct ClusterConfig {
 
     // dead option: always 1
     pub node_connections: Option<usize>,
+
+    // password to connect to node, and for auth for client
+    pub auth: String,
 }
 
 impl ClusterConfig {

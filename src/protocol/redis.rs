@@ -809,6 +809,28 @@ pub fn new_cluster_slots_cmd() -> Cmd {
     cmd.into_cmd(notify)
 }
 
+pub fn new_auth_cmd(auth: &str) -> Cmd {
+    let msg = Message::new_auth(auth);
+    let flags = CmdFlags::empty();
+    let mut notify = Notify::empty();
+    notify.set_expect(1);
+    let ctype = CmdType::get_cmd_type(&msg);
+
+    let cmd = Command {
+        flags,
+        ctype,
+        cycle: DEFAULT_CYCLE,
+        req: msg,
+        reply: None,
+        subs: None,
+
+        total_tracker: None,
+
+        remote_tracker: None,
+    };
+    cmd.into_cmd(notify)
+}
+
 pub type ReplicaLayout = (Vec<String>, Vec<Vec<String>>);
 
 pub fn slots_reply_to_replicas(cmd: Cmd) -> Result<Option<ReplicaLayout>, AsError> {

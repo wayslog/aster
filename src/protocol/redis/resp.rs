@@ -325,6 +325,23 @@ impl Message {
         }
     }
 
+    pub fn new_auth(auth: &str) -> Message {
+        let len = auth.len();
+        // FIXME
+        let len_len = if len < 10 { 1 } else { 2 };
+        let s = format!("*2\r\n$4\r\nAUTH\r\n${}\r\n{}\r\n", len, auth);
+        Message {
+            data: Bytes::from(s),
+            rtype: RespType::Array(
+                Range::new(0, 4),
+                vec![
+                    RespType::Bulk(Range::new(4, 8), Range::new(8, 14)),
+                    RespType::Bulk(Range::new(14, 17 + len_len), Range::new(17 + len_len, 17 + len_len + len + 2)),
+                ],
+            ),
+        }
+    }
+
     pub fn inline_raw(data: Bytes) -> Message {
         let rngs = vec![Range::new(0, data.len())];
         Message {

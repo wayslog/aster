@@ -148,7 +148,7 @@ lazy_static! {
         hmap.insert(&b"EVAL"[..], CmdType::Eval);
         hmap.insert(&b"EVALSHA"[..], CmdType::NotSupport);
         // ctrl type
-        hmap.insert(&b"AUTH"[..], CmdType::NotSupport);
+        hmap.insert(&b"AUTH"[..], CmdType::Auth);
         hmap.insert(&b"ECHO"[..], CmdType::Ctrl);
         hmap.insert(&b"PING"[..], CmdType::Ctrl);
         hmap.insert(&b"INFO"[..], CmdType::Ctrl);
@@ -200,6 +200,10 @@ impl CmdType {
 
     pub fn is_ctrl(self) -> bool {
         CmdType::Ctrl == self
+    }
+
+    pub fn is_auth(self) -> bool {
+        CmdType::Auth == self
     }
 
     pub fn get_cmd_type(msg: &Message) -> CmdType {
