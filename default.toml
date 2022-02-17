@@ -50,7 +50,7 @@
     listen_proto = "tcp"
     node_connections = 1
 
-    auth = "mypassw"
+    auth = "" # mypassw
 
 [[clusters]]
     name = "test-cluster"
@@ -73,4 +73,4 @@
     listen_proto = "tcp"
     node_connections = 1
 
-    auth = "mypassw"
+    auth = "" # mypassw
