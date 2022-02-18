@@ -327,8 +327,7 @@ impl Message {
 
     pub fn new_auth(auth: &str) -> Message {
         let len = auth.len();
-        // FIXME
-        let len_len = if len < 10 { 1 } else { 2 };
+        let len_len = len.to_string().len();
         let s = format!("*2\r\n$4\r\nAUTH\r\n${}\r\n{}\r\n", len, auth);
         Message {
             data: Bytes::from(s),
