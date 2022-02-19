@@ -1,19 +1,19 @@
 [package]
-name = "aster-proxy"
-version = "1.3.4"
-authors = ["wayslog <zxs867179@gmail.com>"]
-description = "A light, fast and powerful cache proxy written in Rust."
-homepage = "https://github.com/wayslog/aster"
-repository = "https://github.com/wayslog/aster"
-documentation = "https://docs.rs/aster"
+name = "clia-rcproxy"
+version = "2.0.0"
+authors = ["clia <clia@163.com>", "wayslog <zxs867179@gmail.com>"]
+description = "A lightweight, fast and powerful Redis Cluster Proxy written in Rust."
+homepage = "https://github.com/clia/rcproxy"
+repository = "https://github.com/clia/rcproxy"
+documentation = "https://docs.rs/clia-rcproxy/2.0.0"
 license = "MIT"
 readme = "README.md"
 categories = ["asynchronous", "network-programming", "caching", "database"]
-keywords = [ "cache", "redis", "memcache", "twemproxy"]
-edition="2018"
+keywords = [ "redis", "cluster", "proxy"]
+edition="2021"
 
 [[bin]]
-name = "aster-proxy"
+name = "rcproxy"
 path = "bin/proxy.rs"
 
 [lib]

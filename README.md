@@ -1,9 +1,10 @@
-# aster
+# RCProxy
 
-Aster [![LOC](https://tokei.rs/b1/github/wayslog/aster)](https://github.com/wayslog/aster)
+RCProxy [![LOC](https://tokei.rs/b1/github/clia/rcproxy)](https://github.com/clia/rcproxy)
+
 ======================
 
-Aster is a lightweight, fast but powerful cache proxy written in rust.
+RCProxy is a lightweight, fast but powerful Redis Cluster Proxy written in rust.
 
 It supports memcache/redis singleton/redis cluster protocol all in one. Aster can proxy with two models:
 
@@ -13,12 +14,12 @@ It supports memcache/redis singleton/redis cluster protocol all in one. Aster ca
 ## Usage
 
 ```bash
-cargo build --all --release && RUST_LOG=libaster=info RUST_BACKTRACE=1 ./target/release/aster default.toml
+cargo build --all --release && RUST_LOG=libaster=info RUST_BACKTRACE=1 ./target/release/rcproxy default.toml
 ```
 
 ## Configuration
 
-```
+```Toml
 [[clusters]]
 # name of the cluster. Each cluster means one front-end port.
 

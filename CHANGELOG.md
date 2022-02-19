@@ -1,6 +1,11 @@
 
 # change log
 
+# 2.0.0
+
+- maintained by clia
+- impl password for redis cluster
+
 # 1.3.3
 
 - avoid infinite call when cluster endpoint was down
