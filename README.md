@@ -4,7 +4,7 @@ RCProxy [![LOC](https://tokei.rs/b1/github/clia/rcproxy)](https://github.com/cli
 
 ======================
 
-RCProxy is a lightweight, fast but powerful Redis Cluster Proxy written in rust.
+RCProxy is a lightweight, fast but powerful Redis Cluster Proxy written in Rust.
 
 It supports memcache/redis singleton/redis cluster protocol all in one. Aster can proxy with two models:
 
