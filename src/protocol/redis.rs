@@ -279,6 +279,7 @@ const BYTES_JUSTOK: &[u8] = b"+OK\r\n";
 const BYTES_NULL_ARRAY: &[u8] = b"*-1\r\n";
 const BYTES_ZERO_INT: &[u8] = b":0\r\n";
 const BYTES_CMD_PING: &[u8] = b"PING";
+const BYTES_CMD_AUTH: &[u8] = b"AUTH";
 const BYTES_CMD_COMMAND: &[u8] = b"COMMAND";
 const BYTES_REPLY_NULL_ARRAY: &[u8] = b"*-1\n";
 const STR_REPLY_PONG: &str = "PONG";
@@ -715,6 +716,9 @@ impl From<MessageMut> for Cmd {
                     cmd.unset_error();
                 } else if data == BYTES_CMD_COMMAND {
                     cmd.set_reply(BYTES_REPLY_NULL_ARRAY);
+                    cmd.unset_error();
+                } if data == BYTES_CMD_AUTH {
+                    cmd.set_reply(BYTES_JUSTOK);
                     cmd.unset_error();
                 } else {
                     // unsupport commands

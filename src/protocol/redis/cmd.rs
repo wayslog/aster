@@ -148,7 +148,7 @@ lazy_static! {
         hmap.insert(&b"EVAL"[..], CmdType::Eval);
         hmap.insert(&b"EVALSHA"[..], CmdType::NotSupport);
         // ctrl type
-        hmap.insert(&b"AUTH"[..], CmdType::NotSupport);
+        hmap.insert(&b"AUTH"[..], CmdType::Ctrl);
         hmap.insert(&b"ECHO"[..], CmdType::Ctrl);
         hmap.insert(&b"PING"[..], CmdType::Ctrl);
         hmap.insert(&b"INFO"[..], CmdType::Ctrl);
