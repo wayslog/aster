@@ -1,5 +1,3 @@
-extern crate libaster;
-
-fn main() {
-    libaster::run().unwrap();
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    libaster::run()
 }
