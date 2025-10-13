@@ -3,18 +3,31 @@
 Aster [![LOC](https://tokei.rs/b1/github/wayslog/aster)](https://github.com/wayslog/aster)
 ======================
 
-Aster is a lightweight, fast but powerful cache proxy written in rust.
+Aster is a lightweight, fast but powerful cache proxy written in Rust.
 
-It supports memcache/redis singleton/redis cluster protocol all in one. Aster can proxy with two models:
+当前版本聚焦在 Redis 生态：
 
-1. proxy mode: the same as [twemproxy](https://github.com/twitter/twemproxy).
-2. cluster mode: proxy for redis cluster. You can use non-cluster redis client access the redis cluster.(Inspired with [Corvus](https://github.com/eleme/corvus))
+1. **Standalone 模式**：使用一致性哈希 + 连接池代理普通 Redis 集群。
+2. **Redis Cluster 模式**：兼容普通 Redis 客户端访问原生 cluster，自动处理 `MOVED/ASK` 与拓扑刷新。
 
 ## Usage
 
 ```bash
-cargo build --all --release && RUST_LOG=libaster=info RUST_BACKTRACE=1 ./target/release/aster default.toml
+cargo build --release
+./target/release/aster-proxy --config ./default.toml
 ```
+
+更多命令行参数与配置说明可参考 [docs/usage.md](docs/usage.md)。
+
+## Integration Tests (Docker Compose)
+
+项目提供基于 Docker Compose 的端到端集成测试：
+
+```bash
+docker compose -f docker/docker-compose.integration.yml up --build integration-tests
+```
+
+该命令会启动一组 Redis 实例（包括 Redis Cluster），构建并运行 aster-proxy，并使用 `redis-cli` 对代理进行验收（读写命令）。
 
 ## Configuration
 
@@ -28,17 +41,12 @@ name="test-redis-cluster"
 
 listen_addr="0.0.0.0:9001"
 
-# cache_type only support memcache|redis|redis_cluster
+# cache_type only support redis|redis_cluster
 
 cache_type="redis_cluster"
 
 # servers means cache backend. support two format:
-# for cache_type is memcache or redis, you can set it as:
-#
-#   servers = [
-#       "127.0.0.1:7001:10 redis-1",
-#       "127.0.0.1:7002:10 redis-2",
-#       "127.0.0.1:7003:10 redis-3"]
+# for cache_type is redis, you can set it as:
 #
 # as you can see, the format is consisted with:
 #
