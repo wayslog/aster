@@ -1,4 +1,4 @@
-FROM rust:1.75-slim AS builder
+FROM rust:1.84-slim AS builder
 
 WORKDIR /app
 
@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/li
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY docs ./docs
+COPY bin ./bin
 COPY docker/config ./docker/config
 
 RUN cargo build --release

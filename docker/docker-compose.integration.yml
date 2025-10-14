@@ -53,15 +53,10 @@ services:
         condition: service_healthy
       redis-node-3:
         condition: service_healthy
-    entrypoint: |
-      /bin/sh -c "
-      set -e
-      sleep 2
-      echo 'yes' | redis-cli --cluster create \
-        redis-node-1:7000 redis-node-2:7001 redis-node-3:7002 \
-        --cluster-replicas 0
-      tail -f /dev/null
-      "
+    entrypoint: >
+      /bin/sh -c "set -e; sleep 2;
+      echo 'yes' | redis-cli --cluster create redis-node-1:7000 redis-node-2:7001 redis-node-3:7002 --cluster-replicas 0;
+      tail -f /dev/null"
 
   aster-proxy:
     build:

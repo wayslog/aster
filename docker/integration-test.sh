@@ -22,6 +22,21 @@ wait_for_port() {
 wait_for_port aster-proxy 6380 60
 wait_for_port aster-proxy 6381 60
 
+wait_for_cluster() {
+  attempts=0
+  while [ $attempts -lt 30 ]; do
+    if redis-cli -h aster-proxy -p 6381 CLUSTER INFO 2>/dev/null | grep -q "cluster_state:ok"; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 2
+  done
+  echo "Timeout waiting for cluster slot metadata" >&2
+  return 1
+}
+
+wait_for_cluster
+
 redis-cli -h aster-proxy -p 6380 SET standalone foo
 value_standalone="$(redis-cli -h aster-proxy -p 6380 GET standalone)"
 if [ "$value_standalone" != "foo" ]; then
