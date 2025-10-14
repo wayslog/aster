@@ -11,14 +11,17 @@ use md5::Digest;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
-use tokio_util::codec::Framed;
+use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::ClusterConfig;
 use crate::metrics;
-use crate::protocol::redis::{MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue};
+use crate::protocol::redis::{
+    BlockingKind, MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue,
+    SubscriptionKind,
+};
 use crate::utils::trim_hash_tag;
 
 const DEFAULT_TIMEOUT_MS: u64 = 1_000;
@@ -36,6 +39,7 @@ pub struct StandaloneProxy {
     hash_tag: Option<Vec<u8>>,
     ring: Vec<(u64, BackendNode)>,
     pool: Arc<ConnectionPool<RedisCommand>>,
+    backend_timeout: Duration,
 }
 
 impl StandaloneProxy {
@@ -63,6 +67,7 @@ impl StandaloneProxy {
             hash_tag,
             ring,
             pool,
+            backend_timeout: Duration::from_millis(timeout_ms),
         })
     }
 
@@ -83,11 +88,34 @@ impl StandaloneProxy {
         client_id: ClientId,
         command: RedisCommand,
     ) -> Result<RedisResponse> {
-        let node = self.select_node(client_id, &command)?;
-        let response_rx = self.pool.dispatch(node, client_id, command).await?;
-        match response_rx.await {
-            Ok(result) => result,
-            Err(_) => Err(anyhow!("backend session closed unexpectedly")),
+        if matches!(
+            command.as_subscription(),
+            SubscriptionKind::Unsubscribe | SubscriptionKind::Punsub
+        ) {
+            return Ok(RespValue::Error(Bytes::from_static(
+                b"ERR unsubscribe without active subscription",
+            )));
+        }
+        match command.as_blocking() {
+            BlockingKind::Queue { .. } | BlockingKind::Stream { .. } => {
+                let node = self.select_node(client_id, &command)?;
+                let mut exclusive = self.pool.acquire_exclusive(&node);
+                let response_rx = exclusive.send(command).await?;
+                let outcome = response_rx.await;
+                drop(exclusive);
+                match outcome {
+                    Ok(result) => result,
+                    Err(_) => Err(anyhow!("backend session closed unexpectedly")),
+                }
+            }
+            BlockingKind::None => {
+                let node = self.select_node(client_id, &command)?;
+                let response_rx = self.pool.dispatch(node, client_id, command).await?;
+                match response_rx.await {
+                    Ok(result) => result,
+                    Err(_) => Err(anyhow!("backend session closed unexpectedly")),
+                }
+            }
         }
     }
 
@@ -118,6 +146,91 @@ impl StandaloneProxy {
         multi.aggregator.combine(responses)
     }
 
+    async fn run_subscription(
+        &self,
+        parts: FramedParts<TcpStream, RespCodec>,
+        client_id: ClientId,
+        command: RedisCommand,
+    ) -> Result<Option<FramedParts<TcpStream, RespCodec>>> {
+        let node = self.select_node(client_id, &command)?;
+        let mut backend = self.open_backend_stream(&node).await?;
+        backend.send(command.to_resp()).await?;
+
+        let front = Framed::from_parts(parts);
+        let (mut front_sink, mut front_stream) = front.split();
+
+        let mut continue_running = true;
+        while continue_running {
+            tokio::select! {
+                backend_msg = backend.next() => {
+                    match backend_msg {
+                        Some(Ok(resp)) => {
+                            if let Some(count) = subscription_count(&resp) {
+                                front_sink.send(resp.clone()).await?;
+                                if count == 0 {
+                                    continue_running = false;
+                                }
+                            } else {
+                                front_sink.send(resp).await?;
+                            }
+                        }
+                        Some(Err(err)) => return Err(err.into()),
+                        None => return Ok(None),
+                    }
+                }
+                front_msg = front_stream.next() => {
+                    match front_msg {
+                        Some(Ok(frame)) => {
+                            let cmd = match RedisCommand::from_resp(frame) {
+                                Ok(cmd) => cmd,
+                                Err(err) => {
+                                    metrics::global_error_incr();
+                                    front_sink
+                                        .send(RespValue::Error(Bytes::from(format!("ERR {err}"))))
+                                        .await?;
+                                    continue;
+                                }
+                            };
+
+                            match cmd.as_subscription() {
+                                SubscriptionKind::Channel | SubscriptionKind::Pattern
+                                | SubscriptionKind::Unsubscribe | SubscriptionKind::Punsub => {
+                                    backend.send(cmd.to_resp()).await?;
+                                }
+                                SubscriptionKind::None => {
+                                    front_sink
+                                        .send(RespValue::Error(Bytes::from_static(
+                                            b"ERR only subscribe/unsubscribe allowed in subscription mode",
+                                        )))
+                                        .await?;
+                                }
+                            }
+                        }
+                        Some(Err(err)) => return Err(err.into()),
+                        None => return Ok(None),
+                    }
+                }
+            }
+        }
+
+        let front = front_sink.reunite(front_stream)?;
+        Ok(Some(front.into_parts()))
+    }
+
+    async fn open_backend_stream(
+        &self,
+        node: &BackendNode,
+    ) -> Result<Framed<TcpStream, RespCodec>> {
+        let addr = node.as_str().to_string();
+        let stream = timeout(self.backend_timeout, TcpStream::connect(&addr))
+            .await
+            .with_context(|| format!("connect to {} timed out", addr))??;
+        stream
+            .set_nodelay(true)
+            .with_context(|| format!("failed to set TCP_NODELAY on {}", addr))?;
+        Ok(Framed::new(stream, RespCodec::default()))
+    }
+
     pub async fn handle_connection(&self, socket: TcpStream) -> Result<()> {
         socket
             .set_nodelay(true)
@@ -146,6 +259,20 @@ impl StandaloneProxy {
                     continue;
                 }
             };
+
+            if matches!(
+                command.as_subscription(),
+                SubscriptionKind::Channel | SubscriptionKind::Pattern
+            ) {
+                let parts = framed.into_parts();
+                match self.run_subscription(parts, client_id, command).await? {
+                    Some(parts) => {
+                        framed = Framed::from_parts(parts);
+                        continue;
+                    }
+                    None => return Ok(()),
+                }
+            }
 
             let response = match self.dispatch(client_id, command).await {
                 Ok(resp) => resp,
@@ -257,6 +384,32 @@ fn hash_key(data: &[u8]) -> u64 {
     ])
 }
 
+fn subscription_count(resp: &RespValue) -> Option<i64> {
+    if let RespValue::Array(items) = resp {
+        if items.len() >= 3 {
+            let count = match &items[2] {
+                RespValue::Integer(value) => Some(*value),
+                RespValue::BulkString(bs) => std::str::from_utf8(bs).ok()?.parse::<i64>().ok(),
+                _ => None,
+            }?;
+
+            if let RespValue::SimpleString(kind) | RespValue::BulkString(kind) = &items[0] {
+                if matches_subscribe_kind(kind.as_ref()) {
+                    return Some(count);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn matches_subscribe_kind(kind: &[u8]) -> bool {
+    matches!(
+        kind,
+        b"subscribe" | b"unsubscribe" | b"psubscribe" | b"punsubscribe"
+    )
+}
+
 #[derive(Clone)]
 struct RedisConnector {
     timeout: Duration,
@@ -287,16 +440,24 @@ impl RedisConnector {
         framed: &mut Framed<TcpStream, RespCodec>,
         request: RedisCommand,
     ) -> Result<RedisResponse> {
+        let blocking = request.as_blocking();
         let frame = request.to_resp();
         timeout(self.timeout, framed.send(frame))
             .await
             .context("timed out while sending request")??;
 
-        match timeout(self.timeout, framed.next()).await {
-            Ok(Some(Ok(response))) => Ok(response),
-            Ok(Some(Err(err))) => Err(err.into()),
-            Ok(None) => Err(anyhow!("backend closed connection")),
-            Err(_) => Err(anyhow!("timed out waiting for backend reply")),
+        match blocking {
+            BlockingKind::Queue { .. } | BlockingKind::Stream { .. } => match framed.next().await {
+                Some(Ok(response)) => Ok(response),
+                Some(Err(err)) => Err(err.into()),
+                None => Err(anyhow!("backend closed connection")),
+            },
+            BlockingKind::None => match timeout(self.timeout, framed.next()).await {
+                Ok(Some(Ok(response))) => Ok(response),
+                Ok(Some(Err(err))) => Err(err.into()),
+                Ok(None) => Err(anyhow!("backend closed connection")),
+                Err(_) => Err(anyhow!("timed out waiting for backend reply")),
+            },
         }
     }
 }

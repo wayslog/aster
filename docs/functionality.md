@@ -69,6 +69,9 @@
 - 拓扑刷新：
   - `fetcher::Fetch` 根据定时器、错误或 MOVED 触发重新获取 `CLUSTER SLOTS`；
   - 刷新成功后更新 slot->节点映射与后端连接池。
+- 订阅与阻塞命令：
+  - SUBSCRIBE / PSUBSCRIBE 会进入独占会话，按频道哈希槽选择节点，并在 MOVED / ASK 时自动重连与重放订阅；
+  - BLPOP 等阻塞类命令复用独占连接，避免被 pipeline 请求阻塞。
 - 依赖大量 `Rc<RefCell<>>`、`futures::unsync::mpsc`，并使用 `tokio::runtime::current_thread`.
 
 ## 协议与命令抽象
@@ -102,4 +105,3 @@
   - 移除 Memcached 相关解析、命令、配置枚举值。
   - 迁移到 Tokio 最新版本（1.x async/await），减少阻塞与线程漂移。
   - 采用现代错误处理（`thiserror`/`anyhow`）与 async channel/stream。
-

@@ -124,6 +124,33 @@ impl RedisCommand {
         Some(crc16(trimmed) % SLOT_COUNT)
     }
 
+    pub fn as_blocking(&self) -> BlockingKind {
+        let name = uppercase_name(self.command_name());
+        match name.as_slice() {
+            b"BLPOP" | b"BRPOP" => BlockingKind::Queue {
+                timeout_secs: parse_timeout(self.parts.last()),
+            },
+            b"BRPOPLPUSH" | b"BZPOPMIN" | b"BZPOPMAX" => BlockingKind::Queue {
+                timeout_secs: parse_timeout(self.parts.last()),
+            },
+            b"XREAD" | b"XREADGROUP" => BlockingKind::Stream {
+                timeout_millis: has_block_option(&self.parts),
+            },
+            _ => BlockingKind::None,
+        }
+    }
+
+    pub fn as_subscription(&self) -> SubscriptionKind {
+        let name = uppercase_name(self.command_name());
+        match name.as_slice() {
+            b"SUBSCRIBE" => SubscriptionKind::Channel,
+            b"PSUBSCRIBE" => SubscriptionKind::Pattern,
+            b"UNSUBSCRIBE" => SubscriptionKind::Unsubscribe,
+            b"PUNSUBSCRIBE" => SubscriptionKind::Punsub,
+            _ => SubscriptionKind::None,
+        }
+    }
+
     pub fn take_remote_tracker(&mut self) -> Option<metrics::Tracker> {
         self.remote_tracker.take()
     }
@@ -213,6 +240,25 @@ fn command_kind(cmd: &[u8]) -> CommandKind {
 
 fn uppercase_name(input: &[u8]) -> Vec<u8> {
     input.iter().map(|b| b.to_ascii_uppercase()).collect()
+}
+
+fn parse_timeout(arg: Option<&Bytes>) -> Option<f64> {
+    arg.and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|s| s.parse::<f64>().ok())
+}
+
+fn has_block_option(parts: &[Bytes]) -> Option<f64> {
+    let mut idx = 0usize;
+    while idx < parts.len() {
+        if parts[idx].eq_ignore_ascii_case(b"BLOCK") {
+            return parts
+                .get(idx + 1)
+                .and_then(|timeout| std::str::from_utf8(timeout).ok())
+                .and_then(|s| s.parse::<f64>().ok());
+        }
+        idx += 1;
+    }
+    None
 }
 
 fn expand_mget(command: &RedisCommand) -> MultiDispatch {
@@ -361,4 +407,20 @@ impl Aggregator {
             }
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BlockingKind {
+    None,
+    Queue { timeout_secs: Option<f64> },
+    Stream { timeout_millis: Option<f64> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SubscriptionKind {
+    None,
+    Channel,
+    Pattern,
+    Unsubscribe,
+    Punsub,
 }

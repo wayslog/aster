@@ -41,7 +41,7 @@ docker compose -f docker/docker-compose.integration.yml up --build integration-t
 
 1. 启动一个 Redis standalone 实例与 3 节点 Redis Cluster。
 2. 构建并运行 aster-proxy（监听 6380 / 6381）。
-3. 执行 `docker/integration-test.sh`，通过 `redis-cli` 验证代理在两个模式下的读写能力。
+3. 执行 `docker/integration-test.sh`，通过 `redis-cli` 验证代理在两个模式下的读写能力，并覆盖 BLPOP 阻塞与 SUBSCRIBE 推送场景。
 
 测试完成后可使用 `docker compose -f docker/docker-compose.integration.yml down -v` 清理资源。
 

@@ -5,7 +5,8 @@ mod types;
 
 pub use codec::RespCodec;
 pub use command::{
-    Aggregator, CommandKind, MultiDispatch, RedisCommand, RedisResponse, SubCommand, SLOT_COUNT,
+    Aggregator, BlockingKind, CommandKind, MultiDispatch, RedisCommand, RedisResponse, SubCommand,
+    SubscriptionKind, SLOT_COUNT,
 };
 pub use slots::SlotMap;
 pub use types::RespValue;
