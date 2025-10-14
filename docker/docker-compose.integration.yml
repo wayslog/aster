@@ -13,7 +13,20 @@ services:
 
   redis-node-1:
     image: redis:7-alpine
-    command: ["redis-server", "--port", "7000", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "no"]
+    command:
+      [
+        "redis-server",
+        "--port", "7000",
+        "--bind", "0.0.0.0",
+        "--protected-mode", "no",
+        "--cluster-enabled", "yes",
+        "--cluster-config-file", "nodes.conf",
+        "--cluster-node-timeout", "5000",
+        "--cluster-announce-ip", "redis-node-1",
+        "--cluster-announce-port", "7000",
+        "--cluster-announce-bus-port", "17000",
+        "--appendonly", "no"
+      ]
     ports:
       - "17000:7000"
     healthcheck:
@@ -24,7 +37,20 @@ services:
 
   redis-node-2:
     image: redis:7-alpine
-    command: ["redis-server", "--port", "7001", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "no"]
+    command:
+      [
+        "redis-server",
+        "--port", "7001",
+        "--bind", "0.0.0.0",
+        "--protected-mode", "no",
+        "--cluster-enabled", "yes",
+        "--cluster-config-file", "nodes.conf",
+        "--cluster-node-timeout", "5000",
+        "--cluster-announce-ip", "redis-node-2",
+        "--cluster-announce-port", "7001",
+        "--cluster-announce-bus-port", "17001",
+        "--appendonly", "no"
+      ]
     ports:
       - "17001:7001"
     healthcheck:
@@ -35,7 +61,20 @@ services:
 
   redis-node-3:
     image: redis:7-alpine
-    command: ["redis-server", "--port", "7002", "--cluster-enabled", "yes", "--cluster-config-file", "nodes.conf", "--cluster-node-timeout", "5000", "--appendonly", "no"]
+    command:
+      [
+        "redis-server",
+        "--port", "7002",
+        "--bind", "0.0.0.0",
+        "--protected-mode", "no",
+        "--cluster-enabled", "yes",
+        "--cluster-config-file", "nodes.conf",
+        "--cluster-node-timeout", "5000",
+        "--cluster-announce-ip", "redis-node-3",
+        "--cluster-announce-port", "7002",
+        "--cluster-announce-bus-port", "17002",
+        "--appendonly", "no"
+      ]
     ports:
       - "17002:7002"
     healthcheck:

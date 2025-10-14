@@ -1,7 +1,7 @@
 use std::fmt;
 
 use anyhow::{anyhow, bail, Result};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use crate::backend::pool::BackendRequest;
 use crate::metrics;
@@ -136,6 +136,23 @@ impl RedisCommand {
     pub fn is_read_only(&self) -> bool {
         matches!(command_kind(self.command_name()), CommandKind::Read)
     }
+
+    pub fn expand_for_multi(&self) -> Option<MultiDispatch> {
+        let name = uppercase_name(self.command_name());
+        match name.as_slice() {
+            b"MGET" if self.parts.len() > 2 => Some(expand_mget(self)),
+            b"MSET" if self.parts.len() > 3 && self.parts.len() % 2 == 1 => {
+                Some(expand_mset(self, false))
+            }
+            b"MSETNX" if self.parts.len() > 3 && self.parts.len() % 2 == 1 => {
+                Some(expand_mset(self, true))
+            }
+            b"DEL" | b"UNLINK" | b"EXISTS" if self.parts.len() > 2 => {
+                Some(expand_simple_iter(self, name.as_slice()))
+            }
+            _ => None,
+        }
+    }
 }
 
 impl BackendRequest for RedisCommand {
@@ -191,5 +208,157 @@ fn command_kind(cmd: &[u8]) -> CommandKind {
         | b"SREM" | b"ZADD" | b"ZREM" | b"LPUSH" | b"RPUSH" | b"LPOP" | b"RPOP" | b"FLUSHALL"
         | b"FLUSHDB" => CommandKind::Write,
         _ => CommandKind::Other,
+    }
+}
+
+fn uppercase_name(input: &[u8]) -> Vec<u8> {
+    input.iter().map(|b| b.to_ascii_uppercase()).collect()
+}
+
+fn expand_mget(command: &RedisCommand) -> MultiDispatch {
+    let mut subcommands = Vec::new();
+    for (index, key) in command.parts.iter().enumerate().skip(1) {
+        let sub = RedisCommand::new(vec![Bytes::from_static(b"GET"), key.clone()])
+            .expect("GET command must be valid");
+        subcommands.push(SubCommand {
+            position: index - 1,
+            command: sub,
+        });
+    }
+    MultiDispatch {
+        subcommands,
+        aggregator: Aggregator::Array {
+            key_count: command.parts.len() - 1,
+        },
+    }
+}
+
+fn expand_mset(command: &RedisCommand, nx: bool) -> MultiDispatch {
+    let mut subcommands = Vec::new();
+    let mut position = 0usize;
+    let mut iter = command.parts.iter().skip(1);
+    while let Some(key) = iter.next() {
+        if let Some(value) = iter.next() {
+            let mut parts = Vec::with_capacity(3);
+            if nx {
+                parts.push(Bytes::from_static(b"SETNX"));
+            } else {
+                parts.push(Bytes::from_static(b"SET"));
+            }
+            parts.push(key.clone());
+            parts.push(value.clone());
+            let sub = RedisCommand::new(parts).expect("SET command must be valid");
+            subcommands.push(SubCommand {
+                position,
+                command: sub,
+            });
+            position += 1;
+        }
+    }
+    MultiDispatch {
+        subcommands,
+        aggregator: if nx {
+            Aggregator::SetnxAll
+        } else {
+            Aggregator::OkAll
+        },
+    }
+}
+
+fn expand_simple_iter(command: &RedisCommand, name: &[u8]) -> MultiDispatch {
+    let mut subcommands = Vec::new();
+    for (position, key) in command.parts.iter().enumerate().skip(1) {
+        let mut parts = Vec::with_capacity(2);
+        parts.push(BytesMut::from(name).freeze());
+        parts.push(key.clone());
+        let sub = RedisCommand::new(parts).expect("single key command must be valid");
+        subcommands.push(SubCommand {
+            position: position - 1,
+            command: sub,
+        });
+    }
+    MultiDispatch {
+        subcommands,
+        aggregator: Aggregator::IntegerSum,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiDispatch {
+    pub subcommands: Vec<SubCommand>,
+    pub aggregator: Aggregator,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubCommand {
+    pub position: usize,
+    pub command: RedisCommand,
+}
+
+#[derive(Debug, Clone)]
+pub enum Aggregator {
+    Array { key_count: usize },
+    IntegerSum,
+    OkAll,
+    SetnxAll,
+}
+
+impl Aggregator {
+    pub fn combine(&self, responses: Vec<(usize, RespValue)>) -> Result<RespValue> {
+        match self {
+            Aggregator::Array { key_count } => {
+                let mut ordered: Vec<Option<RespValue>> = vec![None; *key_count];
+                for (index, resp) in responses {
+                    if let RespValue::Error(_) = resp {
+                        return Ok(resp);
+                    }
+                    if index >= *key_count {
+                        bail!("unexpected response position {}", index);
+                    }
+                    ordered[index] = Some(resp);
+                }
+                let collected = ordered
+                    .into_iter()
+                    .map(|item| item.unwrap_or(RespValue::NullBulk))
+                    .collect();
+                Ok(RespValue::Array(collected))
+            }
+            Aggregator::IntegerSum => {
+                let mut sum = 0i64;
+                for (_idx, resp) in responses {
+                    match resp {
+                        RespValue::Integer(value) => sum += value,
+                        RespValue::Error(_) => return Ok(resp),
+                        other => bail!("unexpected response type: {:?}", other),
+                    }
+                }
+                Ok(RespValue::Integer(sum))
+            }
+            Aggregator::OkAll => {
+                for (_idx, resp) in responses {
+                    match resp {
+                        RespValue::SimpleString(ref s) if s.as_ref() == b"OK" => {}
+                        RespValue::Error(_) => return Ok(resp),
+                        other => bail!("unexpected response type: {:?}", other),
+                    }
+                }
+                Ok(RespValue::SimpleString(Bytes::from_static(b"OK")))
+            }
+            Aggregator::SetnxAll => {
+                let mut all_success = true;
+                for (_idx, resp) in responses {
+                    match resp {
+                        RespValue::Integer(value) => {
+                            if value == 0 {
+                                all_success = false;
+                            }
+                        }
+                        RespValue::Error(_) => return Ok(resp),
+                        other => bail!("unexpected response type: {:?}", other),
+                    }
+                }
+                Ok(RespValue::Integer(if all_success { 1 } else { 0 }))
+            }
+        }
     }
 }

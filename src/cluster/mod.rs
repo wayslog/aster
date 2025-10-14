@@ -18,7 +18,7 @@ use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::ClusterConfig;
 use crate::metrics;
-use crate::protocol::redis::{RedisCommand, RespCodec, RespValue, SlotMap};
+use crate::protocol::redis::{MultiDispatch, RedisCommand, RespCodec, RespValue, SlotMap};
 
 const FETCH_INTERVAL: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT_MS: u64 = 1_000;
@@ -138,7 +138,6 @@ impl ClusterProxy {
         client_id: ClientId,
         command: RedisCommand,
     ) -> BoxFuture<'static, RespValue> {
-        let cluster = self.cluster.clone();
         let hash_tag = self.hash_tag.clone();
         let read_from_slave = self.read_from_slave;
         let slots = self.slots.clone();
@@ -146,7 +145,6 @@ impl ClusterProxy {
         let fetch_trigger = self.fetch_trigger.clone();
         Box::pin(async move {
             match dispatch_with_context(
-                cluster,
                 hash_tag,
                 read_from_slave,
                 slots,
@@ -165,80 +163,6 @@ impl ClusterProxy {
             }
         })
     }
-}
-
-#[derive(Debug)]
-enum Redirect {
-    Moved { slot: u16, address: String },
-    Ask { address: String },
-}
-
-async fn dispatch_with_context(
-    _cluster: Arc<str>,
-    hash_tag: Option<Vec<u8>>,
-    read_from_slave: bool,
-    slots: Arc<watch::Sender<SlotMap>>,
-    pool: Arc<ConnectionPool<RedisCommand>>,
-    fetch_trigger: mpsc::UnboundedSender<()>,
-    client_id: ClientId,
-    command: RedisCommand,
-) -> Result<RespValue> {
-    let mut slot = command
-        .hash_slot(hash_tag.as_deref())
-        .ok_or_else(|| anyhow!("command missing key"))?;
-    let mut target_override: Option<BackendNode> = None;
-
-    for _ in 0..MAX_REDIRECTS {
-        let target = if let Some(node) = target_override.clone() {
-            node
-        } else {
-            select_node(&slots, read_from_slave, slot)?
-        };
-
-        let response_rx = pool
-            .dispatch(target.clone(), client_id, command.clone())
-            .await?;
-
-        match response_rx.await {
-            Ok(Ok(resp)) => match parse_redirect(resp.clone())? {
-                Some(Redirect::Moved {
-                    slot: new_slot,
-                    address,
-                }) => {
-                    let _ = fetch_trigger.send(());
-                    slot = new_slot;
-                    target_override = Some(BackendNode::new(address));
-                    continue;
-                }
-                Some(Redirect::Ask { address }) => {
-                    target_override = Some(BackendNode::new(address));
-                    continue;
-                }
-                None => return Ok(resp),
-            },
-            Ok(Err(err)) => return Err(err),
-            Err(_) => return Err(anyhow!("backend session closed")),
-        }
-    }
-
-    Err(anyhow!("too many cluster redirects"))
-}
-
-fn select_node(
-    slots: &watch::Sender<SlotMap>,
-    read_from_slave: bool,
-    slot: u16,
-) -> Result<BackendNode> {
-    let map = slots.borrow().clone();
-    if read_from_slave {
-        if let Some(replica) = map.replica_for_slot(slot) {
-            return Ok(BackendNode::new(replica.to_string()));
-        }
-    }
-    if let Some(master) = map.master_for_slot(slot) {
-        return Ok(BackendNode::new(master.to_string()));
-    }
-    bail!("slot {} not covered", slot)
 }
 
 fn parse_redirect(value: RespValue) -> Result<Option<Redirect>> {
@@ -418,4 +342,149 @@ mod tests {
             _ => panic!("expected MOVED"),
         }
     }
+}
+#[derive(Debug)]
+enum Redirect {
+    Moved { slot: u16, address: String },
+    Ask { address: String },
+}
+
+async fn dispatch_with_context(
+    hash_tag: Option<Vec<u8>>,
+    read_from_slave: bool,
+    slots: Arc<watch::Sender<SlotMap>>,
+    pool: Arc<ConnectionPool<RedisCommand>>,
+    fetch_trigger: mpsc::UnboundedSender<()>,
+    client_id: ClientId,
+    command: RedisCommand,
+) -> Result<RespValue> {
+    if let Some(multi) = command.expand_for_multi() {
+        dispatch_multi(
+            hash_tag,
+            read_from_slave,
+            slots,
+            pool,
+            fetch_trigger,
+            client_id,
+            multi,
+        )
+        .await
+    } else {
+        dispatch_single(
+            hash_tag,
+            read_from_slave,
+            slots,
+            pool,
+            fetch_trigger,
+            client_id,
+            command,
+        )
+        .await
+    }
+}
+
+async fn dispatch_multi(
+    hash_tag: Option<Vec<u8>>,
+    read_from_slave: bool,
+    slots: Arc<watch::Sender<SlotMap>>,
+    pool: Arc<ConnectionPool<RedisCommand>>,
+    fetch_trigger: mpsc::UnboundedSender<()>,
+    client_id: ClientId,
+    multi: MultiDispatch,
+) -> Result<RespValue> {
+    let mut tasks: FuturesOrdered<BoxFuture<'static, Result<(usize, RespValue)>>> =
+        FuturesOrdered::new();
+    for sub in multi.subcommands.into_iter() {
+        let hash_tag = hash_tag.clone();
+        let slots = slots.clone();
+        let pool = pool.clone();
+        let fetch_trigger = fetch_trigger.clone();
+        let command = sub.command.clone();
+        tasks.push_back(Box::pin(async move {
+            let response = dispatch_single(
+                hash_tag,
+                read_from_slave,
+                slots,
+                pool,
+                fetch_trigger,
+                client_id,
+                command,
+            )
+            .await?;
+            Ok((sub.position, response))
+        }));
+    }
+
+    let mut responses = Vec::new();
+    while let Some(item) = tasks.next().await {
+        responses.push(item?);
+    }
+    multi.aggregator.combine(responses)
+}
+
+async fn dispatch_single(
+    hash_tag: Option<Vec<u8>>,
+    read_from_slave: bool,
+    slots: Arc<watch::Sender<SlotMap>>,
+    pool: Arc<ConnectionPool<RedisCommand>>,
+    fetch_trigger: mpsc::UnboundedSender<()>,
+    client_id: ClientId,
+    command: RedisCommand,
+) -> Result<RespValue> {
+    let mut slot = command
+        .hash_slot(hash_tag.as_deref())
+        .ok_or_else(|| anyhow!("command missing key"))?;
+    let mut target_override: Option<BackendNode> = None;
+
+    for _ in 0..MAX_REDIRECTS {
+        let target = if let Some(node) = target_override.clone() {
+            node
+        } else {
+            select_node_for_slot(&slots, read_from_slave, slot)?
+        };
+
+        let response_rx = pool
+            .dispatch(target.clone(), client_id, command.clone())
+            .await?;
+
+        match response_rx.await {
+            Ok(Ok(resp)) => match parse_redirect(resp.clone())? {
+                Some(Redirect::Moved {
+                    slot: new_slot,
+                    address,
+                }) => {
+                    let _ = fetch_trigger.send(());
+                    slot = new_slot;
+                    target_override = Some(BackendNode::new(address));
+                    continue;
+                }
+                Some(Redirect::Ask { address }) => {
+                    target_override = Some(BackendNode::new(address));
+                    continue;
+                }
+                None => return Ok(resp),
+            },
+            Ok(Err(err)) => return Err(err),
+            Err(_) => return Err(anyhow!("backend session closed")),
+        }
+    }
+
+    Err(anyhow!("too many cluster redirects"))
+}
+
+fn select_node_for_slot(
+    slots: &watch::Sender<SlotMap>,
+    read_from_slave: bool,
+    slot: u16,
+) -> Result<BackendNode> {
+    let map = slots.borrow().clone();
+    if read_from_slave {
+        if let Some(replica) = map.replica_for_slot(slot) {
+            return Ok(BackendNode::new(replica.to_string()));
+        }
+    }
+    if let Some(master) = map.master_for_slot(slot) {
+        return Ok(BackendNode::new(master.to_string()));
+    }
+    bail!("slot {} not covered", slot)
 }

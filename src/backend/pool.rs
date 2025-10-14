@@ -70,7 +70,11 @@ impl<T: BackendRequest> ConnectionPool<T> {
         Self::with_slots(cluster, connector, DEFAULT_SLOTS_PER_NODE)
     }
 
-    pub fn with_slots(cluster: Arc<str>, connector: Arc<dyn Connector<T>>, slots_per_node: usize) -> Self {
+    pub fn with_slots(
+        cluster: Arc<str>,
+        connector: Arc<dyn Connector<T>>,
+        slots_per_node: usize,
+    ) -> Self {
         Self {
             cluster,
             connector,
@@ -95,9 +99,7 @@ impl<T: BackendRequest> ConnectionPool<T> {
                 slots.resize_with(self.slots_per_node, || None);
                 slots
             });
-            let entry = slots
-                .get_mut(index)
-                .expect("session index within bounds");
+            let entry = slots.get_mut(index).expect("session index within bounds");
             let handle = entry.get_or_insert_with(|| {
                 let (tx, rx) = client_request_channel();
                 let join = spawn_session(connector.clone(), node.clone(), cluster.clone(), rx);

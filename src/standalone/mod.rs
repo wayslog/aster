@@ -4,6 +4,8 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::future::BoxFuture;
+use futures::stream::FuturesOrdered;
 use futures::{SinkExt, StreamExt};
 use md5::Digest;
 use tokio::net::TcpStream;
@@ -16,7 +18,7 @@ use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::ClusterConfig;
 use crate::metrics;
-use crate::protocol::redis::{RedisCommand, RedisResponse, RespCodec, RespValue};
+use crate::protocol::redis::{MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue};
 use crate::utils::trim_hash_tag;
 
 const DEFAULT_TIMEOUT_MS: u64 = 1_000;
@@ -69,12 +71,51 @@ impl StandaloneProxy {
         client_id: ClientId,
         command: RedisCommand,
     ) -> Result<RedisResponse> {
+        if let Some(multi) = command.expand_for_multi() {
+            self.dispatch_multi(client_id, multi).await
+        } else {
+            self.dispatch_single(client_id, command).await
+        }
+    }
+
+    async fn dispatch_single(
+        &self,
+        client_id: ClientId,
+        command: RedisCommand,
+    ) -> Result<RedisResponse> {
         let node = self.select_node(client_id, &command)?;
         let response_rx = self.pool.dispatch(node, client_id, command).await?;
         match response_rx.await {
             Ok(result) => result,
             Err(_) => Err(anyhow!("backend session closed unexpectedly")),
         }
+    }
+
+    async fn dispatch_multi(
+        &self,
+        client_id: ClientId,
+        multi: MultiDispatch,
+    ) -> Result<RedisResponse> {
+        let mut tasks: FuturesOrdered<BoxFuture<'static, Result<(usize, RespValue)>>> =
+            FuturesOrdered::new();
+        for sub in multi.subcommands.into_iter() {
+            let node = self.select_node(client_id, &sub.command)?;
+            let pool = self.pool.clone();
+            let command = sub.command.clone();
+            tasks.push_back(Box::pin(async move {
+                let response_rx = pool.dispatch(node, client_id, command).await?;
+                match response_rx.await {
+                    Ok(result) => Ok((sub.position, result?)),
+                    Err(_) => Err(anyhow!("backend session closed unexpectedly")),
+                }
+            }));
+        }
+
+        let mut responses = Vec::new();
+        while let Some(item) = tasks.next().await {
+            responses.push(item?);
+        }
+        multi.aggregator.combine(responses)
     }
 
     pub async fn handle_connection(&self, socket: TcpStream) -> Result<()> {
