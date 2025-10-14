@@ -15,7 +15,6 @@
 - **并发与同步**
   - 共享结构（如 `Router`、`ConnectionManager`、metrics 注册表）使用高效并发原语：
     - `parking_lot::Mutex/RwLock` 或 `tokio::sync::RwLock` 视是否需 async 访问而定。
-    - 对频繁读写的映射（例如连接池索引）可选用 `dashmap`。
   - 任务间通信通过 `tokio::sync::{mpsc, watch}`，避免阻塞。
 
 ## 2. 配置与元信息
@@ -75,7 +74,7 @@
     - `BackendConn` 内部仍使用 `Framed<TcpStream, RedisCodec>` 顺序收发，保持 pipeline 有序。
   - 当客户端断开时释放句柄，其连接可以回收到池中（或延迟关闭）。
   - 连接失败自动重连（带指数退避），重连期间对该客户端的请求返回错误或阻塞等待，视具体策略而定。
-  - 连接池本身由 `Router` 管理，使用 `tokio::sync::RwLock` 或 `dashmap` 保证多线程 runtime 下的高并发安全。
+  - 连接池本身由 `Router` 管理，使用 `parking_lot::RwLock` 等轻量同步原语维护固定数量的连接槽。
 
 - **健康检查**
   - `tokio::time::interval` 定时发送 PING。

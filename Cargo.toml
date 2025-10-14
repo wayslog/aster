@@ -34,7 +34,7 @@ tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 async-trait = "0.1"
-dashmap = "5"
+hashbrown = "0.16"
 parking_lot = "0.12"
 bytes = "1"
 tokio-util = { version = "0.7", features = ["codec"] }
