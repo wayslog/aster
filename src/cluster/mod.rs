@@ -4,12 +4,13 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::SinkExt;
+use futures::future::BoxFuture;
+use futures::stream::FuturesOrdered;
+use futures::{SinkExt, StreamExt};
 use rand::{seq::SliceRandom, thread_rng};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
-use tokio_stream::StreamExt;
 use tokio_util::codec::Framed;
 use tracing::{debug, info, warn};
 
@@ -22,6 +23,7 @@ use crate::protocol::redis::{RedisCommand, RespCodec, RespValue, SlotMap};
 const FETCH_INTERVAL: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT_MS: u64 = 1_000;
 const MAX_REDIRECTS: u8 = 5;
+const PIPELINE_LIMIT: usize = 32;
 
 pub struct ClusterProxy {
     cluster: Arc<str>,
@@ -77,85 +79,91 @@ impl ClusterProxy {
         let client_id = ClientId::new();
         let _guard = FrontConnectionGuard::new(&self.cluster);
 
-        let mut framed = Framed::new(socket, RespCodec::default());
-        while let Some(frame) = framed.next().await {
-            let frame = frame?;
-            let command = match RedisCommand::from_resp(frame) {
-                Ok(cmd) => cmd,
-                Err(err) => {
-                    metrics::global_error_incr();
-                    let message = Bytes::from(format!("ERR {err}"));
-                    framed.send(RespValue::Error(message)).await?;
-                    continue;
-                }
-            };
+        let (mut sink, stream) = Framed::new(socket, RespCodec::default()).split();
+        let mut stream = stream.fuse();
+        let mut pending: FuturesOrdered<BoxFuture<'static, RespValue>> = FuturesOrdered::new();
+        let mut inflight = 0usize;
+        let mut stream_closed = false;
 
-            let response = match self.dispatch(client_id, command).await {
+        loop {
+            tokio::select! {
+                Some(resp) = pending.next(), if inflight > 0 => {
+                    inflight -= 1;
+                    sink.send(resp).await?;
+                }
+                frame_opt = stream.next(), if !stream_closed && inflight < PIPELINE_LIMIT => {
+                    match frame_opt {
+                        Some(Ok(frame)) => {
+                            match RedisCommand::from_resp(frame) {
+                                Ok(cmd) => {
+                                    let guard = self.prepare_dispatch(client_id, cmd);
+                                    pending.push_back(Box::pin(guard));
+                                    inflight += 1;
+                                }
+                                Err(err) => {
+                                    metrics::global_error_incr();
+                                    let message = Bytes::from(format!("ERR {err}"));
+                                    let fut = async move { RespValue::Error(message) };
+                                    pending.push_back(Box::pin(fut));
+                                    inflight += 1;
+                                }
+                            }
+                        }
+                        Some(Err(err)) => {
+                            metrics::global_error_incr();
+                            return Err(err);
+                        }
+                        None => {
+                            stream_closed = true;
+                        }
+                    }
+                }
+                else => {
+                    if stream_closed && inflight == 0 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        while let Some(resp) = pending.next().await {
+            sink.send(resp).await?;
+        }
+        sink.close().await?;
+        Ok(())
+    }
+
+    fn prepare_dispatch(
+        &self,
+        client_id: ClientId,
+        command: RedisCommand,
+    ) -> BoxFuture<'static, RespValue> {
+        let cluster = self.cluster.clone();
+        let hash_tag = self.hash_tag.clone();
+        let read_from_slave = self.read_from_slave;
+        let slots = self.slots.clone();
+        let pool = self.pool.clone();
+        let fetch_trigger = self.fetch_trigger.clone();
+        Box::pin(async move {
+            match dispatch_with_context(
+                cluster,
+                hash_tag,
+                read_from_slave,
+                slots,
+                pool,
+                fetch_trigger,
+                client_id,
+                command,
+            )
+            .await
+            {
                 Ok(resp) => resp,
                 Err(err) => {
                     metrics::global_error_incr();
                     RespValue::Error(Bytes::from(format!("ERR {err}")))
                 }
-            };
-            framed.send(response).await?;
-        }
-        Ok(())
-    }
-
-    async fn dispatch(&self, client_id: ClientId, command: RedisCommand) -> Result<RespValue> {
-        let mut slot = command
-            .hash_slot(self.hash_tag.as_deref())
-            .ok_or_else(|| anyhow!("command missing key"))?;
-        let mut target_override: Option<BackendNode> = None;
-
-        for _ in 0..MAX_REDIRECTS {
-            let target = if let Some(node) = target_override.clone() {
-                node
-            } else {
-                self.select_node(slot)?
-            };
-
-            let response_rx = self
-                .pool
-                .dispatch(target.clone(), client_id, command.clone())
-                .await?;
-
-            match response_rx.await {
-                Ok(Ok(resp)) => match parse_redirect(resp.clone())? {
-                    Some(Redirect::Moved {
-                        slot: new_slot,
-                        address,
-                    }) => {
-                        self.fetch_trigger.send(()).ok();
-                        slot = new_slot;
-                        target_override = Some(BackendNode::new(address));
-                        continue;
-                    }
-                    Some(Redirect::Ask { address }) => {
-                        target_override = Some(BackendNode::new(address));
-                        continue;
-                    }
-                    None => return Ok(resp),
-                },
-                Ok(Err(err)) => return Err(err),
-                Err(_) => return Err(anyhow!("backend session closed")),
             }
-        }
-
-        Err(anyhow!("too many cluster redirects"))
-    }
-
-    fn select_node(&self, slot: u16) -> Result<BackendNode> {
-        let map = self.slots.borrow().clone();
-        if self.read_from_slave {
-            if let Some(replica) = map.replica_for_slot(slot) {
-                return Ok(BackendNode::new(replica.to_string()));
-            }
-        }
-        if let Some(master) = map.master_for_slot(slot) {
-            return Ok(BackendNode::new(master.to_string()));
-        }
-        bail!("slot {} not covered", slot)
+        })
     }
 }
 
@@ -163,6 +171,74 @@ impl ClusterProxy {
 enum Redirect {
     Moved { slot: u16, address: String },
     Ask { address: String },
+}
+
+async fn dispatch_with_context(
+    _cluster: Arc<str>,
+    hash_tag: Option<Vec<u8>>,
+    read_from_slave: bool,
+    slots: Arc<watch::Sender<SlotMap>>,
+    pool: Arc<ConnectionPool<RedisCommand>>,
+    fetch_trigger: mpsc::UnboundedSender<()>,
+    client_id: ClientId,
+    command: RedisCommand,
+) -> Result<RespValue> {
+    let mut slot = command
+        .hash_slot(hash_tag.as_deref())
+        .ok_or_else(|| anyhow!("command missing key"))?;
+    let mut target_override: Option<BackendNode> = None;
+
+    for _ in 0..MAX_REDIRECTS {
+        let target = if let Some(node) = target_override.clone() {
+            node
+        } else {
+            select_node(&slots, read_from_slave, slot)?
+        };
+
+        let response_rx = pool
+            .dispatch(target.clone(), client_id, command.clone())
+            .await?;
+
+        match response_rx.await {
+            Ok(Ok(resp)) => match parse_redirect(resp.clone())? {
+                Some(Redirect::Moved {
+                    slot: new_slot,
+                    address,
+                }) => {
+                    let _ = fetch_trigger.send(());
+                    slot = new_slot;
+                    target_override = Some(BackendNode::new(address));
+                    continue;
+                }
+                Some(Redirect::Ask { address }) => {
+                    target_override = Some(BackendNode::new(address));
+                    continue;
+                }
+                None => return Ok(resp),
+            },
+            Ok(Err(err)) => return Err(err),
+            Err(_) => return Err(anyhow!("backend session closed")),
+        }
+    }
+
+    Err(anyhow!("too many cluster redirects"))
+}
+
+fn select_node(
+    slots: &watch::Sender<SlotMap>,
+    read_from_slave: bool,
+    slot: u16,
+) -> Result<BackendNode> {
+    let map = slots.borrow().clone();
+    if read_from_slave {
+        if let Some(replica) = map.replica_for_slot(slot) {
+            return Ok(BackendNode::new(replica.to_string()));
+        }
+    }
+    if let Some(master) = map.master_for_slot(slot) {
+        return Ok(BackendNode::new(master.to_string()));
+    }
+    bail!("slot {} not covered", slot)
 }
 
 fn parse_redirect(value: RespValue) -> Result<Option<Redirect>> {
