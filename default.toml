@@ -1,12 +1,4 @@
 [[clusters]]
-    name = "test-dns-resolver"
-    listen_addr = "0.0.0.0:6379"
-    cache_type = "redis"
-    servers=[
-        "localhost:6379",
-    ]
-
-[[clusters]]
     name = "test-redis-standalone"
     listen_addr = "0.0.0.0:7787"
     hash_tag = "{}"
