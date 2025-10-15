@@ -1,0 +1,121 @@
+version: "3.9"
+
+services:
+  redis-standalone:
+    image: redis:7-alpine
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  redis-node-1:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--port", "7000",
+        "--bind", "0.0.0.0",
+        "--protected-mode", "no",
+        "--cluster-enabled", "yes",
+        "--cluster-config-file", "nodes.conf",
+        "--cluster-node-timeout", "5000",
+        "--cluster-announce-ip", "redis-node-1",
+        "--cluster-announce-port", "7000",
+        "--cluster-announce-bus-port", "17000",
+        "--appendonly", "no"
+      ]
+    ports:
+      - "17000:7000"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7000", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  redis-node-2:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--port", "7001",
+        "--bind", "0.0.0.0",
+        "--protected-mode", "no",
+        "--cluster-enabled", "yes",
+        "--cluster-config-file", "nodes.conf",
+        "--cluster-node-timeout", "5000",
+        "--cluster-announce-ip", "redis-node-2",
+        "--cluster-announce-port", "7001",
+        "--cluster-announce-bus-port", "17001",
+        "--appendonly", "no"
+      ]
+    ports:
+      - "17001:7001"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7001", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  redis-node-3:
+    image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--port", "7002",
+        "--bind", "0.0.0.0",
+        "--protected-mode", "no",
+        "--cluster-enabled", "yes",
+        "--cluster-config-file", "nodes.conf",
+        "--cluster-node-timeout", "5000",
+        "--cluster-announce-ip", "redis-node-3",
+        "--cluster-announce-port", "7002",
+        "--cluster-announce-bus-port", "17002",
+        "--appendonly", "no"
+      ]
+    ports:
+      - "17002:7002"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "7002", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 30
+
+  redis-cluster-init:
+    image: redis:7-alpine
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "set -e; sleep 2;
+      echo 'yes' | redis-cli --cluster create redis-node-1:7000 redis-node-2:7001 redis-node-3:7002 --cluster-replicas 0;
+      tail -f /dev/null"
+
+  aster-proxy:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    depends_on:
+      redis-standalone:
+        condition: service_healthy
+      redis-cluster-init:
+        condition: service_started
+    ports:
+      - "6380:6380"
+      - "6381:6381"
+      - "22110:2110"
+
+  integration-tests:
+    image: redis:7-alpine
+    depends_on:
+      aster-proxy:
+        condition: service_started
+    volumes:
+      - ./integration-test.sh:/integration-test.sh:ro
+    entrypoint: ["/bin/sh", "/integration-test.sh"]

@@ -1,32 +1,26 @@
-use prometheus::Histogram;
-
 use std::time::Instant;
 
-pub struct Tracker {
-    pub start: Instant,
-    hist: Histogram,
-}
+use prometheus::Histogram;
 
-impl std::fmt::Debug for Tracker {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        write!(f, "Tracker<start={:?}>", self.start)
-    }
+/// Measures elapsed time and records it into a Prometheus histogram when dropped.
+pub struct Tracker {
+    start: Instant,
+    histogram: Histogram,
 }
 
 impl Tracker {
-    pub fn new(hist: Histogram) -> Tracker {
+    pub fn new(histogram: Histogram) -> Self {
         Self {
             start: Instant::now(),
-            hist,
+            histogram,
         }
     }
 }
 
 impl Drop for Tracker {
     fn drop(&mut self) {
-        let dur = self.start.elapsed();
-        let micro = f64::from(dur.subsec_nanos()) / 1e3; // microseconds
-        self.hist
-            .observe(micro + (dur.as_secs() as f64 * 1_000_000.0));
+        let elapsed = self.start.elapsed();
+        let micros = elapsed.as_secs_f64() * 1_000_000.0;
+        self.histogram.observe(micros);
     }
 }

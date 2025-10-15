@@ -1,152 +1,219 @@
-// #![deny(warnings)]
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate serde_derive;
-#[macro_use]
-extern crate failure;
-#[macro_use]
-extern crate clap;
+//! Core library entrypoint for the rewritten aster proxy.
+//!
+//! The implementation is currently limited to runtime bootstrap, CLI parsing,
+//! and configuration handling. Functional proxy components will be added in
+//! subsequent steps.
 
-#[macro_use]
-extern crate prometheus;
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use clap::Parser;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::runtime::Builder;
+use tracing::{info, warn};
+use tracing_subscriber::{fmt, EnvFilter};
+
+pub mod backend;
+pub mod cluster;
+pub mod config;
+pub mod meta;
 pub mod metrics;
-
-use clap::App;
-
-pub const ASTER_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-pub mod com;
 pub mod protocol;
-pub mod proxy;
-pub(crate) mod utils;
+pub mod standalone;
+pub mod utils;
 
-use std::thread::{self, Builder, JoinHandle};
-use std::time::Duration;
-use std::io::Write;
+use crate::cluster::ClusterProxy;
+use crate::config::{CacheType, Config};
+use crate::meta::{derive_meta, scope_with_meta};
+use crate::standalone::StandaloneProxy;
 
-use failure::Error;
-use chrono::Local;
+/// CLI definition for the proxy.
+#[derive(Debug, Parser)]
+#[command(
+    name = "aster-proxy",
+    version,
+    about = "Aster is a lightweight proxy for Redis and Redis Cluster."
+)]
+struct Cli {
+    /// Path to the configuration file.
+    #[arg(short, long, value_name = "FILE", default_value = "default.toml")]
+    config: PathBuf,
+    /// Override the advertised IP address.
+    #[arg(short = 'i', long = "ip", value_name = "ADDR")]
+    ip: Option<String>,
+    /// Prometheus metrics port.
+    #[arg(
+        short = 'm',
+        long = "metrics",
+        value_name = "PORT",
+        default_value_t = 2110
+    )]
+    metrics: u16,
+    /// Enable configuration reload support.
+    #[arg(short = 'r', long = "reload")]
+    reload: bool,
+}
 
-use com::meta::{load_meta, meta_init};
-use com::ClusterConfig;
-use metrics::thread_incr;
+#[derive(Debug)]
+struct BootstrapOptions {
+    config: PathBuf,
+    override_ip: Option<String>,
+    metrics_port: u16,
+    reload_enabled: bool,
+}
 
-pub fn run() -> Result<(), Error> {
-    env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info");
-    env_logger::builder()
-        .format(|buf, r| {
-            writeln!(
-                buf,
-                "{} {} [{}:{}] {}",
-                Local::now().format("%Y-%m-%d %H:%M:%S"),
-                r.level(),
-                r.module_path().unwrap_or("<unnamed>"),
-                r.line().unwrap_or(0),
-                r.args(),
-            )
-        })
+impl From<Cli> for BootstrapOptions {
+    fn from(value: Cli) -> Self {
+        Self {
+            config: value.config,
+            override_ip: value.ip,
+            metrics_port: value.metrics,
+            reload_enabled: value.reload,
+        }
+    }
+}
+
+/// Launch the proxy service.
+pub fn run() -> Result<()> {
+    let cli = Cli::parse();
+    init_tracing()?;
+
+    let runtime = Builder::new_multi_thread()
+        .enable_all()
+        .thread_name("aster-rt")
+        .build()?;
+
+    runtime.block_on(async move {
+        let options = BootstrapOptions::from(cli);
+        run_async(options).await
+    })
+}
+
+fn init_tracing() -> Result<()> {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    fmt()
+        .with_env_filter(env_filter)
+        .with_thread_names(true)
+        .with_target(false)
         .init();
-
-    let yaml = load_yaml!("cli.yml");
-    let matches = App::from_yaml(yaml).version(ASTER_VERSION).get_matches();
-    let config = matches.value_of("config").unwrap_or("default.toml");
-    let watch_file = config.to_string();
-    let ip = matches.value_of("ip").map(|x| x.to_string());
-    let enable_reload = matches.is_present("reload");
-    info!("[aster-{}] loading config from {}", ASTER_VERSION, config);
-    let cfg = com::Config::load(&config)?;
-    debug!("use config : {:?}", cfg);
-    assert!(
-        !cfg.clusters.is_empty(),
-        "clusters is absent of config file"
-    );
-    crate::proxy::standalone::reload::init(&watch_file, cfg.clone(), enable_reload)?;
-
-    let mut ths = Vec::new();
-    for cluster in cfg.clusters.into_iter() {
-        if cluster.servers.is_empty() {
-            warn!(
-                "fail to running cluster {} in addr {} due filed `servers` is empty",
-                cluster.name, cluster.listen_addr
-            );
-            continue;
-        }
-
-        if cluster.name.is_empty() {
-            warn!(
-                "fail to running cluster {} in addr {} due filed `name` is empty",
-                cluster.name, cluster.listen_addr
-            );
-            continue;
-        }
-
-        info!(
-            "starting aster cluster {} in addr {}",
-            cluster.name, cluster.listen_addr
-        );
-
-        match cluster.cache_type {
-            com::CacheType::RedisCluster => {
-                let jhs = spawn_worker(&cluster, ip.clone(), proxy::cluster::spawn);
-                ths.extend(jhs);
-            }
-            _ => {
-                let jhs = spawn_worker(&cluster, ip.clone(), proxy::standalone::spawn);
-                ths.extend(jhs);
-            }
-        }
-    }
-
-    {
-        let port_str = matches.value_of("metrics").unwrap_or("2110");
-        let port = port_str.parse::<usize>().unwrap_or(2110);
-        spawn_metrics(port);
-    }
-
-    for th in ths {
-        th.join().unwrap();
-    }
     Ok(())
 }
 
-fn spawn_worker<T>(cc: &ClusterConfig, ip: Option<String>, spawn_fn: T) -> Vec<JoinHandle<()>>
-where
-    T: Fn(ClusterConfig) + Copy + Send + 'static,
-{
-    let worker = cc.thread.unwrap_or(4);
-    let meta = load_meta(cc.clone(), ip);
-    info!("setup meta info with {:?}", meta);
-    (0..worker)
-        .map(|_index| {
-            let cc = cc.clone();
-            let meta = meta.clone();
-            Builder::new()
-                .name(cc.name.clone())
-                .spawn(move || {
-                    thread_incr();
-                    meta_init(meta);
-                    spawn_fn(cc);
-                })
-                .expect("fail to spawn worker thread")
-        })
-        .collect()
+async fn run_async(options: BootstrapOptions) -> Result<()> {
+    metrics::register_version(env!("CARGO_PKG_VERSION"));
+
+    let config = Config::load(&options.config).await?;
+
+    info!(
+        clusters = config.clusters().len(),
+        names = ?config
+            .clusters()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect::<Vec<_>>(),
+        "configuration loaded"
+    );
+
+    if options.reload_enabled {
+        warn!("configuration reload is not yet implemented; --reload will be ignored");
+    }
+
+    let metrics_handles = metrics::spawn_background_tasks(options.metrics_port);
+
+    for cluster_cfg in config.clusters().iter().cloned() {
+        let listen_addr = cluster_cfg.listen_addr.clone();
+        let listener = TcpListener::bind(&listen_addr)
+            .await
+            .with_context(|| format!("failed to bind listener for {}", &listen_addr))?;
+        let local_addr = listener
+            .local_addr()
+            .context("failed to obtain local listen address")?;
+
+        let meta = derive_meta(&cluster_cfg, options.override_ip.as_deref())?;
+        let cluster_label: Arc<str> = cluster_cfg.name.clone().into();
+
+        info!(
+            cluster = %cluster_cfg.name,
+            listen = %local_addr,
+            mode = ?cluster_cfg.cache_type,
+            advertise_ip = %meta.ip(),
+            "cluster listener started"
+        );
+
+        match cluster_cfg.cache_type {
+            CacheType::Redis => {
+                let proxy = Arc::new(StandaloneProxy::new(&cluster_cfg)?);
+                let listener = listener;
+                let meta = meta.clone();
+                let cluster_label = cluster_label.clone();
+                tokio::spawn(scope_with_meta(meta, async move {
+                    accept_loop(listener, proxy, cluster_label).await;
+                }));
+            }
+            CacheType::RedisCluster => {
+                let proxy = Arc::new(ClusterProxy::new(&cluster_cfg).await?);
+                let listener = listener;
+                let meta = meta.clone();
+                let cluster_label = cluster_label.clone();
+                tokio::spawn(scope_with_meta(meta, async move {
+                    accept_loop(listener, proxy, cluster_label).await;
+                }));
+            }
+        }
+    }
+
+    info!("all clusters are running; waiting for shutdown signal");
+    tokio::signal::ctrl_c()
+        .await
+        .context("failed to listen for shutdown signal")?;
+    info!("shutdown signal received; terminating background tasks");
+
+    metrics_handles.http.abort();
+    metrics_handles.system.abort();
+    Ok(())
 }
 
-fn spawn_metrics(port: usize) -> Vec<thread::JoinHandle<()>> {
-    // wait for worker thread to be ready
-    thread::sleep(Duration::from_secs(3));
-    vec![
-        thread::Builder::new()
-            .name("aster-http-srv".to_string())
-            .spawn(move || metrics::init(port).unwrap())
-            .unwrap(),
-        thread::Builder::new()
-            .name("measure-service".to_string())
-            .spawn(move || metrics::measure_system().unwrap())
-            .unwrap(),
-    ]
+async fn accept_loop<P>(listener: TcpListener, proxy: Arc<P>, cluster: Arc<str>)
+where
+    P: ProxyService,
+{
+    loop {
+        match listener.accept().await {
+            Ok((socket, addr)) => {
+                let proxy = proxy.clone();
+                let cluster_name = cluster.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = proxy.handle(socket).await {
+                        metrics::global_error_incr();
+                        warn!(cluster = %cluster_name, peer = %addr, error = %err, "connection closed with error");
+                    }
+                });
+            }
+            Err(err) => {
+                metrics::global_error_incr();
+                warn!(cluster = %cluster, error = %err, "failed to accept incoming connection");
+            }
+        }
+    }
+}
+
+#[async_trait]
+pub trait ProxyService: Send + Sync + 'static {
+    async fn handle(&self, socket: TcpStream) -> Result<()>;
+}
+
+#[async_trait]
+impl ProxyService for StandaloneProxy {
+    async fn handle(&self, socket: TcpStream) -> Result<()> {
+        self.handle_connection(socket).await
+    }
+}
+
+#[async_trait]
+impl ProxyService for ClusterProxy {
+    async fn handle(&self, socket: TcpStream) -> Result<()> {
+        self.handle_connection(socket).await
+    }
 }

@@ -1,0 +1,20 @@
+[[clusters]]
+name = "standalone"
+listen_addr = "0.0.0.0:6380"
+cache_type = "redis"
+thread = 2
+servers = [
+    "redis-standalone:6379:1 redis-1",
+]
+
+[[clusters]]
+name = "cluster"
+listen_addr = "0.0.0.0:6381"
+cache_type = "redis_cluster"
+thread = 2
+read_from_slave = false
+servers = [
+    "redis-node-1:7000",
+    "redis-node-2:7001",
+    "redis-node-3:7002",
+]

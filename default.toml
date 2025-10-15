@@ -1,35 +1,4 @@
 [[clusters]]
-    name = "test-dns-resolver"
-    listen_addr = "0.0.0.0:6379"
-    cache_type = "redis"
-    servers=[
-        "localhost:6379",
-    ]
-
-[[clusters]]
-    name = "test-mc-standalone"
-    listen_addr = "0.0.0.0:7789"
-    hash_tag = "{}"
-    thread = 1
-    cache_type = "memcache"
-    servers = [
-        "127.0.0.1:11211:10 mc-1",
-    ]
-
-    fetch_interval = 3600000 
-    read_from_slave = false
-
-    ping_fail_limit = 6 # 3 times
-    ping_succ_interval = 1000 # 1 second
-    ping_interval = 5000 # 5 seconds
-
-    read_timeout = 1000
-    write_timeout = 1000
-    dial_timeout = 500
-    listen_proto = "tcp"
-    node_connections = 1
-
-[[clusters]]
     name = "test-redis-standalone"
     listen_addr = "0.0.0.0:7787"
     hash_tag = "{}"
