@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 
 use anyhow::{anyhow, bail, Result};
@@ -164,18 +165,25 @@ impl RedisCommand {
         matches!(command_kind(self.command_name()), CommandKind::Read)
     }
 
-    pub fn expand_for_multi(&self) -> Option<MultiDispatch> {
+    pub fn expand_for_multi(&self, hash_tag: Option<&[u8]>) -> Option<MultiDispatch> {
+        self.expand_for_multi_with(|key| hash_slot_for_key(key, hash_tag) as u64)
+    }
+
+    pub fn expand_for_multi_with<G>(&self, mut group_for: G) -> Option<MultiDispatch>
+    where
+        G: FnMut(&[u8]) -> u64,
+    {
         let name = uppercase_name(self.command_name());
         match name.as_slice() {
-            b"MGET" if self.parts.len() > 2 => Some(expand_mget(self)),
+            b"MGET" if self.parts.len() > 2 => Some(expand_mget(self, &mut group_for)),
             b"MSET" if self.parts.len() > 3 && self.parts.len() % 2 == 1 => {
-                Some(expand_mset(self, false))
+                Some(expand_mset(self, &mut group_for, false))
             }
             b"MSETNX" if self.parts.len() > 3 && self.parts.len() % 2 == 1 => {
-                Some(expand_mset(self, true))
+                Some(expand_mset(self, &mut group_for, true))
             }
             b"DEL" | b"UNLINK" | b"EXISTS" if self.parts.len() > 2 => {
-                Some(expand_simple_iter(self, name.as_slice()))
+                Some(expand_simple_iter(self, name.as_slice(), &mut group_for))
             }
             _ => None,
         }
@@ -261,46 +269,84 @@ fn has_block_option(parts: &[Bytes]) -> Option<f64> {
     None
 }
 
-fn expand_mget(command: &RedisCommand) -> MultiDispatch {
-    let mut subcommands = Vec::new();
+fn hash_slot_for_key(key: &[u8], hash_tag: Option<&[u8]>) -> u16 {
+    let trimmed = trim_hash_tag(key, hash_tag);
+    crc16(trimmed) % SLOT_COUNT
+}
+
+fn expand_mget<G>(command: &RedisCommand, group_for: &mut G) -> MultiDispatch
+where
+    G: FnMut(&[u8]) -> u64,
+{
+    let mut groups: HashMap<u64, Vec<(usize, Bytes)>> = HashMap::new();
     for (index, key) in command.parts.iter().enumerate().skip(1) {
-        let sub = RedisCommand::new(vec![Bytes::from_static(b"GET"), key.clone()])
-            .expect("GET command must be valid");
+        let group = group_for(key.as_ref());
+        groups.entry(group).or_default().push((index - 1, key.clone()));
+    }
+
+    let mut subcommands = Vec::with_capacity(groups.len());
+    for keys in groups.into_values() {
+        let mut parts = Vec::with_capacity(keys.len() + 1);
+        parts.push(Bytes::from_static(b"MGET"));
+        let mut positions = Vec::with_capacity(keys.len());
+        for (position, key) in keys {
+            positions.push(position);
+            parts.push(key);
+        }
+        let sub = RedisCommand::new(parts).expect("MGET command must be valid");
         subcommands.push(SubCommand {
-            position: index - 1,
+            positions,
             command: sub,
         });
     }
+
     MultiDispatch {
         subcommands,
         aggregator: Aggregator::Array {
-            key_count: command.parts.len() - 1,
+            key_count: command.parts.len().saturating_sub(1),
         },
     }
 }
 
-fn expand_mset(command: &RedisCommand, nx: bool) -> MultiDispatch {
-    let mut subcommands = Vec::new();
+fn expand_mset<G>(command: &RedisCommand, group_for: &mut G, nx: bool) -> MultiDispatch
+where
+    G: FnMut(&[u8]) -> u64,
+{
+    let mut groups: HashMap<u64, Vec<(usize, Bytes, Bytes)>> = HashMap::new();
     let mut position = 0usize;
     let mut iter = command.parts.iter().skip(1);
     while let Some(key) = iter.next() {
         if let Some(value) = iter.next() {
-            let mut parts = Vec::with_capacity(3);
-            if nx {
-                parts.push(Bytes::from_static(b"SETNX"));
-            } else {
-                parts.push(Bytes::from_static(b"SET"));
-            }
-            parts.push(key.clone());
-            parts.push(value.clone());
-            let sub = RedisCommand::new(parts).expect("SET command must be valid");
-            subcommands.push(SubCommand {
-                position,
-                command: sub,
-            });
+            let group = group_for(key.as_ref());
+            groups
+                .entry(group)
+                .or_default()
+                .push((position, key.clone(), value.clone()));
             position += 1;
         }
     }
+
+    let mut subcommands = Vec::with_capacity(groups.len());
+    for entries in groups.into_values() {
+        let mut parts = Vec::with_capacity(entries.len() * 2 + 1);
+        if nx {
+            parts.push(Bytes::from_static(b"MSETNX"));
+        } else {
+            parts.push(Bytes::from_static(b"MSET"));
+        }
+        let mut positions = Vec::with_capacity(entries.len());
+        for (pos, key, value) in entries {
+            positions.push(pos);
+            parts.push(key);
+            parts.push(value);
+        }
+        let sub = RedisCommand::new(parts).expect("SET command must be valid");
+        subcommands.push(SubCommand {
+            positions,
+            command: sub,
+        });
+    }
+
     MultiDispatch {
         subcommands,
         aggregator: if nx {
@@ -311,15 +357,27 @@ fn expand_mset(command: &RedisCommand, nx: bool) -> MultiDispatch {
     }
 }
 
-fn expand_simple_iter(command: &RedisCommand, name: &[u8]) -> MultiDispatch {
-    let mut subcommands = Vec::new();
-    for (position, key) in command.parts.iter().enumerate().skip(1) {
-        let mut parts = Vec::with_capacity(2);
+fn expand_simple_iter(
+    command: &RedisCommand,
+    name: &[u8],
+    group_for: &mut impl FnMut(&[u8]) -> u64,
+) -> MultiDispatch {
+    let mut groups: HashMap<u64, Vec<Bytes>> = HashMap::new();
+    for key in command.parts.iter().skip(1) {
+        let group = group_for(key.as_ref());
+        groups.entry(group).or_default().push(key.clone());
+    }
+
+    let mut subcommands = Vec::with_capacity(groups.len());
+    for keys in groups.into_values() {
+        let mut parts = Vec::with_capacity(keys.len() + 1);
         parts.push(BytesMut::from(name).freeze());
-        parts.push(key.clone());
+        for key in keys {
+            parts.push(key);
+        }
         let sub = RedisCommand::new(parts).expect("single key command must be valid");
         subcommands.push(SubCommand {
-            position: position - 1,
+            positions: Vec::new(),
             command: sub,
         });
     }
@@ -337,7 +395,7 @@ pub struct MultiDispatch {
 
 #[derive(Debug, Clone)]
 pub struct SubCommand {
-    pub position: usize,
+    pub positions: Vec<usize>,
     pub command: RedisCommand,
 }
 
@@ -349,19 +407,60 @@ pub enum Aggregator {
     SetnxAll,
 }
 
+#[derive(Debug, Clone)]
+pub struct SubResponse {
+    pub positions: Vec<usize>,
+    pub response: RespValue,
+}
+
 impl Aggregator {
-    pub fn combine(&self, responses: Vec<(usize, RespValue)>) -> Result<RespValue> {
+    pub fn combine(&self, responses: Vec<SubResponse>) -> Result<RespValue> {
         match self {
             Aggregator::Array { key_count } => {
                 let mut ordered: Vec<Option<RespValue>> = vec![None; *key_count];
-                for (index, resp) in responses {
-                    if let RespValue::Error(_) = resp {
-                        return Ok(resp);
+                for sub in responses {
+                    if let RespValue::Error(_) = sub.response {
+                        return Ok(sub.response);
                     }
-                    if index >= *key_count {
-                        bail!("unexpected response position {}", index);
+                    if sub.positions.is_empty() {
+                        bail!("multi response missing positions");
                     }
-                    ordered[index] = Some(resp);
+                    match sub.response {
+                        RespValue::Array(items) => {
+                            if items.len() != sub.positions.len() {
+                                bail!(
+                                    "unexpected response item count: expected {}, got {}",
+                                    sub.positions.len(),
+                                    items.len()
+                                );
+                            }
+                            for (pos, item) in sub.positions.into_iter().zip(items.into_iter()) {
+                                if pos >= *key_count {
+                                    bail!("unexpected response position {}", pos);
+                                }
+                                if ordered[pos].is_some() {
+                                    bail!("duplicate response position {}", pos);
+                                }
+                                ordered[pos] = Some(item);
+                            }
+                        }
+                        other => {
+                            if sub.positions.len() != 1 {
+                                bail!(
+                                    "unexpected scalar response for multiple positions: {:?}",
+                                    other
+                                );
+                            }
+                            let pos = sub.positions[0];
+                            if pos >= *key_count {
+                                bail!("unexpected response position {}", pos);
+                            }
+                            if ordered[pos].is_some() {
+                                bail!("duplicate response position {}", pos);
+                            }
+                            ordered[pos] = Some(other);
+                        }
+                    }
                 }
                 let collected = ordered
                     .into_iter()
@@ -371,20 +470,20 @@ impl Aggregator {
             }
             Aggregator::IntegerSum => {
                 let mut sum = 0i64;
-                for (_idx, resp) in responses {
-                    match resp {
+                for sub in responses {
+                    match sub.response {
                         RespValue::Integer(value) => sum += value,
-                        RespValue::Error(_) => return Ok(resp),
+                        RespValue::Error(_) => return Ok(sub.response),
                         other => bail!("unexpected response type: {:?}", other),
                     }
                 }
                 Ok(RespValue::Integer(sum))
             }
             Aggregator::OkAll => {
-                for (_idx, resp) in responses {
-                    match resp {
+                for sub in responses {
+                    match sub.response {
                         RespValue::SimpleString(ref s) if s.as_ref() == b"OK" => {}
-                        RespValue::Error(_) => return Ok(resp),
+                        RespValue::Error(_) => return Ok(sub.response),
                         other => bail!("unexpected response type: {:?}", other),
                     }
                 }
@@ -392,14 +491,14 @@ impl Aggregator {
             }
             Aggregator::SetnxAll => {
                 let mut all_success = true;
-                for (_idx, resp) in responses {
-                    match resp {
+                for sub in responses {
+                    match sub.response {
                         RespValue::Integer(value) => {
                             if value == 0 {
                                 all_success = false;
                             }
                         }
-                        RespValue::Error(_) => return Ok(resp),
+                        RespValue::Error(_) => return Ok(sub.response),
                         other => bail!("unexpected response type: {:?}", other),
                     }
                 }

@@ -19,8 +19,8 @@ use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionComman
 use crate::config::ClusterConfig;
 use crate::metrics;
 use crate::protocol::redis::{
-    BlockingKind, MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue,
-    SubscriptionKind,
+    BlockingKind, MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue, SubCommand,
+    SubResponse, SubscriptionKind,
 };
 use crate::utils::trim_hash_tag;
 
@@ -76,7 +76,21 @@ impl StandaloneProxy {
         client_id: ClientId,
         command: RedisCommand,
     ) -> Result<RedisResponse> {
-        if let Some(multi) = command.expand_for_multi() {
+        let hash_tag = self.hash_tag.as_deref();
+        let ring = &self.ring;
+        if let Some(multi) = command.expand_for_multi_with(|key| {
+            if ring.is_empty() {
+                return 0;
+            }
+            let trimmed = trim_hash_tag(key, hash_tag);
+            let hash = hash_key(trimmed);
+            let idx = match ring.binary_search_by_key(&hash, |(value, _node)| *value) {
+                Ok(idx) => idx,
+                Err(idx) if idx >= ring.len() => 0,
+                Err(idx) => idx,
+            };
+            idx as u64
+        }) {
             self.dispatch_multi(client_id, multi).await
         } else {
             self.dispatch_single(client_id, command).await
@@ -124,16 +138,19 @@ impl StandaloneProxy {
         client_id: ClientId,
         multi: MultiDispatch,
     ) -> Result<RedisResponse> {
-        let mut tasks: FuturesOrdered<BoxFuture<'static, Result<(usize, RespValue)>>> =
+        let mut tasks: FuturesOrdered<BoxFuture<'static, Result<SubResponse>>> =
             FuturesOrdered::new();
         for sub in multi.subcommands.into_iter() {
             let node = self.select_node(client_id, &sub.command)?;
             let pool = self.pool.clone();
-            let command = sub.command.clone();
+            let SubCommand { positions, command } = sub;
             tasks.push_back(Box::pin(async move {
                 let response_rx = pool.dispatch(node, client_id, command).await?;
                 match response_rx.await {
-                    Ok(result) => Ok((sub.position, result?)),
+                    Ok(result) => Ok(SubResponse {
+                        positions,
+                        response: result?,
+                    }),
                     Err(_) => Err(anyhow!("backend session closed unexpectedly")),
                 }
             }));

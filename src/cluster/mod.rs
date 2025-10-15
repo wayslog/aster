@@ -20,8 +20,8 @@ use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionComman
 use crate::config::ClusterConfig;
 use crate::metrics;
 use crate::protocol::redis::{
-    BlockingKind, MultiDispatch, RedisCommand, RespCodec, RespValue, SlotMap, SubscriptionKind,
-    SLOT_COUNT,
+    BlockingKind, MultiDispatch, RedisCommand, RespCodec, RespValue, SlotMap, SubCommand,
+    SubResponse, SubscriptionKind, SLOT_COUNT,
 };
 use crate::utils::{crc16, trim_hash_tag};
 
@@ -814,7 +814,7 @@ async fn dispatch_with_context(
     client_id: ClientId,
     command: RedisCommand,
 ) -> Result<RespValue> {
-    if let Some(multi) = command.expand_for_multi() {
+    if let Some(multi) = command.expand_for_multi(hash_tag.as_deref()) {
         dispatch_multi(
             hash_tag,
             read_from_slave,
@@ -848,14 +848,13 @@ async fn dispatch_multi(
     client_id: ClientId,
     multi: MultiDispatch,
 ) -> Result<RespValue> {
-    let mut tasks: FuturesOrdered<BoxFuture<'static, Result<(usize, RespValue)>>> =
-        FuturesOrdered::new();
+    let mut tasks: FuturesOrdered<BoxFuture<'static, Result<SubResponse>>> = FuturesOrdered::new();
     for sub in multi.subcommands.into_iter() {
         let hash_tag = hash_tag.clone();
         let slots = slots.clone();
         let pool = pool.clone();
         let fetch_trigger = fetch_trigger.clone();
-        let command = sub.command.clone();
+        let SubCommand { positions, command } = sub;
         tasks.push_back(Box::pin(async move {
             let response = dispatch_single(
                 hash_tag,
@@ -867,7 +866,10 @@ async fn dispatch_multi(
                 command,
             )
             .await?;
-            Ok((sub.position, response))
+            Ok(SubResponse {
+                positions,
+                response,
+            })
         }));
     }
 
