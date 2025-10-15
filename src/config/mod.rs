@@ -6,6 +6,8 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use tokio::fs;
 
+use crate::auth::{AuthUserConfig, BackendAuthConfig, FrontendAuthConfig};
+
 /// Environment variable controlling the default worker thread count when a
 /// cluster omits the `thread` field.
 pub const ENV_DEFAULT_THREADS: &str = "ASTER_DEFAULT_THREAD";
@@ -114,6 +116,14 @@ pub struct ClusterConfig {
     pub listen_proto: Option<String>,
     #[serde(default)]
     pub node_connections: Option<usize>,
+    #[serde(default)]
+    pub auth: Option<FrontendAuthConfig>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub backend_auth: Option<BackendAuthConfig>,
+    #[serde(default)]
+    pub backend_password: Option<String>,
 }
 
 impl ClusterConfig {
@@ -156,6 +166,25 @@ impl ClusterConfig {
                 self.name, self.listen_addr
             )
         })
+    }
+
+    pub fn frontend_auth_users(&self) -> Option<Vec<AuthUserConfig>> {
+        if let Some(config) = self.auth.clone() {
+            return Some(config.into_users());
+        }
+        self.password
+            .clone()
+            .map(FrontendAuthConfig::Password)
+            .map(|cfg| cfg.into_users())
+    }
+
+    pub fn backend_auth_config(&self) -> Option<BackendAuthConfig> {
+        if let Some(config) = self.backend_auth.clone() {
+            return Some(config);
+        }
+        self.backend_password
+            .clone()
+            .map(BackendAuthConfig::Password)
     }
 }
 

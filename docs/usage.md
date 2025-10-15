@@ -26,8 +26,37 @@ cargo build --release
 - `hash_tag`：一致性 hash 标签，例如 `{}`。
 - `read_timeout` / `write_timeout`：后端超时（毫秒）。
 - `read_from_slave`：Cluster 模式下允许从 replica 读取。
+- `auth` / `password`：前端 ACL，详见下文。
+- `backend_auth` / `backend_password`：后端 ACL 认证，详见下文。
 
 示例参见仓库根目录的 `default.toml`。
+
+### ACL 配置
+
+前端代理支持 Redis ACL 语法，与旧版 `password` 字段兼容：
+
+```toml
+# 仅配置 default 用户（兼容旧版）
+password = "frontend-secret"
+
+# 或使用更完整的 ACL 表：
+auth = { password = "frontend-default", users = [
+    { username = "ops", password = "ops-secret" },
+    { username = "audit", password = "audit-secret" },
+] }
+```
+
+后端在握手阶段会发送 `AUTH`，可配置用户名或纯密码：
+
+```toml
+# 仅密码
+backend_password = "backend-secret"
+
+# 用户名 + 密码
+backend_auth = { username = "proxy", password = "backend-secret" }
+```
+
+所有模式都会在认证失败时拒绝客户端命令，并确保与后端建立的连接已经通过 `AUTH`。
 
 ## Docker Compose 集成测试
 

@@ -15,6 +15,7 @@ use tokio::runtime::Builder;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
+pub mod auth;
 pub mod backend;
 pub mod cluster;
 pub mod config;

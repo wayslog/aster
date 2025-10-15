@@ -15,6 +15,7 @@ use tokio::time::timeout;
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
+use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::ClusterConfig;
@@ -40,6 +41,8 @@ pub struct ClusterProxy {
     cluster: Arc<str>,
     hash_tag: Option<Vec<u8>>,
     read_from_slave: bool,
+    auth: Option<Arc<FrontendAuthenticator>>,
+    backend_auth: Option<BackendAuth>,
     slots: Arc<watch::Sender<SlotMap>>,
     pool: Arc<ConnectionPool<RedisCommand>>,
     fetch_trigger: mpsc::UnboundedSender<()>,
@@ -59,13 +62,24 @@ impl ClusterProxy {
             .read_timeout
             .or(config.write_timeout)
             .unwrap_or(REQUEST_TIMEOUT_MS);
-        let connector = Arc::new(ClusterConnector::new(Duration::from_millis(timeout_ms)));
+        let backend_auth = config.backend_auth_config().map(BackendAuth::from);
+        let connector = Arc::new(ClusterConnector::new(
+            Duration::from_millis(timeout_ms),
+            backend_auth.clone(),
+        ));
         let pool = Arc::new(ConnectionPool::new(cluster.clone(), connector.clone()));
+        let auth = config
+            .frontend_auth_users()
+            .map(FrontendAuthenticator::from_users)
+            .transpose()?
+            .map(Arc::new);
 
         let proxy = Self {
             cluster: cluster.clone(),
             hash_tag,
             read_from_slave,
+            auth,
+            backend_auth,
             slots: Arc::new(slot_tx),
             pool: pool.clone(),
             fetch_trigger: trigger_tx.clone(),
@@ -97,6 +111,7 @@ impl ClusterProxy {
         let mut pending: FuturesOrdered<BoxFuture<'static, RespValue>> = FuturesOrdered::new();
         let mut inflight = 0usize;
         let mut stream_closed = false;
+        let mut auth_state = self.auth.as_ref().map(|auth| auth.new_session());
 
         loop {
             tokio::select! {
@@ -108,7 +123,22 @@ impl ClusterProxy {
                     match frame_opt {
                         Some(Ok(frame)) => {
                             match RedisCommand::from_resp(frame) {
-                                Ok(cmd) => {
+                                Ok(mut cmd) => {
+                                    if let (Some(auth), Some(state)) = (self.auth.as_ref(), auth_state.as_mut()) {
+                                        match auth.handle_command(state, &cmd) {
+                                            AuthAction::Allow => {}
+                                            AuthAction::Rewrite(new_cmd) => {
+                                                cmd = new_cmd;
+                                            }
+                                            AuthAction::Reply(resp) => {
+                                                let fut = async move { resp };
+                                                pending.push_back(Box::pin(fut));
+                                                inflight += 1;
+                                                continue;
+                                            }
+                                        }
+                                    }
+
                                     if matches!(cmd.as_subscription(), SubscriptionKind::Channel | SubscriptionKind::Pattern) {
                                         if cmd.args().len() <= 1 {
                                             metrics::global_error_incr();
@@ -445,7 +475,12 @@ impl ClusterProxy {
         stream
             .set_nodelay(true)
             .with_context(|| format!("failed to set TCP_NODELAY on {}", addr))?;
-        Ok(Framed::new(stream, RespCodec::default()))
+        let mut framed = Framed::new(stream, RespCodec::default());
+        if let Some(auth) = &self.backend_auth {
+            auth.apply_to_stream(&mut framed, self.backend_timeout, &addr)
+                .await?;
+        }
+        Ok(framed)
     }
 
     fn prepare_dispatch(
@@ -646,11 +681,15 @@ fn resp_value_to_bytes(value: &RespValue) -> Option<Bytes> {
 #[derive(Clone)]
 struct ClusterConnector {
     timeout: Duration,
+    backend_auth: Option<BackendAuth>,
 }
 
 impl ClusterConnector {
-    fn new(timeout: Duration) -> Self {
-        Self { timeout }
+    fn new(timeout: Duration, backend_auth: Option<BackendAuth>) -> Self {
+        Self {
+            timeout,
+            backend_auth,
+        }
     }
 
     async fn open_stream(&self, address: &str) -> Result<Framed<TcpStream, RespCodec>> {
@@ -660,7 +699,12 @@ impl ClusterConnector {
         stream
             .set_nodelay(true)
             .with_context(|| format!("failed to set TCP_NODELAY for {}", address))?;
-        Ok(Framed::new(stream, RespCodec::default()))
+        let mut framed = Framed::new(stream, RespCodec::default());
+        if let Some(auth) = &self.backend_auth {
+            auth.apply_to_stream(&mut framed, self.timeout, address)
+                .await?;
+        }
+        Ok(framed)
     }
 
     async fn execute(
