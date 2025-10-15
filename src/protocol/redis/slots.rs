@@ -62,14 +62,18 @@ impl SlotMap {
     }
 
     pub fn master_for_slot(&self, slot: u16) -> Option<&str> {
-        self.masters.get(slot as usize).map(|s| s.as_str())
+        self.masters
+            .get(slot as usize)
+            .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) })
     }
 
     pub fn replica_for_slot(&self, slot: u16) -> Option<&str> {
         self.replicas
             .get(slot as usize)
-            .and_then(|list| list.get(0))
-            .map(|s| s.as_str())
+            .and_then(|list| {
+                list.get(0)
+                    .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) })
+            })
     }
 
     pub fn all_nodes(&self) -> Vec<String> {
@@ -142,5 +146,12 @@ mod tests {
         assert_eq!(map.master_for_slot(1), Some("127.0.0.1:7000"));
         assert_eq!(map.replica_for_slot(1), Some("127.0.0.1:7001"));
         assert!(map.all_nodes().contains(&"127.0.0.1:7000".to_string()));
+    }
+
+    #[test]
+    fn empty_slot_returns_none() {
+        let map = SlotMap::new();
+        assert_eq!(map.master_for_slot(0), None);
+        assert_eq!(map.replica_for_slot(0), None);
     }
 }
