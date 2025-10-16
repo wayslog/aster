@@ -42,6 +42,7 @@ crc16 = "0.4"
 futures = "0.3"
 md5 = "0.7"
 rand = "0.8"
+socket2 = "0.5"
 
 [profile.release]
 debug = true
