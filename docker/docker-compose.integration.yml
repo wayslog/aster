@@ -3,10 +3,16 @@ version: "3.9"
 services:
   redis-standalone:
     image: redis:7-alpine
+    command:
+      [
+        "redis-server",
+        "--protected-mode", "no",
+        "--requirepass", "backend-standalone-secret"
+      ]
     ports:
       - "16379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "backend-standalone-secret", "ping"]
       interval: 2s
       timeout: 1s
       retries: 30
@@ -25,12 +31,15 @@ services:
         "--cluster-announce-ip", "redis-node-1",
         "--cluster-announce-port", "7000",
         "--cluster-announce-bus-port", "17000",
-        "--appendonly", "no"
+        "--appendonly", "no",
+        "--protected-mode", "no",
+        "--requirepass", "backend-cluster-secret",
+        "--masterauth", "backend-cluster-secret"
       ]
     ports:
       - "17000:7000"
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "7000", "ping"]
+      test: ["CMD", "redis-cli", "-a", "backend-cluster-secret", "-p", "7000", "ping"]
       interval: 2s
       timeout: 1s
       retries: 30
@@ -49,12 +58,15 @@ services:
         "--cluster-announce-ip", "redis-node-2",
         "--cluster-announce-port", "7001",
         "--cluster-announce-bus-port", "17001",
-        "--appendonly", "no"
+        "--appendonly", "no",
+        "--protected-mode", "no",
+        "--requirepass", "backend-cluster-secret",
+        "--masterauth", "backend-cluster-secret"
       ]
     ports:
       - "17001:7001"
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "7001", "ping"]
+      test: ["CMD", "redis-cli", "-a", "backend-cluster-secret", "-p", "7001", "ping"]
       interval: 2s
       timeout: 1s
       retries: 30
@@ -73,12 +85,15 @@ services:
         "--cluster-announce-ip", "redis-node-3",
         "--cluster-announce-port", "7002",
         "--cluster-announce-bus-port", "17002",
-        "--appendonly", "no"
+        "--appendonly", "no",
+        "--protected-mode", "no",
+        "--requirepass", "backend-cluster-secret",
+        "--masterauth", "backend-cluster-secret"
       ]
     ports:
       - "17002:7002"
     healthcheck:
-      test: ["CMD", "redis-cli", "-p", "7002", "ping"]
+      test: ["CMD", "redis-cli", "-a", "backend-cluster-secret", "-p", "7002", "ping"]
       interval: 2s
       timeout: 1s
       retries: 30
@@ -94,7 +109,7 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "set -e; sleep 2;
-      echo 'yes' | redis-cli --cluster create redis-node-1:7000 redis-node-2:7001 redis-node-3:7002 --cluster-replicas 0;
+      echo 'yes' | redis-cli -a backend-cluster-secret --cluster create redis-node-1:7000 redis-node-2:7001 redis-node-3:7002 --cluster-replicas 0;
       tail -f /dev/null"
 
   aster-proxy:

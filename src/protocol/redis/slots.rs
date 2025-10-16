@@ -68,12 +68,10 @@ impl SlotMap {
     }
 
     pub fn replica_for_slot(&self, slot: u16) -> Option<&str> {
-        self.replicas
-            .get(slot as usize)
-            .and_then(|list| {
-                list.get(0)
-                    .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) })
-            })
+        self.replicas.get(slot as usize).and_then(|list| {
+            list.get(0)
+                .and_then(|s| if s.is_empty() { None } else { Some(s.as_str()) })
+        })
     }
 
     pub fn all_nodes(&self) -> Vec<String> {

@@ -6,6 +6,8 @@ thread = 2
 servers = [
     "redis-standalone:6379:1 redis-1",
 ]
+password = "front-standalone-secret"
+backend_password = "backend-standalone-secret"
 
 [[clusters]]
 name = "cluster"
@@ -18,3 +20,7 @@ servers = [
     "redis-node-2:7001",
     "redis-node-3:7002",
 ]
+auth = { password = "front-cluster-secret", users = [
+    { username = "ops", password = "ops-secret" }
+] }
+backend_password = "backend-cluster-secret"

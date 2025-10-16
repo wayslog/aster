@@ -14,6 +14,7 @@ use tokio::time::{sleep, timeout};
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
+use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::ClusterConfig;
@@ -38,6 +39,8 @@ pub struct StandaloneProxy {
     cluster: Arc<str>,
     hash_tag: Option<Vec<u8>>,
     ring: Vec<(u64, BackendNode)>,
+    auth: Option<Arc<FrontendAuthenticator>>,
+    backend_auth: Option<BackendAuth>,
     pool: Arc<ConnectionPool<RedisCommand>>,
     backend_timeout: Duration,
 }
@@ -59,13 +62,24 @@ impl StandaloneProxy {
             .read_timeout
             .or(config.write_timeout)
             .unwrap_or(DEFAULT_TIMEOUT_MS);
-        let connector = Arc::new(RedisConnector::new(Duration::from_millis(timeout_ms)));
+        let backend_auth = config.backend_auth_config().map(BackendAuth::from);
+        let connector = Arc::new(RedisConnector::new(
+            Duration::from_millis(timeout_ms),
+            backend_auth.clone(),
+        ));
+        let auth = config
+            .frontend_auth_users()
+            .map(FrontendAuthenticator::from_users)
+            .transpose()?
+            .map(Arc::new);
         let pool = Arc::new(ConnectionPool::new(cluster.clone(), connector));
 
         Ok(Self {
             cluster,
             hash_tag,
             ring,
+            auth,
+            backend_auth,
             pool,
             backend_timeout: Duration::from_millis(timeout_ms),
         })
@@ -245,7 +259,12 @@ impl StandaloneProxy {
         stream
             .set_nodelay(true)
             .with_context(|| format!("failed to set TCP_NODELAY on {}", addr))?;
-        Ok(Framed::new(stream, RespCodec::default()))
+        let mut framed = Framed::new(stream, RespCodec::default());
+        if let Some(auth) = &self.backend_auth {
+            auth.apply_to_stream(&mut framed, self.backend_timeout, &addr)
+                .await?;
+        }
+        Ok(framed)
     }
 
     pub async fn handle_connection(&self, socket: TcpStream) -> Result<()> {
@@ -256,6 +275,7 @@ impl StandaloneProxy {
         let _guard = FrontConnectionGuard::new(&self.cluster);
 
         let mut framed = Framed::new(socket, RespCodec::default());
+        let mut auth_state = self.auth.as_ref().map(|auth| auth.new_session());
 
         while let Some(frame) = framed.next().await {
             let frame = match frame {
@@ -276,6 +296,20 @@ impl StandaloneProxy {
                     continue;
                 }
             };
+
+            let mut command = command;
+            if let (Some(auth), Some(state)) = (self.auth.as_ref(), auth_state.as_mut()) {
+                match auth.handle_command(state, &command) {
+                    AuthAction::Allow => {}
+                    AuthAction::Rewrite(new_cmd) => {
+                        command = new_cmd;
+                    }
+                    AuthAction::Reply(resp) => {
+                        framed.send(resp).await?;
+                        continue;
+                    }
+                }
+            }
 
             if matches!(
                 command.as_subscription(),
@@ -431,13 +465,15 @@ fn matches_subscribe_kind(kind: &[u8]) -> bool {
 struct RedisConnector {
     timeout: Duration,
     reconnect_delay: Duration,
+    backend_auth: Option<BackendAuth>,
 }
 
 impl RedisConnector {
-    fn new(timeout: Duration) -> Self {
+    fn new(timeout: Duration, backend_auth: Option<BackendAuth>) -> Self {
         Self {
             timeout,
             reconnect_delay: Duration::from_millis(100),
+            backend_auth,
         }
     }
 
@@ -449,7 +485,12 @@ impl RedisConnector {
         stream
             .set_nodelay(true)
             .with_context(|| format!("failed to set TCP_NODELAY on {}", connect_target))?;
-        Ok(Framed::new(stream, RespCodec::default()))
+        let mut framed = Framed::new(stream, RespCodec::default());
+        if let Some(auth) = &self.backend_auth {
+            auth.apply_to_stream(&mut framed, self.timeout, &connect_target)
+                .await?;
+        }
+        Ok(framed)
     }
 
     async fn execute_request(

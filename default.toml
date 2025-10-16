@@ -18,6 +18,10 @@
     dial_timeout = 500
     listen_proto = "tcp"
     node_connections = 1
+    # 旧版简单密码写法，等价于 auth = { users = [{ username = "default", password = "example" }] }
+    password = "example-frontend-secret"
+    # 后端 ACL：此处演示用户名 + 密码；如果后端是简单密码，可直接使用 backend_password
+    backend_auth = { username = "proxy", password = "example-backend-secret" }
 
 [[clusters]]
     name = "test-cluster"
@@ -39,3 +43,10 @@
     dial_timeout = 500
     listen_proto = "tcp"
     node_connections = 1
+    # 更复杂的 ACL 配置，支持多个前端用户（default 用户必须显式配置密码）
+    auth = { password = "cluster-default-secret", users = [
+        { username = "ops", password = "ops-secret" },
+        { username = "audit", password = "audit-secret" },
+    ] }
+    # 旧版写法依然兼容：backend_password = "raw-secret"
+    backend_password = "cluster-backend-secret"

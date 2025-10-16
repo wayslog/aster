@@ -281,7 +281,10 @@ where
     let mut groups: HashMap<u64, Vec<(usize, Bytes)>> = HashMap::new();
     for (index, key) in command.parts.iter().enumerate().skip(1) {
         let group = group_for(key.as_ref());
-        groups.entry(group).or_default().push((index - 1, key.clone()));
+        groups
+            .entry(group)
+            .or_default()
+            .push((index - 1, key.clone()));
     }
 
     let mut subcommands = Vec::with_capacity(groups.len());

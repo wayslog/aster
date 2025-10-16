@@ -1,31 +1,35 @@
 #!/bin/sh
 set -euo pipefail
 
-wait_for_port() {
-  host="$1"
-  port="$2"
-  timeout="${3:-30}"
+wait_for_command() {
+  timeout="$1"
+  shift
   start="$(date +%s)"
   while true; do
-    if redis-cli -h "$host" -p "$port" ping >/dev/null 2>&1; then
+    if "$@" >/dev/null 2>&1; then
       return 0
     fi
     now="$(date +%s)"
     if [ $((now - start)) -ge "$timeout" ]; then
-      echo "Timeout waiting for $host:$port" >&2
+      echo "Timeout waiting for command: $*" >&2
       return 1
     fi
     sleep 1
   done
 }
 
-wait_for_port aster-proxy 6380 60
-wait_for_port aster-proxy 6381 60
+STANDALONE_PASS="front-standalone-secret"
+CLUSTER_PASS="front-cluster-secret"
+CLUSTER_USER="ops"
+CLUSTER_USER_PASS="ops-secret"
+
+wait_for_command 60 /bin/sh -c "REDISCLI_AUTH=$STANDALONE_PASS redis-cli -h aster-proxy -p 6380 ping"
+wait_for_command 60 /bin/sh -c "REDISCLI_AUTH=$CLUSTER_PASS redis-cli -h aster-proxy -p 6381 ping"
 
 wait_for_cluster() {
   attempts=0
   while [ $attempts -lt 30 ]; do
-    if redis-cli -h aster-proxy -p 6381 CLUSTER INFO 2>/dev/null | grep -q "cluster_state:ok"; then
+    if REDISCLI_AUTH="$CLUSTER_PASS" redis-cli -h aster-proxy -p 6381 CLUSTER INFO 2>/dev/null | grep -q "cluster_state:ok"; then
       return 0
     fi
     attempts=$((attempts + 1))
@@ -37,29 +41,41 @@ wait_for_cluster() {
 
 wait_for_cluster
 
-redis-cli -h aster-proxy -p 6380 SET standalone foo
-value_standalone="$(redis-cli -h aster-proxy -p 6380 GET standalone)"
+noauth_output="$(redis-cli -h aster-proxy -p 6380 PING 2>&1 || true)"
+if echo "$noauth_output" | grep -q "PONG"; then
+  echo "Expected standalone proxy to require authentication" >&2
+  echo "$noauth_output" >&2
+  exit 1
+fi
+if ! echo "$noauth_output" | grep -qi "NOAUTH"; then
+  echo "Unauthenticated standalone request did not return NOAUTH" >&2
+  echo "$noauth_output" >&2
+  exit 1
+fi
+
+REDISCLI_AUTH="$STANDALONE_PASS" redis-cli -h aster-proxy -p 6380 SET standalone foo
+value_standalone="$(REDISCLI_AUTH="$STANDALONE_PASS" redis-cli -h aster-proxy -p 6380 GET standalone)"
 if [ "$value_standalone" != "foo" ]; then
   echo "Unexpected reply from standalone proxy: $value_standalone" >&2
   exit 1
 fi
 
-redis-cli -h aster-proxy -p 6381 SET cluster foo
-value_cluster="$(redis-cli -h aster-proxy -p 6381 GET cluster)"
+REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" SET cluster foo
+value_cluster="$(REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" GET cluster)"
 if [ "$value_cluster" != "foo" ]; then
   echo "Unexpected reply from cluster proxy: $value_cluster" >&2
   exit 1
 fi
 
-redis-cli -h aster-proxy -p 6381 DEL cluster >/dev/null
-redis-cli -h aster-proxy -p 6380 DEL standalone >/dev/null
+REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" DEL cluster >/dev/null
+REDISCLI_AUTH="$STANDALONE_PASS" redis-cli -h aster-proxy -p 6380 DEL standalone >/dev/null
 
-redis-cli -h aster-proxy -p 6381 DEL e2e:list >/dev/null
+REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" DEL e2e:list >/dev/null
 blpop_tmp="$(mktemp)"
-timeout 5 redis-cli -h aster-proxy -p 6381 --raw BLPOP e2e:list 5 >"$blpop_tmp" &
+timeout 5 env REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" --raw BLPOP e2e:list 5 >"$blpop_tmp" &
 blpop_pid=$!
 sleep 1
-redis-cli -h aster-proxy -p 6381 RPUSH e2e:list value >/dev/null
+REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" RPUSH e2e:list value >/dev/null
 if ! wait "$blpop_pid"; then
   echo "BLPOP via cluster proxy did not complete" >&2
   cat "$blpop_tmp" >&2 || true
@@ -74,10 +90,10 @@ if [ "$blpop_key" != "e2e:list" ] || [ "$blpop_value" != "value" ]; then
 fi
 
 sub_tmp="$(mktemp)"
-redis-cli -h aster-proxy -p 6381 --raw SUBSCRIBE e2e.channel >"$sub_tmp" &
+REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" --raw SUBSCRIBE e2e.channel >"$sub_tmp" &
 sub_pid=$!
 sleep 1
-redis-cli -h aster-proxy -p 6381 PUBLISH e2e.channel payload >/dev/null
+REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" PUBLISH e2e.channel payload >/dev/null
 sleep 1
 kill "$sub_pid" >/dev/null 2>&1 || true
 wait "$sub_pid" >/dev/null 2>&1 || true
