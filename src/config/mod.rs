@@ -1,18 +1,24 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use anyhow::{anyhow, bail, Context, Result};
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use tokio::fs;
+use tracing::{info, warn};
 
 use crate::auth::{AuthUserConfig, BackendAuthConfig, FrontendAuthConfig};
+use crate::protocol::redis::{RedisCommand, RespValue};
 
 /// Environment variable controlling the default worker thread count when a
 /// cluster omits the `thread` field.
 pub const ENV_DEFAULT_THREADS: &str = "ASTER_DEFAULT_THREAD";
+const DUMP_VALUE_DEFAULT: &str = "default";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
     clusters: Vec<ClusterConfig>,
@@ -69,7 +75,7 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CacheType {
     Redis,
@@ -82,7 +88,7 @@ impl Default for CacheType {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClusterConfig {
     pub name: String,
     pub listen_addr: String,
@@ -216,4 +222,344 @@ fn default_worker_threads() -> usize {
     std::thread::available_parallelism()
         .map(|nz| nz.get())
         .unwrap_or(4)
+}
+
+#[derive(Debug)]
+pub struct ClusterRuntime {
+    read_timeout_ms: AtomicI64,
+    write_timeout_ms: AtomicI64,
+}
+
+impl ClusterRuntime {
+    fn new(read_timeout: Option<u64>, write_timeout: Option<u64>) -> Self {
+        Self {
+            read_timeout_ms: AtomicI64::new(option_to_atomic(read_timeout)),
+            write_timeout_ms: AtomicI64::new(option_to_atomic(write_timeout)),
+        }
+    }
+
+    pub fn read_timeout(&self) -> Option<u64> {
+        atomic_to_option(self.read_timeout_ms.load(Ordering::Relaxed))
+    }
+
+    pub fn write_timeout(&self) -> Option<u64> {
+        atomic_to_option(self.write_timeout_ms.load(Ordering::Relaxed))
+    }
+
+    pub fn set_read_timeout(&self, value: Option<u64>) {
+        self.read_timeout_ms
+            .store(option_to_atomic(value), Ordering::Relaxed);
+    }
+
+    pub fn set_write_timeout(&self, value: Option<u64>) {
+        self.write_timeout_ms
+            .store(option_to_atomic(value), Ordering::Relaxed);
+    }
+
+    pub fn request_timeout(&self, default_ms: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(self.request_timeout_ms(default_ms))
+    }
+
+    pub fn request_timeout_ms(&self, default_ms: u64) -> u64 {
+        if let Some(value) = self.read_timeout() {
+            value
+        } else if let Some(value) = self.write_timeout() {
+            value
+        } else {
+            default_ms
+        }
+    }
+}
+
+fn option_to_atomic(value: Option<u64>) -> i64 {
+    match value {
+        Some(v) => v as i64,
+        None => -1,
+    }
+}
+
+fn atomic_to_option(value: i64) -> Option<u64> {
+    if value < 0 {
+        None
+    } else {
+        Some(value as u64)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ClusterEntry {
+    index: usize,
+    runtime: Arc<ClusterRuntime>,
+}
+
+#[derive(Debug)]
+pub struct ConfigManager {
+    path: PathBuf,
+    config: RwLock<Config>,
+    clusters: HashMap<String, ClusterEntry>,
+}
+
+impl ConfigManager {
+    pub fn new(path: PathBuf, config: &Config) -> Self {
+        let mut clusters = HashMap::new();
+        for (index, cluster) in config.clusters().iter().enumerate() {
+            let key = cluster.name.to_ascii_lowercase();
+            clusters.insert(
+                key,
+                ClusterEntry {
+                    index,
+                    runtime: Arc::new(ClusterRuntime::new(
+                        cluster.read_timeout,
+                        cluster.write_timeout,
+                    )),
+                },
+            );
+        }
+
+        Self {
+            path,
+            config: RwLock::new(config.clone()),
+            clusters,
+        }
+    }
+
+    pub fn runtime_for(&self, name: &str) -> Option<Arc<ClusterRuntime>> {
+        self.clusters
+            .get(&name.to_ascii_lowercase())
+            .map(|entry| entry.runtime.clone())
+    }
+
+    pub async fn handle_command(&self, command: &RedisCommand) -> Option<RespValue> {
+        if !command.command_name().eq_ignore_ascii_case(b"CONFIG") {
+            return None;
+        }
+
+        let args = command.args();
+        if args.len() < 2 {
+            return Some(err_response(
+                "wrong number of arguments for 'config' command",
+            ));
+        }
+
+        let sub = args[1].to_vec().to_ascii_uppercase();
+        match sub.as_slice() {
+            b"GET" => Some(self.handle_get(args)),
+            b"SET" => Some(self.handle_set(args)),
+            b"DUMP" => Some(self.handle_dump(args)),
+            b"REWRITE" => Some(self.handle_rewrite(args).await),
+            other => Some(err_response(format!(
+                "unsupported config subcommand '{}'",
+                String::from_utf8_lossy(other).to_ascii_lowercase()
+            ))),
+        }
+    }
+
+    fn handle_get(&self, args: &[bytes::Bytes]) -> RespValue {
+        if args.len() != 3 {
+            return err_response("wrong number of arguments for 'config get' command");
+        }
+        let pattern = String::from_utf8_lossy(&args[2]).to_string();
+        let entries = self.matching_entries(&pattern);
+        RespValue::array(flatten_pairs(entries))
+    }
+
+    fn handle_set(&self, args: &[bytes::Bytes]) -> RespValue {
+        if args.len() != 4 {
+            return err_response("wrong number of arguments for 'config set' command");
+        }
+
+        let key = String::from_utf8_lossy(&args[2]).to_string();
+        let value = String::from_utf8_lossy(&args[3]).to_string();
+        match self.apply_set(&key, &value) {
+            Ok(()) => RespValue::simple("OK"),
+            Err(err) => err_response(err.to_string()),
+        }
+    }
+
+    fn handle_dump(&self, args: &[bytes::Bytes]) -> RespValue {
+        if args.len() != 2 {
+            return err_response("wrong number of arguments for 'config dump' command");
+        }
+        let entries = self.all_entries();
+        RespValue::array(flatten_pairs(entries))
+    }
+
+    async fn handle_rewrite(&self, args: &[bytes::Bytes]) -> RespValue {
+        if args.len() != 2 {
+            return err_response("wrong number of arguments for 'config rewrite' command");
+        }
+        match self.rewrite().await {
+            Ok(()) => RespValue::simple("OK"),
+            Err(err) => {
+                warn!(error = %err, "failed to rewrite configuration file");
+                err_response(err.to_string())
+            }
+        }
+    }
+
+    fn apply_set(&self, key: &str, value: &str) -> Result<()> {
+        let (cluster_name, field) = parse_key(key)?;
+        let cluster_key = cluster_name.to_ascii_lowercase();
+        let entry = self
+            .clusters
+            .get(&cluster_key)
+            .ok_or_else(|| anyhow!("unknown cluster '{}'", cluster_name))?
+            .clone();
+
+        match field {
+            ClusterField::ReadTimeout => {
+                let parsed = parse_timeout_value(value)?;
+                entry.runtime.set_read_timeout(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].read_timeout = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster read_timeout updated via CONFIG SET"
+                );
+            }
+            ClusterField::WriteTimeout => {
+                let parsed = parse_timeout_value(value)?;
+                entry.runtime.set_write_timeout(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].write_timeout = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster write_timeout updated via CONFIG SET"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn matching_entries(&self, pattern: &str) -> Vec<(String, String)> {
+        let pattern_lower = pattern.to_ascii_lowercase();
+        self.all_entries()
+            .into_iter()
+            .filter(|(key, _)| wildcard_match(&pattern_lower, &key.to_ascii_lowercase()))
+            .collect()
+    }
+
+    fn all_entries(&self) -> Vec<(String, String)> {
+        let guard = self.config.read();
+        let mut entries = Vec::new();
+        for cluster in guard.clusters() {
+            let name = &cluster.name;
+            let key = name.to_ascii_lowercase();
+            if let Some(entry) = self.clusters.get(&key) {
+                let runtime = entry.runtime.clone();
+                entries.push((
+                    format!("cluster.{}.read-timeout", name),
+                    option_to_string(runtime.read_timeout()),
+                ));
+                entries.push((
+                    format!("cluster.{}.write-timeout", name),
+                    option_to_string(runtime.write_timeout()),
+                ));
+            }
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
+    }
+
+    async fn rewrite(&self) -> Result<()> {
+        let snapshot = {
+            let guard = self.config.read();
+            toml::to_string_pretty(&*guard)?
+        };
+        fs::write(&self.path, snapshot)
+            .await
+            .with_context(|| format!("failed to persist configuration to {}", self.path.display()))
+    }
+}
+
+fn parse_key(key: &str) -> Result<(String, ClusterField)> {
+    let mut parts = key.splitn(3, '.');
+    let scope = parts
+        .next()
+        .ok_or_else(|| anyhow!("invalid config parameter '{}'", key))?;
+    if !scope.eq_ignore_ascii_case("cluster") {
+        bail!("unsupported config parameter '{}'", key);
+    }
+    let cluster = parts
+        .next()
+        .ok_or_else(|| anyhow!("config parameter missing cluster name '{}'", key))?;
+    let field = parts
+        .next()
+        .ok_or_else(|| anyhow!("config parameter missing field '{}'", key))?;
+    let field = match field.to_ascii_lowercase().as_str() {
+        "read-timeout" => ClusterField::ReadTimeout,
+        "write-timeout" => ClusterField::WriteTimeout,
+        unknown => bail!("unknown cluster field '{}'", unknown),
+    };
+    Ok((cluster.to_string(), field))
+}
+
+fn parse_timeout_value(value: &str) -> Result<Option<u64>> {
+    if value.eq_ignore_ascii_case(DUMP_VALUE_DEFAULT) {
+        return Ok(None);
+    }
+    let trimmed = value.trim();
+    let parsed: u64 = trimmed
+        .parse()
+        .with_context(|| format!("invalid timeout value '{}'", value))?;
+    Ok(Some(parsed))
+}
+
+fn option_to_string(value: Option<u64>) -> String {
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| DUMP_VALUE_DEFAULT.to_string())
+}
+
+fn flatten_pairs(entries: Vec<(String, String)>) -> Vec<RespValue> {
+    let mut values = Vec::with_capacity(entries.len() * 2);
+    for (key, value) in entries {
+        values.push(RespValue::bulk(key));
+        values.push(RespValue::bulk(value));
+    }
+    values
+}
+
+fn err_response<T: ToString>(message: T) -> RespValue {
+    let payload = format!("ERR {}", message.to_string());
+    RespValue::error(payload)
+}
+
+enum ClusterField {
+    ReadTimeout,
+    WriteTimeout,
+}
+
+fn wildcard_match(pattern: &str, target: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let target = target.as_bytes();
+    let mut p = 0usize;
+    let mut t = 0usize;
+    let mut star = None;
+    let mut match_idx = 0usize;
+
+    while t < target.len() {
+        if p < pattern.len() && (pattern[p] == target[t] || pattern[p] == b'?') {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == b'*' {
+            star = Some(p);
+            match_idx = t;
+            p += 1;
+        } else if let Some(star_idx) = star {
+            p = star_idx + 1;
+            match_idx += 1;
+            t = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+
+    p == pattern.len()
 }
