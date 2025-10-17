@@ -23,6 +23,7 @@ pub mod info;
 pub mod meta;
 pub mod metrics;
 pub mod protocol;
+pub mod slowlog;
 pub mod standalone;
 pub mod utils;
 
