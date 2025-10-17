@@ -21,6 +21,7 @@ use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::ClusterConfig;
+use crate::info::{InfoContext, ProxyMode};
 use crate::metrics;
 use crate::protocol::redis::{
     BlockingKind, MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue, SubCommand,
@@ -47,6 +48,8 @@ pub struct StandaloneProxy {
     backend_auth: Option<BackendAuth>,
     pool: Arc<ConnectionPool<RedisCommand>>,
     backend_timeout: Duration,
+    listen_port: u16,
+    backend_nodes: usize,
 }
 
 impl StandaloneProxy {
@@ -78,6 +81,9 @@ impl StandaloneProxy {
             .map(Arc::new);
         let pool = Arc::new(ConnectionPool::new(cluster.clone(), connector));
 
+        let backend_nodes = nodes.len();
+        let listen_port = config.listen_port()?;
+
         Ok(Self {
             cluster,
             hash_tag,
@@ -86,6 +92,8 @@ impl StandaloneProxy {
             backend_auth,
             pool,
             backend_timeout: Duration::from_millis(timeout_ms),
+            listen_port,
+            backend_nodes,
         })
     }
 
@@ -409,6 +417,12 @@ impl StandaloneProxy {
                 }
             }
 
+            if let Some(response) = self.try_handle_info(&command) {
+                metrics::front_command(self.cluster.as_ref(), kind_label, true);
+                framed.send(response).await?;
+                continue;
+            }
+
             let response = match self.dispatch(client_id, command).await {
                 Ok(resp) => resp,
                 Err(err) => {
@@ -425,6 +439,24 @@ impl StandaloneProxy {
         }
 
         Ok(())
+    }
+
+    fn try_handle_info(&self, command: &RedisCommand) -> Option<RespValue> {
+        if !command.command_name().eq_ignore_ascii_case(b"INFO") {
+            return None;
+        }
+        let section = command
+            .args()
+            .get(1)
+            .map(|arg| String::from_utf8_lossy(arg).to_string());
+        let context = InfoContext {
+            cluster: self.cluster.as_ref(),
+            mode: ProxyMode::Standalone,
+            listen_port: self.listen_port,
+            backend_nodes: self.backend_nodes,
+        };
+        let payload = crate::info::render_info(context, section.as_deref());
+        Some(RespValue::BulkString(payload))
     }
 
     fn select_node(&self, client_id: ClientId, command: &RedisCommand) -> Result<BackendNode> {

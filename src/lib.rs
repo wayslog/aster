@@ -19,6 +19,7 @@ pub mod auth;
 pub mod backend;
 pub mod cluster;
 pub mod config;
+pub mod info;
 pub mod meta;
 pub mod metrics;
 pub mod protocol;
