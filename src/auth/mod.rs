@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tokio_util::codec::Framed;
@@ -16,7 +16,7 @@ use crate::protocol::redis::{RedisCommand, RespCodec, RespValue};
 pub const DEFAULT_USER: &str = "default";
 
 /// 前端 ACL 配置，兼容旧版简单密码写法。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum FrontendAuthConfig {
     /// 旧版 `password = "xxx"` 样式。
@@ -25,7 +25,7 @@ pub enum FrontendAuthConfig {
     Detailed(FrontendAuthTable),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FrontendAuthTable {
     /// 简化写法：纯密码等价于 default 用户。
     #[serde(default)]
@@ -35,7 +35,7 @@ pub struct FrontendAuthTable {
     pub users: Vec<AuthUserConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AuthUserConfig {
     pub username: String,
     pub password: String,
@@ -64,7 +64,7 @@ impl FrontendAuthConfig {
 }
 
 /// 后端认证配置，支持 ACL 写法与旧式密码。
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum BackendAuthConfig {
     Password(String),

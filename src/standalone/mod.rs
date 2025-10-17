@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
-use crate::config::ClusterConfig;
+use crate::config::{ClusterConfig, ClusterRuntime, ConfigManager};
 use crate::info::{InfoContext, ProxyMode};
 use crate::metrics;
 use crate::protocol::redis::{
@@ -47,13 +47,18 @@ pub struct StandaloneProxy {
     auth: Option<Arc<FrontendAuthenticator>>,
     backend_auth: Option<BackendAuth>,
     pool: Arc<ConnectionPool<RedisCommand>>,
-    backend_timeout: Duration,
+    runtime: Arc<ClusterRuntime>,
+    config_manager: Arc<ConfigManager>,
     listen_port: u16,
     backend_nodes: usize,
 }
 
 impl StandaloneProxy {
-    pub fn new(config: &ClusterConfig) -> Result<Self> {
+    pub fn new(
+        config: &ClusterConfig,
+        runtime: Arc<ClusterRuntime>,
+        config_manager: Arc<ConfigManager>,
+    ) -> Result<Self> {
         let cluster: Arc<str> = config.name.clone().into();
         let hash_tag = config.hash_tag.as_ref().map(|tag| tag.as_bytes().to_vec());
         let nodes = parse_servers(&config.servers)?;
@@ -65,13 +70,10 @@ impl StandaloneProxy {
         }
         let ring = build_ring(&nodes);
 
-        let timeout_ms = config
-            .read_timeout
-            .or(config.write_timeout)
-            .unwrap_or(DEFAULT_TIMEOUT_MS);
         let backend_auth = config.backend_auth_config().map(BackendAuth::from);
         let connector = Arc::new(RedisConnector::new(
-            Duration::from_millis(timeout_ms),
+            runtime.clone(),
+            DEFAULT_TIMEOUT_MS,
             backend_auth.clone(),
         ));
         let auth = config
@@ -91,7 +93,8 @@ impl StandaloneProxy {
             auth,
             backend_auth,
             pool,
-            backend_timeout: Duration::from_millis(timeout_ms),
+            runtime,
+            config_manager,
             listen_port,
             backend_nodes,
         })
@@ -318,7 +321,8 @@ impl StandaloneProxy {
         node: &BackendNode,
     ) -> Result<Framed<TcpStream, RespCodec>> {
         let addr = node.as_str().to_string();
-        let stream = timeout(self.backend_timeout, TcpStream::connect(&addr))
+        let timeout_duration = self.runtime.request_timeout(DEFAULT_TIMEOUT_MS);
+        let stream = timeout(timeout_duration, TcpStream::connect(&addr))
             .await
             .with_context(|| format!("connect to {} timed out", addr))??;
         stream
@@ -326,7 +330,7 @@ impl StandaloneProxy {
             .with_context(|| format!("failed to set TCP_NODELAY on {}", addr))?;
         let mut framed = Framed::new(stream, RespCodec::default());
         if let Some(auth) = &self.backend_auth {
-            auth.apply_to_stream(&mut framed, self.backend_timeout, &addr)
+            auth.apply_to_stream(&mut framed, timeout_duration, &addr)
                 .await?;
         }
         Ok(framed)
@@ -417,6 +421,13 @@ impl StandaloneProxy {
                 }
             }
 
+            if let Some(response) = self.try_handle_config(&command).await {
+                let success = !response.is_error();
+                metrics::front_command(self.cluster.as_ref(), kind_label, success);
+                framed.send(response).await?;
+                continue;
+            }
+
             if let Some(response) = self.try_handle_info(&command) {
                 metrics::front_command(self.cluster.as_ref(), kind_label, true);
                 framed.send(response).await?;
@@ -439,6 +450,10 @@ impl StandaloneProxy {
         }
 
         Ok(())
+    }
+
+    async fn try_handle_config(&self, command: &RedisCommand) -> Option<RespValue> {
+        self.config_manager.handle_command(command).await
     }
 
     fn try_handle_info(&self, command: &RedisCommand) -> Option<RespValue> {
@@ -585,24 +600,25 @@ fn subscription_action_kind(kind: &[u8]) -> Option<SubscriptionKind> {
 
 #[derive(Clone)]
 struct RedisConnector {
-    timeout: Duration,
+    runtime: Arc<ClusterRuntime>,
+    default_timeout_ms: u64,
     reconnect_delay: Duration,
     max_reconnect_delay: Duration,
-    slow_response_threshold: Duration,
     heartbeat_interval: Duration,
     backend_auth: Option<BackendAuth>,
 }
 
 impl RedisConnector {
-    fn new(timeout: Duration, backend_auth: Option<BackendAuth>) -> Self {
-        let slow_response_threshold = timeout
-            .checked_mul(4)
-            .unwrap_or_else(|| Duration::from_secs(4));
+    fn new(
+        runtime: Arc<ClusterRuntime>,
+        default_timeout_ms: u64,
+        backend_auth: Option<BackendAuth>,
+    ) -> Self {
         Self {
-            timeout,
+            runtime,
+            default_timeout_ms,
             reconnect_delay: Duration::from_millis(100),
             max_reconnect_delay: Duration::from_secs(2),
-            slow_response_threshold,
             heartbeat_interval: Duration::from_secs(20),
             backend_auth,
         }
@@ -610,7 +626,8 @@ impl RedisConnector {
 
     async fn open_stream(&self, node: &BackendNode) -> Result<Framed<TcpStream, RespCodec>> {
         let connect_target = node.as_str().to_string();
-        let stream = timeout(self.timeout, TcpStream::connect(&connect_target))
+        let timeout_duration = self.current_timeout();
+        let stream = timeout(timeout_duration, TcpStream::connect(&connect_target))
             .await
             .with_context(|| format!("connect to {} timed out", connect_target))??;
         stream
@@ -631,7 +648,7 @@ impl RedisConnector {
         }
         let mut framed = Framed::new(stream, RespCodec::default());
         if let Some(auth) = &self.backend_auth {
-            auth.apply_to_stream(&mut framed, self.timeout, &connect_target)
+            auth.apply_to_stream(&mut framed, timeout_duration, &connect_target)
                 .await?;
         }
         Ok(framed)
@@ -644,7 +661,8 @@ impl RedisConnector {
     ) -> Result<RedisResponse> {
         let blocking = request.as_blocking();
         let frame = request.to_resp();
-        timeout(self.timeout, framed.send(frame))
+        let timeout_duration = self.current_timeout();
+        timeout(timeout_duration, framed.send(frame))
             .await
             .context("timed out while sending request")??;
 
@@ -654,7 +672,7 @@ impl RedisConnector {
                 Some(Err(err)) => Err(err.into()),
                 None => Err(anyhow!("backend closed connection")),
             },
-            BlockingKind::None => match timeout(self.timeout, framed.next()).await {
+            BlockingKind::None => match timeout(timeout_duration, framed.next()).await {
                 Ok(Some(Ok(response))) => Ok(response),
                 Ok(Some(Err(err))) => Err(err.into()),
                 Ok(None) => Err(anyhow!("backend closed connection")),
@@ -667,11 +685,12 @@ impl RedisConnector {
         use RespValue::{Array, BulkString, SimpleString};
 
         let ping = Array(vec![BulkString(Bytes::from_static(b"PING"))]);
-        timeout(self.timeout, framed.send(ping))
+        let timeout_duration = self.current_timeout();
+        timeout(timeout_duration, framed.send(ping))
             .await
             .context("timed out while sending heartbeat")??;
 
-        match timeout(self.timeout, framed.next()).await {
+        match timeout(timeout_duration, framed.next()).await {
             Ok(Some(Ok(resp))) => match resp {
                 SimpleString(ref data) | BulkString(ref data)
                     if data.eq_ignore_ascii_case(b"PONG") =>
@@ -691,6 +710,16 @@ impl RedisConnector {
             .checked_mul(2)
             .unwrap_or_else(|| self.max_reconnect_delay);
         min(doubled, self.max_reconnect_delay)
+    }
+
+    fn current_timeout(&self) -> Duration {
+        self.runtime.request_timeout(self.default_timeout_ms)
+    }
+
+    fn slow_response_threshold(&self) -> Duration {
+        self.current_timeout()
+            .checked_mul(4)
+            .unwrap_or_else(|| Duration::from_secs(4))
     }
 }
 
@@ -757,10 +786,11 @@ impl Connector<RedisCommand> for RedisConnector {
                     }
 
                     if let Some(ref mut framed) = connection {
+                        let slow_threshold = self.slow_response_threshold();
                         let started = Instant::now();
                         let result = self.execute_request(framed, request).await;
                         let elapsed = started.elapsed();
-                        let is_slow = elapsed > self.slow_response_threshold;
+                        let is_slow = elapsed > slow_threshold;
 
                         match result {
                             Ok(resp) => {

@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use clap::Parser;
 use tokio::net::{TcpListener, TcpStream};
@@ -27,7 +27,7 @@ pub mod standalone;
 pub mod utils;
 
 use crate::cluster::ClusterProxy;
-use crate::config::{CacheType, Config};
+use crate::config::{CacheType, Config, ConfigManager};
 use crate::meta::{derive_meta, scope_with_meta};
 use crate::standalone::StandaloneProxy;
 
@@ -107,6 +107,7 @@ async fn run_async(options: BootstrapOptions) -> Result<()> {
     metrics::register_version(env!("CARGO_PKG_VERSION"));
 
     let config = Config::load(&options.config).await?;
+    let config_manager = Arc::new(ConfigManager::new(options.config.clone(), &config));
 
     info!(
         clusters = config.clusters().len(),
@@ -125,6 +126,9 @@ async fn run_async(options: BootstrapOptions) -> Result<()> {
     let metrics_handles = metrics::spawn_background_tasks(options.metrics_port);
 
     for cluster_cfg in config.clusters().iter().cloned() {
+        let runtime = config_manager
+            .runtime_for(&cluster_cfg.name)
+            .ok_or_else(|| anyhow!("missing runtime state for cluster {}", cluster_cfg.name))?;
         let listen_addr = cluster_cfg.listen_addr.clone();
         let listener = TcpListener::bind(&listen_addr)
             .await
@@ -146,7 +150,11 @@ async fn run_async(options: BootstrapOptions) -> Result<()> {
 
         match cluster_cfg.cache_type {
             CacheType::Redis => {
-                let proxy = Arc::new(StandaloneProxy::new(&cluster_cfg)?);
+                let proxy = Arc::new(StandaloneProxy::new(
+                    &cluster_cfg,
+                    runtime.clone(),
+                    config_manager.clone(),
+                )?);
                 let listener = listener;
                 let meta = meta.clone();
                 let cluster_label = cluster_label.clone();
@@ -155,7 +163,10 @@ async fn run_async(options: BootstrapOptions) -> Result<()> {
                 }));
             }
             CacheType::RedisCluster => {
-                let proxy = Arc::new(ClusterProxy::new(&cluster_cfg).await?);
+                let proxy = Arc::new(
+                    ClusterProxy::new(&cluster_cfg, runtime.clone(), config_manager.clone())
+                        .await?,
+                );
                 let listener = listener;
                 let meta = meta.clone();
                 let cluster_label = cluster_label.clone();
