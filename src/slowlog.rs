@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,10 +14,18 @@ pub struct SlowlogEntry {
     pub command: Vec<Bytes>,
 }
 
-#[derive(Default)]
 struct SlowlogState {
     next_id: i64,
-    entries: VecDeque<SlowlogEntry>,
+    entries: RingBuffer<SlowlogEntry>,
+}
+
+impl SlowlogState {
+    fn new(capacity: usize) -> Self {
+        Self {
+            next_id: 1,
+            entries: RingBuffer::with_capacity(capacity),
+        }
+    }
 }
 
 pub struct Slowlog {
@@ -39,12 +46,10 @@ impl std::fmt::Debug for Slowlog {
 
 impl Slowlog {
     pub fn new(threshold_us: i64, max_len: usize) -> Self {
-        let mut state = SlowlogState::default();
-        state.next_id = 1;
         Self {
             threshold_us: AtomicI64::new(threshold_us),
             max_len: AtomicUsize::new(max_len),
-            state: Mutex::new(state),
+            state: Mutex::new(SlowlogState::new(max_len)),
         }
     }
 
@@ -62,7 +67,8 @@ impl Slowlog {
 
     pub fn set_max_len(&self, value: usize) {
         self.max_len.store(value, Ordering::Relaxed);
-        self.trim_entries(value);
+        let mut state = self.state.lock();
+        state.entries.resize(value);
     }
 
     pub fn reset(&self) {
@@ -76,13 +82,7 @@ impl Slowlog {
 
     pub fn snapshot(&self, count: Option<usize>) -> Vec<SlowlogEntry> {
         let state = self.state.lock();
-        let limit = count.unwrap_or(usize::MAX);
-        state
-            .entries
-            .iter()
-            .take(limit)
-            .cloned()
-            .collect::<Vec<_>>()
+        state.entries.newest(count)
     }
 
     pub fn maybe_record(&self, command: &RedisCommand, duration: Duration) {
@@ -108,24 +108,12 @@ impl Slowlog {
         let mut state = self.state.lock();
         let id = state.next_id;
         state.next_id = state.next_id.saturating_add(1);
-        state.entries.push_front(SlowlogEntry {
+        state.entries.push(SlowlogEntry {
             id,
             timestamp,
             duration_us: clamped_duration,
             command: command_parts,
         });
-
-        let limit = self.max_len();
-        while state.entries.len() > limit {
-            state.entries.pop_back();
-        }
-    }
-
-    fn trim_entries(&self, limit: usize) {
-        let mut state = self.state.lock();
-        while state.entries.len() > limit {
-            state.entries.pop_back();
-        }
     }
 }
 
@@ -209,4 +197,125 @@ fn slowlog_value_error() -> RespValue {
     RespValue::Error(Bytes::from_static(
         b"ERR value is not an integer or out of range",
     ))
+}
+
+struct RingBuffer<T> {
+    buf: Vec<T>,
+    capacity: usize,
+    next: usize,
+    len: usize,
+}
+
+impl<T> RingBuffer<T> {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buf: Vec::with_capacity(capacity),
+            capacity,
+            next: 0,
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, value: T) {
+        if self.capacity == 0 {
+            return;
+        }
+        if self.buf.len() < self.capacity {
+            if self.next == self.buf.len() {
+                self.buf.push(value);
+            } else {
+                self.buf[self.next] = value;
+            }
+        } else {
+            self.buf[self.next] = value;
+        }
+        self.next = (self.next + 1) % self.capacity;
+        if self.len < self.capacity {
+            self.len += 1;
+        }
+    }
+
+    fn clear(&mut self) {
+        self.buf.clear();
+        self.next = 0;
+        self.len = 0;
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl<T: Clone> RingBuffer<T> {
+    fn newest(&self, count: Option<usize>) -> Vec<T> {
+        if self.len == 0 || self.capacity == 0 {
+            return Vec::new();
+        }
+        let limit = count.unwrap_or(self.len).min(self.len);
+        let mut result = Vec::with_capacity(limit);
+        let mut idx = (self.next + self.capacity - 1) % self.capacity;
+        for _ in 0..limit {
+            if idx >= self.buf.len() {
+                break;
+            }
+            result.push(self.buf[idx].clone());
+            if result.len() == limit {
+                break;
+            }
+            if self.len == 1 {
+                break;
+            }
+            if idx == 0 {
+                idx = (idx + self.capacity - 1) % self.capacity;
+            } else {
+                idx -= 1;
+            }
+        }
+        result
+    }
+
+    fn resize(&mut self, new_capacity: usize) {
+        if new_capacity == self.capacity {
+            return;
+        }
+
+        if new_capacity == 0 {
+            self.clear();
+            self.capacity = 0;
+            return;
+        }
+
+        let entries = {
+            if self.len == 0 {
+                Vec::new()
+            } else {
+                let mut collected = Vec::new();
+                let limit = self.len.min(new_capacity);
+                let mut idx = (self.next + self.capacity - 1) % self.capacity;
+                for _ in 0..limit {
+                    if idx >= self.buf.len() {
+                        break;
+                    }
+                    collected.push(self.buf[idx].clone());
+                    if collected.len() == limit {
+                        break;
+                    }
+                    if idx == 0 {
+                        idx = (idx + self.capacity - 1) % self.capacity;
+                    } else {
+                        idx -= 1;
+                    }
+                }
+                collected
+            }
+        };
+
+        self.buf = Vec::with_capacity(new_capacity);
+        self.capacity = new_capacity;
+        self.next = 0;
+        self.len = 0;
+        for entry in entries.into_iter().rev() {
+            self.push(entry);
+        }
+    }
 }
