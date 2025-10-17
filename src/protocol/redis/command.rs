@@ -161,6 +161,14 @@ impl RedisCommand {
         self.total_tracker.take();
     }
 
+    pub fn kind(&self) -> CommandKind {
+        command_kind(self.command_name())
+    }
+
+    pub fn kind_label(&self) -> &'static str {
+        self.kind().as_str()
+    }
+
     pub fn is_read_only(&self) -> bool {
         matches!(command_kind(self.command_name()), CommandKind::Read)
     }
@@ -220,6 +228,16 @@ pub enum CommandKind {
     Read,
     Write,
     Other,
+}
+
+impl CommandKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CommandKind::Read => "read",
+            CommandKind::Write => "write",
+            CommandKind::Other => "other",
+        }
+    }
 }
 
 fn command_kind(cmd: &[u8]) -> CommandKind {

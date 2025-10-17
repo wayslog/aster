@@ -1,5 +1,6 @@
+use std::cmp::min;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -8,9 +9,11 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesOrdered;
 use futures::{SinkExt, StreamExt};
 use md5::Digest;
+#[cfg(any(unix, windows))]
+use socket2::{SockRef, TcpKeepalive};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, timeout};
+use tokio::time::{interval, sleep, timeout, MissedTickBehavior};
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
@@ -27,6 +30,7 @@ use crate::utils::trim_hash_tag;
 
 const DEFAULT_TIMEOUT_MS: u64 = 1_000;
 const VIRTUAL_NODE_FACTOR: usize = 40;
+const FRONT_TCP_KEEPALIVE: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 struct NodeEntry {
@@ -191,12 +195,35 @@ impl StandaloneProxy {
         let (mut front_sink, mut front_stream) = front.split();
 
         let mut continue_running = true;
+        let mut channel_count: i64 = 0;
+        let mut pattern_count: i64 = 0;
+        metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+        metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
         while continue_running {
             tokio::select! {
                 backend_msg = backend.next() => {
                     match backend_msg {
                         Some(Ok(resp)) => {
-                            if let Some(count) = subscription_count(&resp) {
+                            if let Some((kind, count)) = subscription_count(&resp) {
+                                match kind {
+                                    SubscriptionKind::Channel | SubscriptionKind::Unsubscribe => {
+                                        channel_count = count.max(0);
+                                        metrics::subscription_active(
+                                            self.cluster.as_ref(),
+                                            "channel",
+                                            channel_count as usize,
+                                        );
+                                    }
+                                    SubscriptionKind::Pattern | SubscriptionKind::Punsub => {
+                                        pattern_count = count.max(0);
+                                        metrics::subscription_active(
+                                            self.cluster.as_ref(),
+                                            "pattern",
+                                            pattern_count as usize,
+                                        );
+                                    }
+                                    SubscriptionKind::None => {}
+                                }
                                 front_sink.send(resp.clone()).await?;
                                 if count == 0 {
                                     continue_running = false;
@@ -205,8 +232,17 @@ impl StandaloneProxy {
                                 front_sink.send(resp).await?;
                             }
                         }
-                        Some(Err(err)) => return Err(err.into()),
-                        None => return Ok(None),
+                        Some(Err(err)) => {
+                            metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+                            metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
+                            metrics::front_error(self.cluster.as_ref(), "subscription_stream");
+                            return Err(err.into());
+                        }
+                        None => {
+                            metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+                            metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
+                            return Ok(None);
+                        }
                     }
                 }
                 front_msg = front_stream.next() => {
@@ -216,6 +252,7 @@ impl StandaloneProxy {
                                 Ok(cmd) => cmd,
                                 Err(err) => {
                                     metrics::global_error_incr();
+                                    metrics::front_error(self.cluster.as_ref(), "parse");
                                     front_sink
                                         .send(RespValue::Error(Bytes::from(format!("ERR {err}"))))
                                         .await?;
@@ -234,17 +271,37 @@ impl StandaloneProxy {
                                             b"ERR only subscribe/unsubscribe allowed in subscription mode",
                                         )))
                                         .await?;
+                                    metrics::front_error(self.cluster.as_ref(), "subscription_mode");
                                 }
                             }
                         }
-                        Some(Err(err)) => return Err(err.into()),
-                        None => return Ok(None),
+                        Some(Err(err)) => {
+                            metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+                            metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
+                            metrics::front_error(self.cluster.as_ref(), "subscription_stream");
+                            return Err(err.into());
+                        }
+                        None => {
+                            metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+                            metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
+                            return Ok(None);
+                        }
                     }
                 }
             }
         }
 
         let front = front_sink.reunite(front_stream)?;
+        metrics::subscription_active(
+            self.cluster.as_ref(),
+            "channel",
+            channel_count.max(0) as usize,
+        );
+        metrics::subscription_active(
+            self.cluster.as_ref(),
+            "pattern",
+            pattern_count.max(0) as usize,
+        );
         Ok(Some(front.into_parts()))
     }
 
@@ -271,6 +328,19 @@ impl StandaloneProxy {
         socket
             .set_nodelay(true)
             .context("failed to set TCP_NODELAY")?;
+        #[cfg(any(unix, windows))]
+        {
+            let keepalive = TcpKeepalive::new()
+                .with_time(FRONT_TCP_KEEPALIVE)
+                .with_interval(FRONT_TCP_KEEPALIVE);
+            if let Err(err) = SockRef::from(&socket).set_tcp_keepalive(&keepalive) {
+                warn!(
+                    cluster = %self.cluster,
+                    error = %err,
+                    "failed to enable frontend TCP keepalive"
+                );
+            }
+        }
         let client_id = ClientId::new();
         let _guard = FrontConnectionGuard::new(&self.cluster);
 
@@ -282,6 +352,7 @@ impl StandaloneProxy {
                 Ok(frame) => frame,
                 Err(err) => {
                     metrics::global_error_incr();
+                    metrics::front_error(self.cluster.as_ref(), "front_stream");
                     return Err(err.into());
                 }
             };
@@ -290,6 +361,8 @@ impl StandaloneProxy {
                 Ok(cmd) => cmd,
                 Err(err) => {
                     metrics::global_error_incr();
+                    metrics::front_error(self.cluster.as_ref(), "parse");
+                    metrics::front_command(self.cluster.as_ref(), "invalid", false);
                     let message = format!("ERR {err}");
                     let resp = RespValue::Error(Bytes::copy_from_slice(message.as_bytes()));
                     framed.send(resp).await?;
@@ -311,17 +384,28 @@ impl StandaloneProxy {
                 }
             }
 
+            let kind_label = command.kind_label();
             if matches!(
                 command.as_subscription(),
                 SubscriptionKind::Channel | SubscriptionKind::Pattern
             ) {
                 let parts = framed.into_parts();
-                match self.run_subscription(parts, client_id, command).await? {
-                    Some(parts) => {
+                let subscription = self.run_subscription(parts, client_id, command).await;
+                match subscription {
+                    Ok(Some(parts)) => {
+                        metrics::front_command(self.cluster.as_ref(), kind_label, true);
                         framed = Framed::from_parts(parts);
                         continue;
                     }
-                    None => return Ok(()),
+                    Ok(None) => {
+                        metrics::front_command(self.cluster.as_ref(), kind_label, true);
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        metrics::front_command(self.cluster.as_ref(), kind_label, false);
+                        metrics::front_error(self.cluster.as_ref(), "subscription_proxy");
+                        return Err(err);
+                    }
                 }
             }
 
@@ -329,11 +413,14 @@ impl StandaloneProxy {
                 Ok(resp) => resp,
                 Err(err) => {
                     metrics::global_error_incr();
+                    metrics::front_error(self.cluster.as_ref(), "dispatch");
                     let message = format!("ERR {err}");
                     RespValue::Error(Bytes::copy_from_slice(message.as_bytes()))
                 }
             };
 
+            let success = !matches!(response, RespValue::Error(_));
+            metrics::front_command(self.cluster.as_ref(), kind_label, success);
             framed.send(response).await?;
         }
 
@@ -435,7 +522,7 @@ fn hash_key(data: &[u8]) -> u64 {
     ])
 }
 
-fn subscription_count(resp: &RespValue) -> Option<i64> {
+fn subscription_count(resp: &RespValue) -> Option<(SubscriptionKind, i64)> {
     if let RespValue::Array(items) = resp {
         if items.len() >= 3 {
             let count = match &items[2] {
@@ -445,8 +532,8 @@ fn subscription_count(resp: &RespValue) -> Option<i64> {
             }?;
 
             if let RespValue::SimpleString(kind) | RespValue::BulkString(kind) = &items[0] {
-                if matches_subscribe_kind(kind.as_ref()) {
-                    return Some(count);
+                if let Some(mapped) = subscription_action_kind(kind.as_ref()) {
+                    return Some((mapped, count));
                 }
             }
         }
@@ -454,25 +541,37 @@ fn subscription_count(resp: &RespValue) -> Option<i64> {
     None
 }
 
-fn matches_subscribe_kind(kind: &[u8]) -> bool {
-    matches!(
-        kind,
-        b"subscribe" | b"unsubscribe" | b"psubscribe" | b"punsubscribe"
-    )
+fn subscription_action_kind(kind: &[u8]) -> Option<SubscriptionKind> {
+    match kind {
+        b"subscribe" => Some(SubscriptionKind::Channel),
+        b"psubscribe" => Some(SubscriptionKind::Pattern),
+        b"unsubscribe" => Some(SubscriptionKind::Unsubscribe),
+        b"punsubscribe" => Some(SubscriptionKind::Punsub),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
 struct RedisConnector {
     timeout: Duration,
     reconnect_delay: Duration,
+    max_reconnect_delay: Duration,
+    slow_response_threshold: Duration,
+    heartbeat_interval: Duration,
     backend_auth: Option<BackendAuth>,
 }
 
 impl RedisConnector {
     fn new(timeout: Duration, backend_auth: Option<BackendAuth>) -> Self {
+        let slow_response_threshold = timeout
+            .checked_mul(4)
+            .unwrap_or_else(|| Duration::from_secs(4));
         Self {
             timeout,
             reconnect_delay: Duration::from_millis(100),
+            max_reconnect_delay: Duration::from_secs(2),
+            slow_response_threshold,
+            heartbeat_interval: Duration::from_secs(20),
             backend_auth,
         }
     }
@@ -485,6 +584,19 @@ impl RedisConnector {
         stream
             .set_nodelay(true)
             .with_context(|| format!("failed to set TCP_NODELAY on {}", connect_target))?;
+        #[cfg(any(unix, windows))]
+        {
+            let keepalive = TcpKeepalive::new()
+                .with_time(self.heartbeat_interval)
+                .with_interval(self.heartbeat_interval);
+            if let Err(err) = SockRef::from(&stream).set_tcp_keepalive(&keepalive) {
+                warn!(
+                    backend = %connect_target,
+                    error = %err,
+                    "failed to enable backend TCP keepalive"
+                );
+            }
+        }
         let mut framed = Framed::new(stream, RespCodec::default());
         if let Some(auth) = &self.backend_auth {
             auth.apply_to_stream(&mut framed, self.timeout, &connect_target)
@@ -518,6 +630,36 @@ impl RedisConnector {
             },
         }
     }
+
+    async fn heartbeat(&self, framed: &mut Framed<TcpStream, RespCodec>) -> Result<()> {
+        use RespValue::{Array, BulkString, SimpleString};
+
+        let ping = Array(vec![BulkString(Bytes::from_static(b"PING"))]);
+        timeout(self.timeout, framed.send(ping))
+            .await
+            .context("timed out while sending heartbeat")??;
+
+        match timeout(self.timeout, framed.next()).await {
+            Ok(Some(Ok(resp))) => match resp {
+                SimpleString(ref data) | BulkString(ref data)
+                    if data.eq_ignore_ascii_case(b"PONG") =>
+                {
+                    Ok(())
+                }
+                other => Err(anyhow!("unexpected heartbeat reply: {:?}", other)),
+            },
+            Ok(Some(Err(err))) => Err(err.into()),
+            Ok(None) => Err(anyhow!("backend closed connection during heartbeat")),
+            Err(_) => Err(anyhow!("timed out waiting for heartbeat reply")),
+        }
+    }
+
+    fn increase_delay(&self, current: Duration) -> Duration {
+        let doubled = current
+            .checked_mul(2)
+            .unwrap_or_else(|| self.max_reconnect_delay);
+        min(doubled, self.max_reconnect_delay)
+    }
 }
 
 #[async_trait]
@@ -530,38 +672,158 @@ impl Connector<RedisCommand> for RedisConnector {
     ) {
         info!(cluster = %cluster, backend = %node.as_str(), "starting backend session");
         let mut connection: Option<Framed<TcpStream, RespCodec>> = None;
+        let mut heartbeat = interval(self.heartbeat_interval);
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let mut current_delay = self.reconnect_delay;
 
-        while let Some(command) = rx.recv().await {
-            if connection.is_none() {
-                match self.open_stream(&node).await {
-                    Ok(stream) => {
-                        connection = Some(stream);
+        loop {
+            tokio::select! {
+                biased;
+
+                cmd_opt = rx.recv() => {
+                    let SessionCommand { request, respond_to } = match cmd_opt {
+                        Some(cmd) => cmd,
+                        None => break,
+                    };
+
+                    if connection.is_none() {
+                        let attempt_start = Instant::now();
+                        match self.open_stream(&node).await {
+                            Ok(stream) => {
+                                metrics::backend_probe_duration(
+                                    &cluster,
+                                    node.as_str(),
+                                    "connect",
+                                    attempt_start.elapsed(),
+                                );
+                                metrics::backend_probe_result(&cluster, node.as_str(), "connect", true);
+                                connection = Some(stream);
+                                current_delay = self.reconnect_delay;
+                            }
+                            Err(err) => {
+                                let elapsed = attempt_start.elapsed();
+                                metrics::backend_probe_duration(
+                                    &cluster,
+                                    node.as_str(),
+                                    "connect",
+                                    elapsed,
+                                );
+                                metrics::backend_probe_result(&cluster, node.as_str(), "connect", false);
+                                metrics::backend_error(&cluster, node.as_str(), "connect");
+                                warn!(
+                                    cluster = %cluster,
+                                    backend = %node.as_str(),
+                                    error = %err,
+                                    "failed to establish backend connection"
+                                );
+                                let _ = respond_to.send(Err(err));
+                                current_delay = self.increase_delay(current_delay);
+                                sleep(current_delay).await;
+                                continue;
+                            }
+                        }
                     }
-                    Err(err) => {
-                        warn!(
-                            cluster = %cluster,
-                            backend = %node.as_str(),
-                            error = %err,
-                            "failed to establish backend connection"
-                        );
-                        let _ = command.respond_to.send(Err(err));
-                        sleep(self.reconnect_delay).await;
-                        continue;
+
+                    if let Some(ref mut framed) = connection {
+                        let started = Instant::now();
+                        let result = self.execute_request(framed, request).await;
+                        let elapsed = started.elapsed();
+                        let is_slow = elapsed > self.slow_response_threshold;
+
+                        match result {
+                            Ok(resp) => {
+                                let mut result_label = if matches!(resp, RespValue::Error(_)) {
+                                    "resp_error"
+                                } else {
+                                    "ok"
+                                };
+                                if is_slow {
+                                    metrics::backend_error(&cluster, node.as_str(), "slow");
+                                    warn!(
+                                        cluster = %cluster,
+                                        backend = %node.as_str(),
+                                        elapsed_ms = elapsed.as_millis() as u64,
+                                        "standalone backend response slow"
+                                    );
+                                    let increased = current_delay
+                                        .checked_add(self.reconnect_delay)
+                                        .unwrap_or(self.max_reconnect_delay);
+                                    current_delay = min(increased, self.max_reconnect_delay);
+                                    result_label = "slow";
+                                } else {
+                                    current_delay = self.reconnect_delay;
+                                }
+                                metrics::backend_request_result(
+                                    &cluster,
+                                    node.as_str(),
+                                    result_label,
+                                );
+                                if respond_to.send(Ok(resp)).is_err() {
+                                    debug!(
+                                        cluster = %cluster,
+                                        backend = %node.as_str(),
+                                        "standalone backend response dropped (client closed)"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                let kind = classify_backend_error(&err);
+                                metrics::backend_request_result(&cluster, node.as_str(), kind);
+                                metrics::backend_error(&cluster, node.as_str(), kind);
+                                let _ = respond_to.send(Err(err));
+                                connection = None;
+                                current_delay = self.increase_delay(current_delay);
+                                sleep(current_delay).await;
+                            }
+                        }
                     }
                 }
-            }
-
-            if let Some(ref mut framed) = connection {
-                let result = self.execute_request(framed, command.request).await;
-                let is_err = result.is_err();
-                let _ = command.respond_to.send(result);
-                if is_err {
-                    connection = None;
-                    sleep(self.reconnect_delay).await;
+                _ = heartbeat.tick(), if connection.is_some() => {
+                    if let Some(ref mut framed) = connection {
+                        let start = Instant::now();
+                        let result = self.heartbeat(framed).await;
+                        metrics::backend_probe_duration(
+                            &cluster,
+                            node.as_str(),
+                            "heartbeat",
+                            start.elapsed(),
+                        );
+                        match result {
+                            Ok(()) => {
+                                metrics::backend_heartbeat(&cluster, node.as_str(), true);
+                                current_delay = self.reconnect_delay;
+                            }
+                            Err(err) => {
+                                metrics::backend_error(&cluster, node.as_str(), "heartbeat");
+                                metrics::backend_heartbeat(&cluster, node.as_str(), false);
+                                warn!(
+                                    cluster = %cluster,
+                                    backend = %node.as_str(),
+                                    error = %err,
+                                    "standalone backend heartbeat failed"
+                                );
+                                connection = None;
+                                current_delay = self.increase_delay(current_delay);
+                            }
+                        }
+                    }
                 }
             }
         }
 
         debug!(cluster = %cluster, backend = %node.as_str(), "backend session terminated");
+    }
+}
+
+fn classify_backend_error(err: &anyhow::Error) -> &'static str {
+    let message = err.to_string();
+    if message.contains("timed out") {
+        "timeout"
+    } else if message.contains("closed connection") {
+        "closed"
+    } else if message.contains("heartbeat") {
+        "heartbeat"
+    } else {
+        "execute"
     }
 }

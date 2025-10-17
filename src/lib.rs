@@ -188,12 +188,14 @@ where
                 tokio::spawn(async move {
                     if let Err(err) = proxy.handle(socket).await {
                         metrics::global_error_incr();
+                        metrics::front_error(cluster_name.as_ref(), "connection");
                         warn!(cluster = %cluster_name, peer = %addr, error = %err, "connection closed with error");
                     }
                 });
             }
             Err(err) => {
                 metrics::global_error_incr();
+                metrics::front_error(cluster.as_ref(), "accept");
                 warn!(cluster = %cluster, error = %err, "failed to accept incoming connection");
             }
         }

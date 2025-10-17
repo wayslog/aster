@@ -70,6 +70,126 @@ static GLOBAL_ERROR: Lazy<IntCounter> = Lazy::new(|| {
         .expect("global error counter registration must succeed")
 });
 
+static BACKEND_ERRORS: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_backend_error_total",
+            "count of backend errors by cluster/node/kind"
+        ),
+        &["cluster", "backend", "kind"]
+    )
+    .expect("backend error counter registration must succeed")
+});
+
+static BACKEND_HEARTBEATS: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_backend_heartbeat_total",
+            "backend heartbeat results grouped by status"
+        ),
+        &["cluster", "backend", "status"]
+    )
+    .expect("backend heartbeat counter registration must succeed")
+});
+
+static BACKEND_HEALTH: Lazy<GaugeVec> = Lazy::new(|| {
+    register_gauge_vec!(
+        opts!(
+            "aster_backend_health_status",
+            "backend health state derived from heartbeat (1 healthy, 0 unhealthy)"
+        ),
+        &["cluster", "backend"]
+    )
+    .expect("backend health gauge registration must succeed")
+});
+
+static BACKEND_PROBES: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_backend_probe_total",
+            "count of backend probes grouped by type and result"
+        ),
+        &["cluster", "backend", "probe", "result"]
+    )
+    .expect("backend probe counter registration must succeed")
+});
+
+static BACKEND_PROBE_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    register_histogram_vec!(
+        "aster_backend_probe_duration",
+        "backend probe duration in microseconds",
+        &["cluster", "backend", "probe"],
+        vec![1_000.0, 10_000.0, 100_000.0, 1_000_000.0, 10_000_000.0]
+    )
+    .expect("backend probe duration histogram registration must succeed")
+});
+
+static FRONT_ERRORS: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_front_error_total",
+            "count of front errors grouped by cluster and kind"
+        ),
+        &["cluster", "kind"]
+    )
+    .expect("front error counter registration must succeed")
+});
+
+static POOL_SESSIONS: Lazy<GaugeVec> = Lazy::new(|| {
+    register_gauge_vec!(
+        opts!(
+            "aster_backend_pool_sessions",
+            "current backend pool sessions grouped by kind"
+        ),
+        &["cluster", "backend", "kind"]
+    )
+    .expect("backend pool session gauge registration must succeed")
+});
+
+static POOL_EXCLUSIVE_IDLE: Lazy<GaugeVec> = Lazy::new(|| {
+    register_gauge_vec!(
+        opts!(
+            "aster_backend_pool_exclusive_idle",
+            "exclusive connections available in pool"
+        ),
+        &["cluster", "backend"]
+    )
+    .expect("backend exclusive idle gauge registration must succeed")
+});
+
+static SUBSCRIPTIONS: Lazy<GaugeVec> = Lazy::new(|| {
+    register_gauge_vec!(
+        opts!(
+            "aster_subscription_active",
+            "active subscription counts grouped by scope"
+        ),
+        &["cluster", "scope"]
+    )
+    .expect("subscription gauge registration must succeed")
+});
+
+static FRONT_COMMAND_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_front_command_total",
+            "total front commands processed grouped by kind and result"
+        ),
+        &["cluster", "kind", "result"]
+    )
+    .expect("front command counter registration must succeed")
+});
+
+static BACKEND_REQUEST_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_backend_request_total",
+            "backend request results grouped by backend and outcome"
+        ),
+        &["cluster", "backend", "result"]
+    )
+    .expect("backend request counter registration must succeed")
+});
+
 static TOTAL_TIMER: Lazy<HistogramVec> = Lazy::new(|| {
     register_histogram_vec!(
         "aster_total_timer",
@@ -109,6 +229,89 @@ pub fn front_conn_close(cluster: &str) {
 /// Increment the global error counter.
 pub fn global_error_incr() {
     GLOBAL_ERROR.inc();
+}
+
+/// Record a backend error with the provided classification.
+pub fn backend_error(cluster: &str, backend: &str, kind: &str) {
+    BACKEND_ERRORS
+        .with_label_values(&[cluster, backend, kind])
+        .inc();
+}
+
+/// Record the outcome of a backend probe.
+pub fn backend_probe_result(cluster: &str, backend: &str, probe: &str, ok: bool) {
+    let result = if ok { "ok" } else { "fail" };
+    BACKEND_PROBES
+        .with_label_values(&[cluster, backend, probe, result])
+        .inc();
+    BACKEND_HEALTH
+        .with_label_values(&[cluster, backend])
+        .set(if ok { 1.0 } else { 0.0 });
+}
+
+/// Record the duration of a backend probe.
+pub fn backend_probe_duration(cluster: &str, backend: &str, probe: &str, elapsed: Duration) {
+    let micros = elapsed.as_secs_f64() * 1_000_000.0;
+    BACKEND_PROBE_DURATION
+        .with_label_values(&[cluster, backend, probe])
+        .observe(micros);
+}
+
+/// Record a categorized frontend error.
+pub fn front_error(cluster: &str, kind: &str) {
+    FRONT_ERRORS.with_label_values(&[cluster, kind]).inc();
+}
+
+/// Increment session gauge when a pool session is opened.
+pub fn pool_session_open(cluster: &str, backend: &str, kind: &str) {
+    POOL_SESSIONS
+        .with_label_values(&[cluster, backend, kind])
+        .inc();
+}
+
+/// Decrement session gauge when a pool session is closed.
+pub fn pool_session_close(cluster: &str, backend: &str, kind: &str) {
+    POOL_SESSIONS
+        .with_label_values(&[cluster, backend, kind])
+        .dec();
+}
+
+/// Update the number of idle exclusive connections for a backend.
+pub fn pool_exclusive_idle(cluster: &str, backend: &str, count: usize) {
+    POOL_EXCLUSIVE_IDLE
+        .with_label_values(&[cluster, backend])
+        .set(count as f64);
+}
+
+/// Update active subscription counts.
+pub fn subscription_active(cluster: &str, scope: &str, count: usize) {
+    SUBSCRIPTIONS
+        .with_label_values(&[cluster, scope])
+        .set(count as f64);
+}
+
+/// Record a processed frontend command.
+pub fn front_command(cluster: &str, kind: &str, success: bool) {
+    let result = if success { "ok" } else { "fail" };
+    FRONT_COMMAND_TOTAL
+        .with_label_values(&[cluster, kind, result])
+        .inc();
+}
+
+/// Record a backend request outcome.
+pub fn backend_request_result(cluster: &str, backend: &str, result: &str) {
+    BACKEND_REQUEST_TOTAL
+        .with_label_values(&[cluster, backend, result])
+        .inc();
+}
+
+/// Record the outcome of a backend heartbeat check.
+pub fn backend_heartbeat(cluster: &str, backend: &str, ok: bool) {
+    let status = if ok { "ok" } else { "fail" };
+    backend_probe_result(cluster, backend, "heartbeat", ok);
+    BACKEND_HEARTBEATS
+        .with_label_values(&[cluster, backend, status])
+        .inc();
 }
 
 /// Increment the thread counter.

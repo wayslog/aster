@@ -1,6 +1,6 @@
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -9,9 +9,11 @@ use futures::future::BoxFuture;
 use futures::stream::FuturesOrdered;
 use futures::{SinkExt, StreamExt};
 use rand::{seq::SliceRandom, thread_rng};
+#[cfg(any(unix, windows))]
+use socket2::{SockRef, TcpKeepalive};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch};
-use tokio::time::timeout;
+use tokio::time::{interval, sleep, timeout, MissedTickBehavior};
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
@@ -30,6 +32,7 @@ const FETCH_INTERVAL: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT_MS: u64 = 1_000;
 const MAX_REDIRECTS: u8 = 5;
 const PIPELINE_LIMIT: usize = 32;
+const FRONT_TCP_KEEPALIVE: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 struct PendingSubscription {
@@ -103,6 +106,19 @@ impl ClusterProxy {
         socket
             .set_nodelay(true)
             .context("failed to set TCP_NODELAY")?;
+        #[cfg(any(unix, windows))]
+        {
+            let keepalive = TcpKeepalive::new()
+                .with_time(FRONT_TCP_KEEPALIVE)
+                .with_interval(FRONT_TCP_KEEPALIVE);
+            if let Err(err) = SockRef::from(&socket).set_tcp_keepalive(&keepalive) {
+                warn!(
+                    cluster = %self.cluster,
+                    error = %err,
+                    "failed to enable frontend TCP keepalive"
+                );
+            }
+        }
         let client_id = ClientId::new();
         let _guard = FrontConnectionGuard::new(&self.cluster);
 
@@ -140,6 +156,7 @@ impl ClusterProxy {
                                     }
 
                                     if matches!(cmd.as_subscription(), SubscriptionKind::Channel | SubscriptionKind::Pattern) {
+                                        let kind_label = cmd.kind_label();
                                         if cmd.args().len() <= 1 {
                                             metrics::global_error_incr();
                                             let command_name = String::from_utf8_lossy(cmd.command_name()).to_ascii_lowercase();
@@ -148,6 +165,12 @@ impl ClusterProxy {
                                                 command_name
                                             ));
                                             sink.send(RespValue::Error(message)).await?;
+                                            metrics::front_command(
+                                                self.cluster.as_ref(),
+                                                kind_label,
+                                                false,
+                                            );
+                                            metrics::front_error(self.cluster.as_ref(), "subscription_arity");
                                             continue;
                                         }
                                         let initial_slot = match subscription_slot_for_command(
@@ -162,6 +185,12 @@ impl ClusterProxy {
                                                     b"ERR subscription channels must hash to the same slot",
                                                 )))
                                                 .await?;
+                                                metrics::front_command(
+                                                    self.cluster.as_ref(),
+                                                    kind_label,
+                                                    false,
+                                                );
+                                                metrics::front_error(self.cluster.as_ref(), "subscription_slot");
                                                 continue;
                                             }
                                             Err(_) => {
@@ -170,6 +199,12 @@ impl ClusterProxy {
                                                     b"ERR subscription channels must hash to the same slot",
                                                 )))
                                                 .await?;
+                                                metrics::front_command(
+                                                    self.cluster.as_ref(),
+                                                    kind_label,
+                                                    false,
+                                                );
+                                                metrics::front_error(self.cluster.as_ref(), "subscription_slot");
                                                 continue;
                                             }
                                         };
@@ -185,15 +220,20 @@ impl ClusterProxy {
                                         let framed_combined = sink
                                             .reunite(raw_stream)
                                             .map_err(|_| anyhow!("failed to reunite frame"))?;
-                                        match self
+                                        let subscription = self
                                             .run_subscription(
                                                 framed_combined.into_parts(),
                                                 cmd,
                                                 initial_slot,
                                             )
-                                            .await?
-                                        {
-                                            Some(parts) => {
+                                            .await;
+                                        match subscription {
+                                            Ok(Some(parts)) => {
+                                                metrics::front_command(
+                                                    self.cluster.as_ref(),
+                                                    kind_label,
+                                                    true,
+                                                );
                                                 let framed_new = Framed::from_parts(parts);
                                                 let (new_sink, new_stream) = framed_new.split();
                                                 sink = new_sink;
@@ -203,7 +243,23 @@ impl ClusterProxy {
                                                 stream_closed = false;
                                                 continue;
                                             }
-                                            None => return Ok(()),
+                                            Ok(None) => {
+                                                metrics::front_command(
+                                                    self.cluster.as_ref(),
+                                                    kind_label,
+                                                    true,
+                                                );
+                                                return Ok(());
+                                            }
+                                            Err(err) => {
+                                                metrics::front_command(
+                                                    self.cluster.as_ref(),
+                                                    kind_label,
+                                                    false,
+                                                );
+                                                metrics::front_error(self.cluster.as_ref(), "subscription_proxy");
+                                                return Err(err);
+                                            }
                                         }
                                     }
                                     let guard = self.prepare_dispatch(client_id, cmd);
@@ -212,6 +268,8 @@ impl ClusterProxy {
                                 }
                                 Err(err) => {
                                     metrics::global_error_incr();
+                                    metrics::front_error(self.cluster.as_ref(), "parse");
+                                    metrics::front_command(self.cluster.as_ref(), "invalid", false);
                                     let message = Bytes::from(format!("ERR {err}"));
                                     let fut = async move { RespValue::Error(message) };
                                     pending.push_back(Box::pin(fut));
@@ -221,6 +279,7 @@ impl ClusterProxy {
                         }
                         Some(Err(err)) => {
                             metrics::global_error_incr();
+                            metrics::front_error(self.cluster.as_ref(), "front_stream");
                             return Err(err);
                         }
                         None => {
@@ -257,6 +316,8 @@ impl ClusterProxy {
         let mut pending: VecDeque<PendingSubscription> = VecDeque::new();
         let mut channels: HashSet<Bytes> = HashSet::new();
         let mut patterns: HashSet<Bytes> = HashSet::new();
+        metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+        metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
 
         let ack_expected = std::cmp::max(
             1,
@@ -345,6 +406,16 @@ impl ClusterProxy {
 
                             let is_ack =
                                 apply_subscription_membership(&resp, &mut channels, &mut patterns);
+                            metrics::subscription_active(
+                                self.cluster.as_ref(),
+                                "channel",
+                                channels.len(),
+                            );
+                            metrics::subscription_active(
+                                self.cluster.as_ref(),
+                                "pattern",
+                                patterns.len(),
+                            );
                             if is_ack {
                                 if let Some(front_cmd) = pending.front_mut() {
                                     if front_cmd.ack_remaining > 0 {
@@ -356,7 +427,7 @@ impl ClusterProxy {
                                 }
                             }
 
-                            if let Some(count) = subscription_count(&resp) {
+                            if let Some((_kind, count)) = subscription_count(&resp) {
                                 front_sink.send(resp.clone()).await?;
                                 if count == 0 {
                                     continue_running = false;
@@ -365,8 +436,17 @@ impl ClusterProxy {
                                 front_sink.send(resp).await?;
                             }
                         }
-                        Some(Err(err)) => return Err(err.into()),
-                        None => return Ok(None),
+                        Some(Err(err)) => {
+                            metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+                            metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
+                            metrics::front_error(self.cluster.as_ref(), "subscription_stream");
+                            return Err(err.into());
+                        }
+                        None => {
+                            metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+                            metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
+                            return Ok(None);
+                        }
                     }
                 }
                 front_msg = front_stream.next() => {
@@ -376,6 +456,7 @@ impl ClusterProxy {
                                 Ok(cmd) => cmd,
                                 Err(err) => {
                                     metrics::global_error_incr();
+                                    metrics::front_error(self.cluster.as_ref(), "parse");
                                     front_sink
                                         .send(RespValue::Error(Bytes::from(format!("ERR {err}"))))
                                         .await?;
@@ -396,6 +477,7 @@ impl ClusterProxy {
                                             command_name
                                         ));
                                         front_sink.send(RespValue::Error(message)).await?;
+                                        metrics::front_error(self.cluster.as_ref(), "subscription_arity");
                                         continue;
                                     }
                                 }
@@ -407,6 +489,7 @@ impl ClusterProxy {
                                             b"ERR only subscribe/unsubscribe allowed in subscription mode",
                                         )))
                                         .await?;
+                                    metrics::front_error(self.cluster.as_ref(), "subscription_mode");
                                     continue;
                                 }
                             }
@@ -424,6 +507,7 @@ impl ClusterProxy {
                                             b"ERR subscription channels must hash to the same slot",
                                         )))
                                         .await?;
+                                    metrics::front_error(self.cluster.as_ref(), "subscription_slot");
                                     continue;
                                 }
                             };
@@ -436,6 +520,7 @@ impl ClusterProxy {
                                                 b"ERR subscription channels must hash to the same slot",
                                             )))
                                             .await?;
+                                        metrics::front_error(self.cluster.as_ref(), "subscription_slot");
                                         continue;
                                     }
                                 } else {
@@ -453,14 +538,25 @@ impl ClusterProxy {
                                 ack_remaining: ack_expected,
                             });
                         }
-                        Some(Err(err)) => return Err(err.into()),
-                        None => return Ok(None),
+                        Some(Err(err)) => {
+                            metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+                            metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
+                            metrics::front_error(self.cluster.as_ref(), "subscription_stream");
+                            return Err(err.into());
+                        }
+                        None => {
+                            metrics::subscription_active(self.cluster.as_ref(), "channel", 0);
+                            metrics::subscription_active(self.cluster.as_ref(), "pattern", 0);
+                            return Ok(None);
+                        }
                     }
                 }
             }
         }
 
         let front = front_sink.reunite(front_stream)?;
+        metrics::subscription_active(self.cluster.as_ref(), "channel", channels.len());
+        metrics::subscription_active(self.cluster.as_ref(), "pattern", patterns.len());
         Ok(Some(front.into_parts()))
     }
 
@@ -493,6 +589,8 @@ impl ClusterProxy {
         let slots = self.slots.clone();
         let pool = self.pool.clone();
         let fetch_trigger = self.fetch_trigger.clone();
+        let cluster = self.cluster.clone();
+        let kind_label = command.kind_label();
         Box::pin(async move {
             match dispatch_with_context(
                 hash_tag,
@@ -505,9 +603,15 @@ impl ClusterProxy {
             )
             .await
             {
-                Ok(resp) => resp,
+                Ok(resp) => {
+                    let success = !matches!(resp, RespValue::Error(_));
+                    metrics::front_command(cluster.as_ref(), kind_label, success);
+                    resp
+                }
                 Err(err) => {
                     metrics::global_error_incr();
+                    metrics::front_command(cluster.as_ref(), kind_label, false);
+                    metrics::front_error(cluster.as_ref(), "dispatch");
                     RespValue::Error(Bytes::from(format!("ERR {err}")))
                 }
             }
@@ -682,13 +786,24 @@ fn resp_value_to_bytes(value: &RespValue) -> Option<Bytes> {
 struct ClusterConnector {
     timeout: Duration,
     backend_auth: Option<BackendAuth>,
+    heartbeat_interval: Duration,
+    slow_response_threshold: Duration,
+    reconnect_base_delay: Duration,
+    max_reconnect_attempts: usize,
 }
 
 impl ClusterConnector {
     fn new(timeout: Duration, backend_auth: Option<BackendAuth>) -> Self {
+        let slow_response_threshold = timeout
+            .checked_mul(3)
+            .unwrap_or_else(|| Duration::from_secs(5));
         Self {
             timeout,
             backend_auth,
+            heartbeat_interval: Duration::from_secs(30),
+            slow_response_threshold,
+            reconnect_base_delay: Duration::from_millis(50),
+            max_reconnect_attempts: 3,
         }
     }
 
@@ -699,6 +814,19 @@ impl ClusterConnector {
         stream
             .set_nodelay(true)
             .with_context(|| format!("failed to set TCP_NODELAY for {}", address))?;
+        #[cfg(any(unix, windows))]
+        {
+            let keepalive = TcpKeepalive::new()
+                .with_time(self.heartbeat_interval)
+                .with_interval(self.heartbeat_interval);
+            if let Err(err) = SockRef::from(&stream).set_tcp_keepalive(&keepalive) {
+                warn!(
+                    backend = %address,
+                    error = %err,
+                    "failed to enable backend TCP keepalive"
+                );
+            }
+        }
         let mut framed = Framed::new(stream, RespCodec::default());
         if let Some(auth) = &self.backend_auth {
             auth.apply_to_stream(&mut framed, self.timeout, address)
@@ -736,6 +864,70 @@ impl ClusterConnector {
             },
         }
     }
+
+    async fn connect_with_retry(
+        &self,
+        node: &BackendNode,
+        cluster: &str,
+    ) -> Result<Framed<TcpStream, RespCodec>> {
+        let mut last_error: Option<anyhow::Error> = None;
+        for attempt in 0..self.max_reconnect_attempts {
+            let attempt_start = Instant::now();
+            match self.open_stream(node.as_str()).await {
+                Ok(stream) => {
+                    metrics::backend_probe_duration(
+                        cluster,
+                        node.as_str(),
+                        "connect",
+                        attempt_start.elapsed(),
+                    );
+                    metrics::backend_probe_result(cluster, node.as_str(), "connect", true);
+                    return Ok(stream);
+                }
+                Err(err) => {
+                    let elapsed = attempt_start.elapsed();
+                    metrics::backend_probe_duration(cluster, node.as_str(), "connect", elapsed);
+                    metrics::backend_probe_result(cluster, node.as_str(), "connect", false);
+                    metrics::backend_error(cluster, node.as_str(), "connect");
+                    warn!(
+                        cluster = %cluster,
+                        backend = %node.as_str(),
+                        attempt = attempt + 1,
+                        error = %err,
+                        "failed to connect backend"
+                    );
+                    last_error = Some(err);
+                    if attempt + 1 < self.max_reconnect_attempts {
+                        sleep(self.reconnect_base_delay).await;
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| anyhow!("unable to connect backend")))
+    }
+
+    async fn heartbeat(&self, framed: &mut Framed<TcpStream, RespCodec>) -> Result<()> {
+        use RespValue::{Array, BulkString, SimpleString};
+
+        let ping = Array(vec![BulkString(Bytes::from_static(b"PING"))]);
+        timeout(self.timeout, framed.send(ping))
+            .await
+            .context("timed out sending heartbeat")??;
+
+        match timeout(self.timeout, framed.next()).await {
+            Ok(Some(Ok(resp))) => match resp {
+                SimpleString(ref data) | BulkString(ref data)
+                    if data.eq_ignore_ascii_case(b"PONG") =>
+                {
+                    Ok(())
+                }
+                other => Err(anyhow!("unexpected heartbeat reply: {:?}", other)),
+            },
+            Ok(Some(Err(err))) => Err(err.into()),
+            Ok(None) => Err(anyhow!("backend closed connection during heartbeat")),
+            Err(_) => Err(anyhow!("timed out waiting for heartbeat reply")),
+        }
+    }
 }
 
 #[async_trait]
@@ -746,25 +938,138 @@ impl Connector<RedisCommand> for ClusterConnector {
         cluster: Arc<str>,
         mut rx: mpsc::Receiver<SessionCommand<RedisCommand>>,
     ) {
-        info!(cluster = %cluster, backend = %node.as_str(), "starting cluster backend session");
-        let mut stream = match self.open_stream(node.as_str()).await {
-            Ok(stream) => stream,
-            Err(err) => {
-                warn!(cluster = %cluster, backend = %node.as_str(), error = %err, "failed to connect backend");
-                return;
-            }
-        };
+        info!(
+            cluster = %cluster,
+            backend = %node.as_str(),
+            "starting cluster backend session"
+        );
+        let mut connection: Option<Framed<TcpStream, RespCodec>> = None;
+        let mut heartbeat = interval(self.heartbeat_interval);
+        heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        while let Some(cmd) = rx.recv().await {
-            let result = self.execute(&mut stream, cmd.request).await;
-            let is_err = result.is_err();
-            let _ = cmd.respond_to.send(result);
-            if is_err {
-                break;
+        loop {
+            tokio::select! {
+                biased;
+
+                cmd_opt = rx.recv() => {
+                    let cmd = match cmd_opt {
+                        Some(cmd) => cmd,
+                        None => break,
+                    };
+
+                    if connection.is_none() {
+                        match self.connect_with_retry(&node, &cluster).await {
+                            Ok(stream) => {
+                                connection = Some(stream);
+                            }
+                            Err(err) => {
+                                let _ = cmd.respond_to.send(Err(err));
+                                continue;
+                            }
+                        }
+                    }
+
+                    if let Some(ref mut framed) = connection {
+                        let started = Instant::now();
+                        let result = self.execute(framed, cmd.request).await;
+                        let elapsed = started.elapsed();
+                        let is_slow = elapsed > self.slow_response_threshold;
+
+                        let mut should_drop = false;
+                        match result {
+                            Ok(resp) => {
+                                let mut result_label = if matches!(resp, RespValue::Error(_)) {
+                                    "resp_error"
+                                } else {
+                                    "ok"
+                                };
+                                if is_slow {
+                                    metrics::backend_error(&cluster, node.as_str(), "slow");
+                                    warn!(
+                                        cluster = %cluster,
+                                        backend = %node.as_str(),
+                                        elapsed_ms = elapsed.as_millis() as u64,
+                                        "cluster backend response slow"
+                                    );
+                                    result_label = "slow";
+                                    should_drop = true;
+                                }
+                                metrics::backend_request_result(
+                                    &cluster,
+                                    node.as_str(),
+                                    result_label,
+                                );
+                                if cmd.respond_to.send(Ok(resp)).is_err() {
+                                    debug!(
+                                        cluster = %cluster,
+                                        backend = %node.as_str(),
+                                        "cluster backend response dropped (client closed)"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                let kind = classify_backend_error(&err);
+                                metrics::backend_request_result(&cluster, node.as_str(), kind);
+                                metrics::backend_error(&cluster, node.as_str(), kind);
+                                let _ = cmd.respond_to.send(Err(err));
+                                should_drop = true;
+                            }
+                        }
+
+                        if should_drop {
+                            connection = None;
+                        }
+                    }
+                }
+                _ = heartbeat.tick(), if connection.is_some() => {
+                    if let Some(ref mut framed) = connection {
+                        let start = Instant::now();
+                        let result = self.heartbeat(framed).await;
+                        metrics::backend_probe_duration(
+                            &cluster,
+                            node.as_str(),
+                            "heartbeat",
+                            start.elapsed(),
+                        );
+                        match result {
+                            Ok(()) => {
+                                metrics::backend_heartbeat(&cluster, node.as_str(), true);
+                            }
+                            Err(err) => {
+                                metrics::backend_error(&cluster, node.as_str(), "heartbeat");
+                                metrics::backend_heartbeat(&cluster, node.as_str(), false);
+                                warn!(
+                                    cluster = %cluster,
+                                    backend = %node.as_str(),
+                                    error = %err,
+                                    "cluster backend heartbeat failed"
+                                );
+                                connection = None;
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        debug!(cluster = %cluster, backend = %node.as_str(), "cluster backend session terminated");
+        debug!(
+            cluster = %cluster,
+            backend = %node.as_str(),
+            "cluster backend session terminated"
+        );
+    }
+}
+
+fn classify_backend_error(err: &anyhow::Error) -> &'static str {
+    let message = err.to_string();
+    if message.contains("timed out") {
+        "timeout"
+    } else if message.contains("closed connection") {
+        "closed"
+    } else if message.contains("unexpected heartbeat reply") {
+        "protocol"
+    } else {
+        "execute"
     }
 }
 
@@ -1022,7 +1327,7 @@ fn select_node_for_slot(
     bail!("slot {} not covered", slot)
 }
 
-fn subscription_count(resp: &RespValue) -> Option<i64> {
+fn subscription_count(resp: &RespValue) -> Option<(SubscriptionKind, i64)> {
     if let RespValue::Array(items) = resp {
         if items.len() >= 3 {
             let count = match &items[2] {
@@ -1032,8 +1337,8 @@ fn subscription_count(resp: &RespValue) -> Option<i64> {
             }?;
 
             if let RespValue::SimpleString(kind) | RespValue::BulkString(kind) = &items[0] {
-                if matches_subscribe_kind(kind.as_ref()) {
-                    return Some(count);
+                if let Some(mapped) = subscription_action_kind(kind.as_ref()) {
+                    return Some((mapped, count));
                 }
             }
         }
@@ -1041,9 +1346,12 @@ fn subscription_count(resp: &RespValue) -> Option<i64> {
     None
 }
 
-fn matches_subscribe_kind(kind: &[u8]) -> bool {
-    matches!(
-        kind,
-        b"subscribe" | b"unsubscribe" | b"psubscribe" | b"punsubscribe"
-    )
+fn subscription_action_kind(kind: &[u8]) -> Option<SubscriptionKind> {
+    match kind {
+        b"subscribe" => Some(SubscriptionKind::Channel),
+        b"psubscribe" => Some(SubscriptionKind::Pattern),
+        b"unsubscribe" => Some(SubscriptionKind::Unsubscribe),
+        b"punsubscribe" => Some(SubscriptionKind::Punsub),
+        _ => None,
+    }
 }
