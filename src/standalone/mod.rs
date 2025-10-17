@@ -27,6 +27,7 @@ use crate::protocol::redis::{
     BlockingKind, MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue, SubCommand,
     SubResponse, SubscriptionKind,
 };
+use crate::slowlog::Slowlog;
 use crate::utils::trim_hash_tag;
 
 const DEFAULT_TIMEOUT_MS: u64 = 1_000;
@@ -49,6 +50,7 @@ pub struct StandaloneProxy {
     pool: Arc<ConnectionPool<RedisCommand>>,
     runtime: Arc<ClusterRuntime>,
     config_manager: Arc<ConfigManager>,
+    slowlog: Arc<Slowlog>,
     listen_port: u16,
     backend_nodes: usize,
 }
@@ -85,6 +87,9 @@ impl StandaloneProxy {
 
         let backend_nodes = nodes.len();
         let listen_port = config.listen_port()?;
+        let slowlog = config_manager
+            .slowlog_for(&config.name)
+            .ok_or_else(|| anyhow!("missing slowlog state for cluster {}", config.name))?;
 
         Ok(Self {
             cluster,
@@ -95,6 +100,7 @@ impl StandaloneProxy {
             pool,
             runtime,
             config_manager,
+            slowlog,
             listen_port,
             backend_nodes,
         })
@@ -107,7 +113,8 @@ impl StandaloneProxy {
     ) -> Result<RedisResponse> {
         let hash_tag = self.hash_tag.as_deref();
         let ring = &self.ring;
-        if let Some(multi) = command.expand_for_multi_with(|key| {
+        let command_snapshot = command.clone();
+        let multi = command.expand_for_multi_with(|key| {
             if ring.is_empty() {
                 return 0;
             }
@@ -119,11 +126,16 @@ impl StandaloneProxy {
                 Err(idx) => idx,
             };
             idx as u64
-        }) {
+        });
+        let started = Instant::now();
+        let result = if let Some(multi) = multi {
             self.dispatch_multi(client_id, multi).await
         } else {
             self.dispatch_single(client_id, command).await
-        }
+        };
+        self.slowlog
+            .maybe_record(&command_snapshot, started.elapsed());
+        result
     }
 
     async fn dispatch_single(
@@ -434,6 +446,13 @@ impl StandaloneProxy {
                 continue;
             }
 
+            if let Some(response) = self.try_handle_slowlog(&command) {
+                let success = !response.is_error();
+                metrics::front_command(self.cluster.as_ref(), kind_label, success);
+                framed.send(response).await?;
+                continue;
+            }
+
             let response = match self.dispatch(client_id, command).await {
                 Ok(resp) => resp,
                 Err(err) => {
@@ -450,6 +469,17 @@ impl StandaloneProxy {
         }
 
         Ok(())
+    }
+
+    fn try_handle_slowlog(&self, command: &RedisCommand) -> Option<RespValue> {
+        if !command.command_name().eq_ignore_ascii_case(b"SLOWLOG") {
+            return None;
+        }
+
+        Some(crate::slowlog::handle_command(
+            &self.slowlog,
+            command.args(),
+        ))
     }
 
     async fn try_handle_config(&self, command: &RedisCommand) -> Option<RespValue> {

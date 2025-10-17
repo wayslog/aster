@@ -12,11 +12,20 @@ use tracing::{info, warn};
 
 use crate::auth::{AuthUserConfig, BackendAuthConfig, FrontendAuthConfig};
 use crate::protocol::redis::{RedisCommand, RespValue};
+use crate::slowlog::Slowlog;
 
 /// Environment variable controlling the default worker thread count when a
 /// cluster omits the `thread` field.
 pub const ENV_DEFAULT_THREADS: &str = "ASTER_DEFAULT_THREAD";
 const DUMP_VALUE_DEFAULT: &str = "default";
+
+fn default_slowlog_log_slower_than() -> i64 {
+    10_000
+}
+
+fn default_slowlog_max_len() -> usize {
+    128
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -130,6 +139,10 @@ pub struct ClusterConfig {
     pub backend_auth: Option<BackendAuthConfig>,
     #[serde(default)]
     pub backend_password: Option<String>,
+    #[serde(default = "default_slowlog_log_slower_than")]
+    pub slowlog_log_slower_than: i64,
+    #[serde(default = "default_slowlog_max_len")]
+    pub slowlog_max_len: usize,
 }
 
 impl ClusterConfig {
@@ -158,6 +171,12 @@ impl ClusterConfig {
         if self.servers.is_empty() {
             bail!(
                 "cluster {} must provide at least one backend server",
+                self.name
+            );
+        }
+        if self.slowlog_log_slower_than < -1 {
+            bail!(
+                "cluster {} slowlog-log-slower-than must be >= -1",
                 self.name
             );
         }
@@ -290,6 +309,7 @@ fn atomic_to_option(value: i64) -> Option<u64> {
 struct ClusterEntry {
     index: usize,
     runtime: Arc<ClusterRuntime>,
+    slowlog: Arc<Slowlog>,
 }
 
 #[derive(Debug)]
@@ -304,14 +324,20 @@ impl ConfigManager {
         let mut clusters = HashMap::new();
         for (index, cluster) in config.clusters().iter().enumerate() {
             let key = cluster.name.to_ascii_lowercase();
+            let runtime = Arc::new(ClusterRuntime::new(
+                cluster.read_timeout,
+                cluster.write_timeout,
+            ));
+            let slowlog = Arc::new(Slowlog::new(
+                cluster.slowlog_log_slower_than,
+                cluster.slowlog_max_len,
+            ));
             clusters.insert(
                 key,
                 ClusterEntry {
                     index,
-                    runtime: Arc::new(ClusterRuntime::new(
-                        cluster.read_timeout,
-                        cluster.write_timeout,
-                    )),
+                    runtime,
+                    slowlog,
                 },
             );
         }
@@ -327,6 +353,12 @@ impl ConfigManager {
         self.clusters
             .get(&name.to_ascii_lowercase())
             .map(|entry| entry.runtime.clone())
+    }
+
+    pub fn slowlog_for(&self, name: &str) -> Option<Arc<Slowlog>> {
+        self.clusters
+            .get(&name.to_ascii_lowercase())
+            .map(|entry| entry.slowlog.clone())
     }
 
     pub async fn handle_command(&self, command: &RedisCommand) -> Option<RespValue> {
@@ -429,6 +461,28 @@ impl ConfigManager {
                     "cluster write_timeout updated via CONFIG SET"
                 );
             }
+            ClusterField::SlowlogLogSlowerThan => {
+                let parsed = parse_slowlog_threshold(value)?;
+                entry.slowlog.set_threshold(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].slowlog_log_slower_than = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster slowlog_log_slower_than updated via CONFIG SET"
+                );
+            }
+            ClusterField::SlowlogMaxLen => {
+                let parsed = parse_slowlog_len(value)?;
+                entry.slowlog.set_max_len(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].slowlog_max_len = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster slowlog_max_len updated via CONFIG SET"
+                );
+            }
         }
         Ok(())
     }
@@ -456,6 +510,14 @@ impl ConfigManager {
                 entries.push((
                     format!("cluster.{}.write-timeout", name),
                     option_to_string(runtime.write_timeout()),
+                ));
+                entries.push((
+                    format!("cluster.{}.slowlog-log-slower-than", name),
+                    entry.slowlog.threshold().to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.slowlog-max-len", name),
+                    entry.slowlog.max_len().to_string(),
                 ));
             }
         }
@@ -491,6 +553,8 @@ fn parse_key(key: &str) -> Result<(String, ClusterField)> {
     let field = match field.to_ascii_lowercase().as_str() {
         "read-timeout" => ClusterField::ReadTimeout,
         "write-timeout" => ClusterField::WriteTimeout,
+        "slowlog-log-slower-than" => ClusterField::SlowlogLogSlowerThan,
+        "slowlog-max-len" => ClusterField::SlowlogMaxLen,
         unknown => bail!("unknown cluster field '{}'", unknown),
     };
     Ok((cluster.to_string(), field))
@@ -505,6 +569,28 @@ fn parse_timeout_value(value: &str) -> Result<Option<u64>> {
         .parse()
         .with_context(|| format!("invalid timeout value '{}'", value))?;
     Ok(Some(parsed))
+}
+
+fn parse_slowlog_threshold(value: &str) -> Result<i64> {
+    let parsed: i64 = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid slowlog-log-slower-than value '{}'", value))?;
+    if parsed < -1 {
+        bail!("slowlog-log-slower-than must be >= -1");
+    }
+    Ok(parsed)
+}
+
+fn parse_slowlog_len(value: &str) -> Result<usize> {
+    let parsed: i64 = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid slowlog-max-len value '{}'", value))?;
+    if parsed < 0 {
+        bail!("slowlog-max-len must be >= 0");
+    }
+    usize::try_from(parsed).map_err(|_| anyhow!("slowlog-max-len is too large"))
 }
 
 fn option_to_string(value: Option<u64>) -> String {
@@ -530,6 +616,8 @@ fn err_response<T: ToString>(message: T) -> RespValue {
 enum ClusterField {
     ReadTimeout,
     WriteTimeout,
+    SlowlogLogSlowerThan,
+    SlowlogMaxLen,
 }
 
 fn wildcard_match(pattern: &str, target: &str) -> bool {

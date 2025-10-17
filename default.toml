@@ -22,6 +22,10 @@
     password = "example-frontend-secret"
     # 后端 ACL：此处演示用户名 + 密码；如果后端是简单密码，可直接使用 backend_password
     backend_auth = { username = "proxy", password = "example-backend-secret" }
+    # 慢查询日志阈值（微秒）；默认 10000，设置为 -1 以关闭记录
+    slowlog_log_slower_than = 10000
+    # 慢查询日志最大保留条数；默认 128
+    slowlog_max_len = 128
 
 [[clusters]]
     name = "test-cluster"
@@ -50,3 +54,7 @@
     ] }
     # 旧版写法依然兼容：backend_password = "raw-secret"
     backend_password = "cluster-backend-secret"
+    # 慢查询日志阈值（微秒）；默认 10000，设置为 -1 以关闭记录
+    slowlog_log_slower_than = 10000
+    # 慢查询日志最大保留条数；默认 128
+    slowlog_max_len = 128

@@ -27,6 +27,7 @@ use crate::protocol::redis::{
     BlockingKind, MultiDispatch, RedisCommand, RespCodec, RespValue, SlotMap, SubCommand,
     SubResponse, SubscriptionKind, SLOT_COUNT,
 };
+use crate::slowlog::Slowlog;
 use crate::utils::{crc16, trim_hash_tag};
 
 const FETCH_INTERVAL: Duration = Duration::from_secs(10);
@@ -52,6 +53,7 @@ pub struct ClusterProxy {
     fetch_trigger: mpsc::UnboundedSender<()>,
     runtime: Arc<ClusterRuntime>,
     config_manager: Arc<ConfigManager>,
+    slowlog: Arc<Slowlog>,
     listen_port: u16,
     seed_nodes: usize,
 }
@@ -83,6 +85,9 @@ impl ClusterProxy {
             .map(Arc::new);
 
         let listen_port = config.listen_port()?;
+        let slowlog = config_manager
+            .slowlog_for(&config.name)
+            .ok_or_else(|| anyhow!("missing slowlog state for cluster {}", config.name))?;
         let proxy = Self {
             cluster: cluster.clone(),
             hash_tag,
@@ -94,6 +99,7 @@ impl ClusterProxy {
             fetch_trigger: trigger_tx.clone(),
             runtime,
             config_manager,
+            slowlog,
             listen_port,
             seed_nodes: config.servers.len(),
         };
@@ -295,6 +301,18 @@ impl ClusterProxy {
                                         inflight += 1;
                                         continue;
                                     }
+                                    if let Some(response) = self.try_handle_slowlog(&cmd) {
+                                        let success = !response.is_error();
+                                        metrics::front_command(
+                                            self.cluster.as_ref(),
+                                            cmd.kind_label(),
+                                            success,
+                                        );
+                                        let fut = async move { response };
+                                        pending.push_back(Box::pin(fut));
+                                        inflight += 1;
+                                        continue;
+                                    }
                                     let guard = self.prepare_dispatch(client_id, cmd);
                                     pending.push_back(Box::pin(guard));
                                     inflight += 1;
@@ -337,6 +355,16 @@ impl ClusterProxy {
 
     async fn try_handle_config(&self, command: &RedisCommand) -> Option<RespValue> {
         self.config_manager.handle_command(command).await
+    }
+
+    fn try_handle_slowlog(&self, command: &RedisCommand) -> Option<RespValue> {
+        if !command.command_name().eq_ignore_ascii_case(b"SLOWLOG") {
+            return None;
+        }
+        Some(crate::slowlog::handle_command(
+            &self.slowlog,
+            command.args(),
+        ))
     }
 
     fn try_handle_info(&self, command: &RedisCommand) -> Option<RespValue> {
@@ -646,6 +674,7 @@ impl ClusterProxy {
         let pool = self.pool.clone();
         let fetch_trigger = self.fetch_trigger.clone();
         let cluster = self.cluster.clone();
+        let slowlog = self.slowlog.clone();
         let kind_label = command.kind_label();
         Box::pin(async move {
             match dispatch_with_context(
@@ -655,6 +684,7 @@ impl ClusterProxy {
                 pool,
                 fetch_trigger,
                 client_id,
+                slowlog,
                 command,
             )
             .await
@@ -1232,9 +1262,13 @@ async fn dispatch_with_context(
     pool: Arc<ConnectionPool<RedisCommand>>,
     fetch_trigger: mpsc::UnboundedSender<()>,
     client_id: ClientId,
+    slowlog: Arc<Slowlog>,
     command: RedisCommand,
 ) -> Result<RespValue> {
-    if let Some(multi) = command.expand_for_multi(hash_tag.as_deref()) {
+    let command_snapshot = command.clone();
+    let multi = command.expand_for_multi(hash_tag.as_deref());
+    let started = Instant::now();
+    let result = if let Some(multi) = multi {
         dispatch_multi(
             hash_tag,
             read_from_slave,
@@ -1256,7 +1290,9 @@ async fn dispatch_with_context(
             command,
         )
         .await
-    }
+    };
+    slowlog.maybe_record(&command_snapshot, started.elapsed());
+    result
 }
 
 async fn dispatch_multi(

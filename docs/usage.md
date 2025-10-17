@@ -26,8 +26,12 @@ cargo build --release
 - `hash_tag`：一致性 hash 标签，例如 `{}`。
 - `read_timeout` / `write_timeout`：后端超时（毫秒）。
 - `read_from_slave`：Cluster 模式下允许从 replica 读取。
+- `slowlog_log_slower_than`：慢查询阈值（微秒，默认 `10000`，设为 `-1` 关闭记录）。
+- `slowlog_max_len`：慢查询日志最大保留条数（默认 `128`）。
 - `auth` / `password`：前端 ACL，详见下文。
 - `backend_auth` / `backend_password`：后端 ACL 认证，详见下文。
+
+> 提示：代理原生支持 `SLOWLOG GET/LEN/RESET`，并按集群维度汇总慢查询；配置上述阈值和长度即可控制记录行为。
 
 示例参见仓库根目录的 `default.toml`。
 
