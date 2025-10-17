@@ -21,6 +21,7 @@ use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::ClusterConfig;
+use crate::info::{InfoContext, ProxyMode};
 use crate::metrics;
 use crate::protocol::redis::{
     BlockingKind, MultiDispatch, RedisCommand, RespCodec, RespValue, SlotMap, SubCommand,
@@ -50,6 +51,8 @@ pub struct ClusterProxy {
     pool: Arc<ConnectionPool<RedisCommand>>,
     fetch_trigger: mpsc::UnboundedSender<()>,
     backend_timeout: Duration,
+    listen_port: u16,
+    seed_nodes: usize,
 }
 
 impl ClusterProxy {
@@ -77,6 +80,7 @@ impl ClusterProxy {
             .transpose()?
             .map(Arc::new);
 
+        let listen_port = config.listen_port()?;
         let proxy = Self {
             cluster: cluster.clone(),
             hash_tag,
@@ -87,6 +91,8 @@ impl ClusterProxy {
             pool: pool.clone(),
             fetch_trigger: trigger_tx.clone(),
             backend_timeout: Duration::from_millis(timeout_ms),
+            listen_port,
+            seed_nodes: config.servers.len(),
         };
 
         // trigger an immediate topology fetch
@@ -262,6 +268,17 @@ impl ClusterProxy {
                                             }
                                         }
                                     }
+                                    if let Some(response) = self.try_handle_info(&cmd) {
+                                        metrics::front_command(
+                                            self.cluster.as_ref(),
+                                            cmd.kind_label(),
+                                            true,
+                                        );
+                                        let fut = async move { response };
+                                        pending.push_back(Box::pin(fut));
+                                        inflight += 1;
+                                        continue;
+                                    }
                                     let guard = self.prepare_dispatch(client_id, cmd);
                                     pending.push_back(Box::pin(guard));
                                     inflight += 1;
@@ -300,6 +317,24 @@ impl ClusterProxy {
         }
         sink.close().await?;
         Ok(())
+    }
+
+    fn try_handle_info(&self, command: &RedisCommand) -> Option<RespValue> {
+        if !command.command_name().eq_ignore_ascii_case(b"INFO") {
+            return None;
+        }
+        let section = command
+            .args()
+            .get(1)
+            .map(|arg| String::from_utf8_lossy(arg).to_string());
+        let context = InfoContext {
+            cluster: self.cluster.as_ref(),
+            mode: ProxyMode::Cluster,
+            listen_port: self.listen_port,
+            backend_nodes: self.seed_nodes,
+        };
+        let payload = crate::info::render_info(context, section.as_deref());
+        Some(RespValue::BulkString(payload))
     }
 
     async fn run_subscription(

@@ -215,6 +215,31 @@ pub fn register_version(version: &str) {
     VERSION_GAUGE.with_label_values(&[version]).set(1.0);
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FrontCommandStats {
+    pub read_ok: u64,
+    pub read_fail: u64,
+    pub write_ok: u64,
+    pub write_fail: u64,
+    pub other_ok: u64,
+    pub other_fail: u64,
+    pub invalid_fail: u64,
+}
+
+impl FrontCommandStats {
+    pub fn total_ok(&self) -> u64 {
+        self.read_ok + self.write_ok + self.other_ok
+    }
+
+    pub fn total_fail(&self) -> u64 {
+        self.read_fail + self.write_fail + self.other_fail + self.invalid_fail
+    }
+
+    pub fn total(&self) -> u64 {
+        self.total_ok() + self.total_fail()
+    }
+}
+
 /// Record a new front connection.
 pub fn front_conn_open(cluster: &str) {
     FRONT_CONNECTION_INCR.with_label_values(&[cluster]).inc();
@@ -327,6 +352,62 @@ pub fn total_tracker(cluster: &str) -> Tracker {
 /// Create a tracker for remote command latency.
 pub fn remote_tracker(cluster: &str) -> Tracker {
     Tracker::new(REMOTE_TIMER.with_label_values(&[cluster]))
+}
+
+/// Current frontend connections for a cluster.
+pub fn front_connections_current(cluster: &str) -> u64 {
+    let gauge = FRONT_CONNECTIONS.with_label_values(&[cluster]);
+    gauge.get().max(0.0).round() as u64
+}
+
+/// Total frontend connections since proxy start for a cluster.
+pub fn front_connections_total(cluster: &str) -> u64 {
+    let counter = FRONT_CONNECTION_INCR.with_label_values(&[cluster]);
+    counter.get().max(0) as u64
+}
+
+/// Aggregate frontend command counters for a cluster.
+pub fn front_command_stats(cluster: &str) -> FrontCommandStats {
+    let mut stats = FrontCommandStats::default();
+    let mappings = [
+        ("read", "ok"),
+        ("read", "fail"),
+        ("write", "ok"),
+        ("write", "fail"),
+        ("other", "ok"),
+        ("other", "fail"),
+        ("invalid", "fail"),
+    ];
+    for (kind, result) in mappings {
+        let counter = FRONT_COMMAND_TOTAL.with_label_values(&[cluster, kind, result]);
+        let value = counter.get().max(0) as u64;
+        match (kind, result) {
+            ("read", "ok") => stats.read_ok = value,
+            ("read", "fail") => stats.read_fail = value,
+            ("write", "ok") => stats.write_ok = value,
+            ("write", "fail") => stats.write_fail = value,
+            ("other", "ok") => stats.other_ok = value,
+            ("other", "fail") => stats.other_fail = value,
+            ("invalid", "fail") => stats.invalid_fail = value,
+            _ => {}
+        }
+    }
+    stats
+}
+
+/// Global error count across all clusters.
+pub fn global_error_count() -> u64 {
+    GLOBAL_ERROR.get().max(0) as u64
+}
+
+/// Memory usage in bytes, derived from the system monitor gauge (kB).
+pub fn memory_usage_bytes() -> u64 {
+    (MEMORY_USAGE.get().max(0.0) * 1024.0) as u64
+}
+
+/// CPU usage percentage reported by the system monitor gauge.
+pub fn cpu_usage_percent() -> f64 {
+    CPU_USAGE.get().max(0.0)
 }
 
 /// Spawn the metrics HTTP server and system monitor tasks.
