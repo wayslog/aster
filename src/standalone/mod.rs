@@ -21,6 +21,7 @@ use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::{ClusterConfig, ClusterRuntime, ConfigManager};
+use crate::hotkey::Hotkey;
 use crate::info::{InfoContext, ProxyMode};
 use crate::metrics;
 use crate::protocol::redis::{
@@ -51,6 +52,7 @@ pub struct StandaloneProxy {
     runtime: Arc<ClusterRuntime>,
     config_manager: Arc<ConfigManager>,
     slowlog: Arc<Slowlog>,
+    hotkey: Arc<Hotkey>,
     listen_port: u16,
     backend_nodes: usize,
 }
@@ -90,6 +92,9 @@ impl StandaloneProxy {
         let slowlog = config_manager
             .slowlog_for(&config.name)
             .ok_or_else(|| anyhow!("missing slowlog state for cluster {}", config.name))?;
+        let hotkey = config_manager
+            .hotkey_for(&config.name)
+            .ok_or_else(|| anyhow!("missing hotkey state for cluster {}", config.name))?;
 
         Ok(Self {
             cluster,
@@ -101,6 +106,7 @@ impl StandaloneProxy {
             runtime,
             config_manager,
             slowlog,
+            hotkey,
             listen_port,
             backend_nodes,
         })
@@ -135,6 +141,7 @@ impl StandaloneProxy {
         };
         self.slowlog
             .maybe_record(&command_snapshot, started.elapsed());
+        self.hotkey.record_command(&command_snapshot);
         result
     }
 
@@ -446,6 +453,13 @@ impl StandaloneProxy {
                 continue;
             }
 
+            if let Some(response) = self.try_handle_hotkey(&command) {
+                let success = !response.is_error();
+                metrics::front_command(self.cluster.as_ref(), kind_label, success);
+                framed.send(response).await?;
+                continue;
+            }
+
             if let Some(response) = self.try_handle_slowlog(&command) {
                 let success = !response.is_error();
                 metrics::front_command(self.cluster.as_ref(), kind_label, success);
@@ -480,6 +494,14 @@ impl StandaloneProxy {
             &self.slowlog,
             command.args(),
         ))
+    }
+
+    fn try_handle_hotkey(&self, command: &RedisCommand) -> Option<RespValue> {
+        if !command.command_name().eq_ignore_ascii_case(b"HOTKEY") {
+            return None;
+        }
+
+        Some(crate::hotkey::handle_command(&self.hotkey, command.args()))
     }
 
     async fn try_handle_config(&self, command: &RedisCommand) -> Option<RespValue> {

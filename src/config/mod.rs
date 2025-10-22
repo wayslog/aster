@@ -11,6 +11,10 @@ use tokio::fs;
 use tracing::{info, warn};
 
 use crate::auth::{AuthUserConfig, BackendAuthConfig, FrontendAuthConfig};
+use crate::hotkey::{
+    Hotkey, HotkeyConfig, DEFAULT_DECAY, DEFAULT_HOTKEY_CAPACITY, DEFAULT_SAMPLE_EVERY,
+    DEFAULT_SKETCH_DEPTH, DEFAULT_SKETCH_WIDTH,
+};
 use crate::protocol::redis::{RedisCommand, RespValue};
 use crate::slowlog::Slowlog;
 
@@ -25,6 +29,26 @@ fn default_slowlog_log_slower_than() -> i64 {
 
 fn default_slowlog_max_len() -> usize {
     128
+}
+
+fn default_hotkey_sample_every() -> u64 {
+    DEFAULT_SAMPLE_EVERY
+}
+
+fn default_hotkey_sketch_width() -> usize {
+    DEFAULT_SKETCH_WIDTH
+}
+
+fn default_hotkey_sketch_depth() -> usize {
+    DEFAULT_SKETCH_DEPTH
+}
+
+fn default_hotkey_capacity() -> usize {
+    DEFAULT_HOTKEY_CAPACITY
+}
+
+fn default_hotkey_decay() -> f64 {
+    DEFAULT_DECAY
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -143,6 +167,16 @@ pub struct ClusterConfig {
     pub slowlog_log_slower_than: i64,
     #[serde(default = "default_slowlog_max_len")]
     pub slowlog_max_len: usize,
+    #[serde(default = "default_hotkey_sample_every")]
+    pub hotkey_sample_every: u64,
+    #[serde(default = "default_hotkey_sketch_width")]
+    pub hotkey_sketch_width: usize,
+    #[serde(default = "default_hotkey_sketch_depth")]
+    pub hotkey_sketch_depth: usize,
+    #[serde(default = "default_hotkey_capacity")]
+    pub hotkey_capacity: usize,
+    #[serde(default = "default_hotkey_decay")]
+    pub hotkey_decay: f64,
 }
 
 impl ClusterConfig {
@@ -179,6 +213,21 @@ impl ClusterConfig {
                 "cluster {} slowlog-log-slower-than must be >= -1",
                 self.name
             );
+        }
+        if self.hotkey_sample_every == 0 {
+            bail!("cluster {} hotkey_sample_every must be > 0", self.name);
+        }
+        if self.hotkey_sketch_width == 0 {
+            bail!("cluster {} hotkey_sketch_width must be > 0", self.name);
+        }
+        if self.hotkey_sketch_depth == 0 {
+            bail!("cluster {} hotkey_sketch_depth must be > 0", self.name);
+        }
+        if self.hotkey_capacity == 0 {
+            bail!("cluster {} hotkey_capacity must be > 0", self.name);
+        }
+        if !(self.hotkey_decay > 0.0 && self.hotkey_decay <= 1.0) {
+            bail!("cluster {} hotkey_decay must be in (0, 1]", self.name);
         }
         Ok(())
     }
@@ -310,6 +359,7 @@ struct ClusterEntry {
     index: usize,
     runtime: Arc<ClusterRuntime>,
     slowlog: Arc<Slowlog>,
+    hotkey: Arc<Hotkey>,
 }
 
 #[derive(Debug)]
@@ -332,12 +382,21 @@ impl ConfigManager {
                 cluster.slowlog_log_slower_than,
                 cluster.slowlog_max_len,
             ));
+            let hotkey_config = HotkeyConfig {
+                sample_every: cluster.hotkey_sample_every,
+                sketch_width: cluster.hotkey_sketch_width,
+                sketch_depth: cluster.hotkey_sketch_depth,
+                capacity: cluster.hotkey_capacity,
+                decay: cluster.hotkey_decay,
+            };
+            let hotkey = Arc::new(Hotkey::new(hotkey_config));
             clusters.insert(
                 key,
                 ClusterEntry {
                     index,
                     runtime,
                     slowlog,
+                    hotkey,
                 },
             );
         }
@@ -359,6 +418,12 @@ impl ConfigManager {
         self.clusters
             .get(&name.to_ascii_lowercase())
             .map(|entry| entry.slowlog.clone())
+    }
+
+    pub fn hotkey_for(&self, name: &str) -> Option<Arc<Hotkey>> {
+        self.clusters
+            .get(&name.to_ascii_lowercase())
+            .map(|entry| entry.hotkey.clone())
     }
 
     pub async fn handle_command(&self, command: &RedisCommand) -> Option<RespValue> {
@@ -483,6 +548,61 @@ impl ConfigManager {
                     "cluster slowlog_max_len updated via CONFIG SET"
                 );
             }
+            ClusterField::HotkeySampleEvery => {
+                let parsed = parse_hotkey_sample_every(value)?;
+                entry.hotkey.update_config(|cfg| cfg.sample_every = parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].hotkey_sample_every = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster hotkey_sample_every updated via CONFIG SET"
+                );
+            }
+            ClusterField::HotkeySketchWidth => {
+                let parsed = parse_hotkey_sketch_width(value)?;
+                entry.hotkey.update_config(|cfg| cfg.sketch_width = parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].hotkey_sketch_width = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster hotkey_sketch_width updated via CONFIG SET"
+                );
+            }
+            ClusterField::HotkeySketchDepth => {
+                let parsed = parse_hotkey_sketch_depth(value)?;
+                entry.hotkey.update_config(|cfg| cfg.sketch_depth = parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].hotkey_sketch_depth = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster hotkey_sketch_depth updated via CONFIG SET"
+                );
+            }
+            ClusterField::HotkeyCapacity => {
+                let parsed = parse_hotkey_capacity(value)?;
+                entry.hotkey.update_config(|cfg| cfg.capacity = parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].hotkey_capacity = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster hotkey_capacity updated via CONFIG SET"
+                );
+            }
+            ClusterField::HotkeyDecay => {
+                let parsed = parse_hotkey_decay(value)?;
+                entry.hotkey.update_config(|cfg| cfg.decay = parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].hotkey_decay = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster hotkey_decay updated via CONFIG SET"
+                );
+            }
         }
         Ok(())
     }
@@ -518,6 +638,27 @@ impl ConfigManager {
                 entries.push((
                     format!("cluster.{}.slowlog-max-len", name),
                     entry.slowlog.max_len().to_string(),
+                ));
+                let hotkey_cfg = entry.hotkey.config();
+                entries.push((
+                    format!("cluster.{}.hotkey-sample-every", name),
+                    hotkey_cfg.sample_every.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.hotkey-sketch-width", name),
+                    hotkey_cfg.sketch_width.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.hotkey-sketch-depth", name),
+                    hotkey_cfg.sketch_depth.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.hotkey-capacity", name),
+                    hotkey_cfg.capacity.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.hotkey-decay", name),
+                    hotkey_cfg.decay.to_string(),
                 ));
             }
         }
@@ -555,6 +696,11 @@ fn parse_key(key: &str) -> Result<(String, ClusterField)> {
         "write-timeout" => ClusterField::WriteTimeout,
         "slowlog-log-slower-than" => ClusterField::SlowlogLogSlowerThan,
         "slowlog-max-len" => ClusterField::SlowlogMaxLen,
+        "hotkey-sample-every" => ClusterField::HotkeySampleEvery,
+        "hotkey-sketch-width" => ClusterField::HotkeySketchWidth,
+        "hotkey-sketch-depth" => ClusterField::HotkeySketchDepth,
+        "hotkey-capacity" => ClusterField::HotkeyCapacity,
+        "hotkey-decay" => ClusterField::HotkeyDecay,
         unknown => bail!("unknown cluster field '{}'", unknown),
     };
     Ok((cluster.to_string(), field))
@@ -593,6 +739,61 @@ fn parse_slowlog_len(value: &str) -> Result<usize> {
     usize::try_from(parsed).map_err(|_| anyhow!("slowlog-max-len is too large"))
 }
 
+fn parse_hotkey_sample_every(value: &str) -> Result<u64> {
+    let parsed: u64 = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid hotkey-sample-every value '{}'", value))?;
+    if parsed == 0 {
+        bail!("hotkey-sample-every must be > 0");
+    }
+    Ok(parsed)
+}
+
+fn parse_hotkey_sketch_width(value: &str) -> Result<usize> {
+    let parsed: usize = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid hotkey-sketch-width value '{}'", value))?;
+    if parsed == 0 {
+        bail!("hotkey-sketch-width must be > 0");
+    }
+    Ok(parsed)
+}
+
+fn parse_hotkey_sketch_depth(value: &str) -> Result<usize> {
+    let parsed: usize = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid hotkey-sketch-depth value '{}'", value))?;
+    if parsed == 0 {
+        bail!("hotkey-sketch-depth must be > 0");
+    }
+    Ok(parsed)
+}
+
+fn parse_hotkey_capacity(value: &str) -> Result<usize> {
+    let parsed: usize = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid hotkey-capacity value '{}'", value))?;
+    if parsed == 0 {
+        bail!("hotkey-capacity must be > 0");
+    }
+    Ok(parsed)
+}
+
+fn parse_hotkey_decay(value: &str) -> Result<f64> {
+    let parsed: f64 = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid hotkey-decay value '{}'", value))?;
+    if !(parsed > 0.0 && parsed <= 1.0) {
+        bail!("hotkey-decay must be in (0, 1]");
+    }
+    Ok(parsed)
+}
+
 fn option_to_string(value: Option<u64>) -> String {
     value
         .map(|v| v.to_string())
@@ -618,6 +819,11 @@ enum ClusterField {
     WriteTimeout,
     SlowlogLogSlowerThan,
     SlowlogMaxLen,
+    HotkeySampleEvery,
+    HotkeySketchWidth,
+    HotkeySketchDepth,
+    HotkeyCapacity,
+    HotkeyDecay,
 }
 
 fn wildcard_match(pattern: &str, target: &str) -> bool {

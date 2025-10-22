@@ -26,6 +26,12 @@
     slowlog_log_slower_than = 10000
     # 慢查询日志最大保留条数；默认 128
     slowlog_max_len = 128
+    # 热点 Key 分析参数
+    hotkey_sample_every = 32
+    hotkey_sketch_width = 4096
+    hotkey_sketch_depth = 4
+    hotkey_capacity = 512
+    hotkey_decay = 0.925
 
 [[clusters]]
     name = "test-cluster"
@@ -58,3 +64,9 @@
     slowlog_log_slower_than = 10000
     # 慢查询日志最大保留条数；默认 128
     slowlog_max_len = 128
+    # 热点 Key 分析参数
+    hotkey_sample_every = 32
+    hotkey_sketch_width = 4096
+    hotkey_sketch_depth = 4
+    hotkey_capacity = 512
+    hotkey_decay = 0.925
