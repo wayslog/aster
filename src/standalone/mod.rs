@@ -467,6 +467,7 @@ impl StandaloneProxy {
                 continue;
             }
 
+            let requested_version = command.resp_version_request();
             let response = match self.dispatch(client_id, command).await {
                 Ok(resp) => resp,
                 Err(err) => {
@@ -477,7 +478,12 @@ impl StandaloneProxy {
                 }
             };
 
-            let success = !matches!(response, RespValue::Error(_));
+            let success = !response.is_error();
+            if success {
+                if let Some(version) = requested_version {
+                    framed.codec_mut().set_version(version);
+                }
+            }
             metrics::front_command(self.cluster.as_ref(), kind_label, success);
             framed.send(response).await?;
         }
@@ -711,6 +717,7 @@ impl RedisConnector {
         framed: &mut Framed<TcpStream, RespCodec>,
         request: RedisCommand,
     ) -> Result<RedisResponse> {
+        let requested_version = request.resp_version_request();
         let blocking = request.as_blocking();
         let frame = request.to_resp();
         let timeout_duration = self.current_timeout();
@@ -718,7 +725,7 @@ impl RedisConnector {
             .await
             .context("timed out while sending request")??;
 
-        match blocking {
+        let response = match blocking {
             BlockingKind::Queue { .. } | BlockingKind::Stream { .. } => match framed.next().await {
                 Some(Ok(response)) => Ok(response),
                 Some(Err(err)) => Err(err.into()),
@@ -730,7 +737,14 @@ impl RedisConnector {
                 Ok(None) => Err(anyhow!("backend closed connection")),
                 Err(_) => Err(anyhow!("timed out waiting for backend reply")),
             },
+        }?;
+
+        if let Some(version) = requested_version {
+            if !response.is_error() {
+                framed.codec_mut().set_version(version);
+            }
         }
+        Ok(response)
     }
 
     async fn heartbeat(&self, framed: &mut Framed<TcpStream, RespCodec>) -> Result<()> {
