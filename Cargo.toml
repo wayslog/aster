@@ -43,6 +43,7 @@ futures = "0.3"
 md5 = "0.7"
 rand = "0.8"
 socket2 = "0.5"
+arc-swap = "1"
 
 [profile.release]
 debug = true

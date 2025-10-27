@@ -28,10 +28,16 @@ cargo build --release
 - `read_from_slave`：Cluster 模式下允许从 replica 读取。
 - `slowlog_log_slower_than`：慢查询阈值（微秒，默认 `10000`，设为 `-1` 关闭记录）。
 - `slowlog_max_len`：慢查询日志最大保留条数（默认 `128`）。
+- `hotkey_sample_every`：热点 Key 采样间隔（默认 `32`，越大代表对请求采样越稀疏）。
+- `hotkey_sketch_width` / `hotkey_sketch_depth`：热点 Key 频率估算所用 Count-Min Sketch 宽度与深度，决定误差与内存占用。
+- `hotkey_capacity`：HeavyKeeper 桶容量，用于保留候选热点 Key 数量上限。
+- `hotkey_decay`：HeavyKeeper 衰减系数，取值 `(0, 1]`，越接近 `1` 越倾向保留历史数据。
 - `auth` / `password`：前端 ACL，详见下文。
 - `backend_auth` / `backend_password`：后端 ACL 认证，详见下文。
 
 > 提示：代理原生支持 `SLOWLOG GET/LEN/RESET`，并按集群维度汇总慢查询；配置上述阈值和长度即可控制记录行为。
+>
+> 热点 Key 分析可通过 `HOTKEY ENABLE|DISABLE|GET|RESET` 控制，相关采样参数可在配置文件或 `CONFIG SET cluster.<name>.hotkey-*` 中动态调整。
 
 示例参见仓库根目录的 `default.toml`。
 

@@ -21,6 +21,7 @@ use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::{ClusterConfig, ClusterRuntime, ConfigManager};
+use crate::hotkey::Hotkey;
 use crate::info::{InfoContext, ProxyMode};
 use crate::metrics;
 use crate::protocol::redis::{
@@ -54,6 +55,7 @@ pub struct ClusterProxy {
     runtime: Arc<ClusterRuntime>,
     config_manager: Arc<ConfigManager>,
     slowlog: Arc<Slowlog>,
+    hotkey: Arc<Hotkey>,
     listen_port: u16,
     seed_nodes: usize,
 }
@@ -88,6 +90,9 @@ impl ClusterProxy {
         let slowlog = config_manager
             .slowlog_for(&config.name)
             .ok_or_else(|| anyhow!("missing slowlog state for cluster {}", config.name))?;
+        let hotkey = config_manager
+            .hotkey_for(&config.name)
+            .ok_or_else(|| anyhow!("missing hotkey state for cluster {}", config.name))?;
         let proxy = Self {
             cluster: cluster.clone(),
             hash_tag,
@@ -100,6 +105,7 @@ impl ClusterProxy {
             runtime,
             config_manager,
             slowlog,
+            hotkey,
             listen_port,
             seed_nodes: config.servers.len(),
         };
@@ -301,6 +307,18 @@ impl ClusterProxy {
                                         inflight += 1;
                                         continue;
                                     }
+                                    if let Some(response) = self.try_handle_hotkey(&cmd) {
+                                        let success = !response.is_error();
+                                        metrics::front_command(
+                                            self.cluster.as_ref(),
+                                            cmd.kind_label(),
+                                            success,
+                                        );
+                                        let fut = async move { response };
+                                        pending.push_back(Box::pin(fut));
+                                        inflight += 1;
+                                        continue;
+                                    }
                                     if let Some(response) = self.try_handle_slowlog(&cmd) {
                                         let success = !response.is_error();
                                         metrics::front_command(
@@ -365,6 +383,13 @@ impl ClusterProxy {
             &self.slowlog,
             command.args(),
         ))
+    }
+
+    fn try_handle_hotkey(&self, command: &RedisCommand) -> Option<RespValue> {
+        if !command.command_name().eq_ignore_ascii_case(b"HOTKEY") {
+            return None;
+        }
+        Some(crate::hotkey::handle_command(&self.hotkey, command.args()))
     }
 
     fn try_handle_info(&self, command: &RedisCommand) -> Option<RespValue> {
@@ -675,6 +700,7 @@ impl ClusterProxy {
         let fetch_trigger = self.fetch_trigger.clone();
         let cluster = self.cluster.clone();
         let slowlog = self.slowlog.clone();
+        let hotkey = self.hotkey.clone();
         let kind_label = command.kind_label();
         Box::pin(async move {
             match dispatch_with_context(
@@ -685,6 +711,7 @@ impl ClusterProxy {
                 fetch_trigger,
                 client_id,
                 slowlog,
+                hotkey,
                 command,
             )
             .await
@@ -1263,6 +1290,7 @@ async fn dispatch_with_context(
     fetch_trigger: mpsc::UnboundedSender<()>,
     client_id: ClientId,
     slowlog: Arc<Slowlog>,
+    hotkey: Arc<Hotkey>,
     command: RedisCommand,
 ) -> Result<RespValue> {
     let command_snapshot = command.clone();
@@ -1292,6 +1320,7 @@ async fn dispatch_with_context(
         .await
     };
     slowlog.maybe_record(&command_snapshot, started.elapsed());
+    hotkey.record_command(&command_snapshot);
     result
 }
 
