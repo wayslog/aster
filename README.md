@@ -97,3 +97,7 @@ ping_interval=10000
 ## changelog
 
 see [CHANGELOG.md](/CHANGELOG.md)
+
+## License
+
+本项目基于 [MIT License](LICENSE) 授权。
