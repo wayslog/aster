@@ -147,24 +147,20 @@ impl ClusterProxy {
         let codec_handle = framed.codec().clone();
         let (mut sink, stream) = framed.split();
         let mut stream = stream.fuse();
-        let mut pending: FuturesOrdered<BoxFuture<'static, RespValue>> = FuturesOrdered::new();
-        let mut pending_versions: VecDeque<Option<RespVersion>> = VecDeque::new();
+        let mut pending: FuturesOrdered<BoxFuture<'static, (RespValue, Option<RespVersion>)>> =
+            FuturesOrdered::new();
+        let mut resp3_negotiated = codec_handle.version() == RespVersion::Resp3;
         let mut inflight = 0usize;
         let mut stream_closed = false;
         let mut auth_state = self.auth.as_ref().map(|auth| auth.new_session());
 
         loop {
             tokio::select! {
-                Some(resp) = pending.next(), if inflight > 0 => {
+                Some((resp, version)) = pending.next(), if inflight > 0 => {
                     inflight -= 1;
-                    let version_hint = pending_versions
-                        .pop_front()
-                        .unwrap_or(None);
-                    let success = !resp.is_error();
-                    if success {
-                        if let Some(version) = version_hint {
-                            codec_handle.set_version(version);
-                        }
+                    if let Some(version) = version {
+                        codec_handle.set_version(version);
+                        resp3_negotiated = version == RespVersion::Resp3;
                     }
                     sink.send(resp).await?;
                 }
@@ -180,17 +176,13 @@ impl ClusterProxy {
                                                 cmd = new_cmd;
                                             }
                                             AuthAction::Reply(resp) => {
-                                                let fut = async move { resp };
-                                                pending_versions.push_back(None);
+                                                let fut = async move { (resp, None) };
                                                 pending.push_back(Box::pin(fut));
                                                 inflight += 1;
                                                 continue;
                                             }
                                         }
                                     }
-
-                                    let requested_version = cmd.resp_version_request();
-
                                     if matches!(cmd.as_subscription(), SubscriptionKind::Channel | SubscriptionKind::Pattern) {
                                         let kind_label = cmd.kind_label();
                                         if cmd.args().len() <= 1 {
@@ -245,8 +237,12 @@ impl ClusterProxy {
                                             }
                                         };
                                         while inflight > 0 {
-                                            if let Some(resp) = pending.next().await {
+                                            if let Some((resp, version)) = pending.next().await {
                                                 inflight -= 1;
+                                                if let Some(version) = version {
+                                                    codec_handle.set_version(version);
+                                                    resp3_negotiated = version == RespVersion::Resp3;
+                                                }
                                                 sink.send(resp).await?;
                                             } else {
                                                 inflight = 0;
@@ -275,7 +271,6 @@ impl ClusterProxy {
                                                 sink = new_sink;
                                                 stream = new_stream.fuse();
                                                 pending = FuturesOrdered::new();
-                                                pending_versions = VecDeque::new();
                                                 inflight = 0;
                                                 stream_closed = false;
                                                 continue;
@@ -307,8 +302,7 @@ impl ClusterProxy {
                                             kind_label,
                                             success,
                                         );
-                                        let fut = async move { response };
-                                        pending_versions.push_back(None);
+                                        let fut = async move { (response, None) };
                                         pending.push_back(Box::pin(fut));
                                         inflight += 1;
                                         continue;
@@ -319,8 +313,7 @@ impl ClusterProxy {
                                             cmd.kind_label(),
                                             true,
                                         );
-                                        let fut = async move { response };
-                                        pending_versions.push_back(None);
+                                        let fut = async move { (response, None) };
                                         pending.push_back(Box::pin(fut));
                                         inflight += 1;
                                         continue;
@@ -332,8 +325,7 @@ impl ClusterProxy {
                                             cmd.kind_label(),
                                             success,
                                         );
-                                        let fut = async move { response };
-                                        pending_versions.push_back(None);
+                                        let fut = async move { (response, None) };
                                         pending.push_back(Box::pin(fut));
                                         inflight += 1;
                                         continue;
@@ -345,15 +337,23 @@ impl ClusterProxy {
                                             cmd.kind_label(),
                                             success,
                                         );
-                                        let fut = async move { response };
-                                        pending_versions.push_back(None);
+                                        let fut = async move { (response, None) };
                                         pending.push_back(Box::pin(fut));
                                         inflight += 1;
                                         continue;
                                     }
+                                    let requested_version = cmd.resp_version_request();
                                     let guard = self.prepare_dispatch(client_id, cmd);
-                                    pending_versions.push_back(requested_version);
-                                    pending.push_back(Box::pin(guard));
+                                    let fut = async move {
+                                        let resp = guard.await;
+                                        let version = if !resp.is_error() {
+                                            requested_version
+                                        } else {
+                                            None
+                                        };
+                                        (resp, version)
+                                    };
+                                    pending.push_back(Box::pin(fut));
                                     inflight += 1;
                                 }
                                 Err(err) => {
@@ -361,8 +361,7 @@ impl ClusterProxy {
                                     metrics::front_error(self.cluster.as_ref(), "parse");
                                     metrics::front_command(self.cluster.as_ref(), "invalid", false);
                                     let message = Bytes::from(format!("ERR {err}"));
-                                    let fut = async move { RespValue::Error(message) };
-                                    pending_versions.push_back(None);
+                                    let fut = async move { (RespValue::Error(message), None) };
                                     pending.push_back(Box::pin(fut));
                                     inflight += 1;
                                 }
@@ -386,12 +385,10 @@ impl ClusterProxy {
             }
         }
 
-        while let Some(resp) = pending.next().await {
-            let version_hint = pending_versions.pop_front().unwrap_or(None);
-            if !resp.is_error() {
-                if let Some(version) = version_hint {
-                    codec_handle.set_version(version);
-                }
+        while let Some((resp, version)) = pending.next().await {
+            if let Some(version) = version {
+                codec_handle.set_version(version);
+                resp3_negotiated = version == RespVersion::Resp3;
             }
             sink.send(resp).await?;
         }
