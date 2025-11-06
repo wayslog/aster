@@ -51,7 +51,7 @@ impl RespValue {
     }
 
     pub fn is_error(&self) -> bool {
-        matches!(self, RespValue::Error(_))
+        matches!(self, RespValue::Error(_) | RespValue::BlobError(_))
     }
 
     pub fn as_array(&self) -> Option<&[RespValue]> {
