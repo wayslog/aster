@@ -41,6 +41,26 @@ wait_for_cluster() {
 
 wait_for_cluster
 
+if ! hello_standalone="$(REDISCLI_AUTH="$STANDALONE_PASS" redis-cli -h aster-proxy -p 6380 --raw HELLO 3 AUTH default "$STANDALONE_PASS")"; then
+  echo "HELLO 3 handshake against standalone proxy failed" >&2
+  exit 1
+fi
+if ! printf "%s\n" "$hello_standalone" | awk 'BEGIN{found=0} {if(prev=="proto" && $0=="3"){found=1} prev=$0} END{exit(found?0:1)}'; then
+  echo "HELLO 3 response from standalone proxy missing proto=3:" >&2
+  printf "%s\n" "$hello_standalone" >&2
+  exit 1
+fi
+
+if ! hello_cluster="$(REDISCLI_AUTH="$CLUSTER_USER_PASS" redis-cli -h aster-proxy -p 6381 --user "$CLUSTER_USER" --raw HELLO 3 AUTH "$CLUSTER_USER" "$CLUSTER_USER_PASS")"; then
+  echo "HELLO 3 handshake against cluster proxy failed" >&2
+  exit 1
+fi
+if ! printf "%s\n" "$hello_cluster" | awk 'BEGIN{found=0} {if(prev=="proto" && $0=="3"){found=1} prev=$0} END{exit(found?0:1)}'; then
+  echo "HELLO 3 response from cluster proxy missing proto=3:" >&2
+  printf "%s\n" "$hello_cluster" >&2
+  exit 1
+fi
+
 noauth_output="$(redis-cli -h aster-proxy -p 6380 PING 2>&1 || true)"
 if echo "$noauth_output" | grep -q "PONG"; then
   echo "Expected standalone proxy to require authentication" >&2

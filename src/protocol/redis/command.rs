@@ -8,6 +8,7 @@ use crate::backend::pool::BackendRequest;
 use crate::metrics;
 use crate::utils::{crc16, trim_hash_tag};
 
+use super::codec::RespVersion;
 use super::types::RespValue;
 
 pub const SLOT_COUNT: u16 = 16384;
@@ -81,6 +82,7 @@ impl RedisCommand {
                         RespValue::Array(_) => {
                             bail!("nested array arguments are not supported");
                         }
+                        other => bail!("unsupported RESP argument type: {:?}", other),
                     }
                 }
                 Self::new(parts)
@@ -196,6 +198,19 @@ impl RedisCommand {
             _ => None,
         }
     }
+
+    pub fn resp_version_request(&self) -> Option<RespVersion> {
+        if !self.command_name().eq_ignore_ascii_case(b"HELLO") {
+            return None;
+        }
+        let version_arg = self.args().get(1)?;
+        let version_text = std::str::from_utf8(version_arg).ok()?;
+        match version_text.parse::<u8>().ok()? {
+            2 => Some(RespVersion::Resp2),
+            3 => Some(RespVersion::Resp3),
+            _ => None,
+        }
+    }
 }
 
 impl BackendRequest for RedisCommand {
@@ -209,6 +224,40 @@ impl BackendRequest for RedisCommand {
         if self.remote_tracker.is_none() {
             self.remote_tracker = Some(metrics::remote_tracker(cluster));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    fn cmd(parts: &[&[u8]]) -> RedisCommand {
+        RedisCommand::new(parts.iter().map(|p| Bytes::copy_from_slice(p)).collect()).unwrap()
+    }
+
+    #[test]
+    fn detects_resp3_request_from_hello() {
+        let command = cmd(&[b"HELLO", b"3"]);
+        assert_eq!(command.resp_version_request(), Some(RespVersion::Resp3));
+    }
+
+    #[test]
+    fn detects_resp2_request_from_hello() {
+        let command = cmd(&[b"HELLO", b"2"]);
+        assert_eq!(command.resp_version_request(), Some(RespVersion::Resp2));
+    }
+
+    #[test]
+    fn ignores_invalid_or_missing_version() {
+        let without_version = cmd(&[b"HELLO"]);
+        assert_eq!(without_version.resp_version_request(), None);
+
+        let invalid_version = cmd(&[b"HELLO", b"foo"]);
+        assert_eq!(invalid_version.resp_version_request(), None);
+
+        let other_command = cmd(&[b"PING"]);
+        assert_eq!(other_command.resp_version_request(), None);
     }
 }
 

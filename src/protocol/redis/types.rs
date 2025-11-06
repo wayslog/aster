@@ -9,6 +9,16 @@ pub enum RespValue {
     NullBulk,
     Array(Vec<RespValue>),
     NullArray,
+    Null,
+    Boolean(bool),
+    Double(Bytes),
+    BigNumber(Bytes),
+    VerbatimString { format: [u8; 3], data: Bytes },
+    BlobError(Bytes),
+    Map(Vec<(RespValue, RespValue)>),
+    Set(Vec<RespValue>),
+    Push(Vec<RespValue>),
+    Attribute(Vec<(RespValue, RespValue)>),
 }
 
 impl RespValue {
@@ -28,8 +38,20 @@ impl RespValue {
         RespValue::Array(values)
     }
 
+    pub fn map(entries: Vec<(RespValue, RespValue)>) -> Self {
+        RespValue::Map(entries)
+    }
+
+    pub fn null() -> Self {
+        RespValue::Null
+    }
+
+    pub fn boolean(value: bool) -> Self {
+        RespValue::Boolean(value)
+    }
+
     pub fn is_error(&self) -> bool {
-        matches!(self, RespValue::Error(_))
+        matches!(self, RespValue::Error(_) | RespValue::BlobError(_))
     }
 
     pub fn as_array(&self) -> Option<&[RespValue]> {

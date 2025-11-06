@@ -8,6 +8,7 @@ servers = [
 ]
 password = "front-standalone-secret"
 backend_password = "backend-standalone-secret"
+backend_resp_version = "resp3"
 
 [[clusters]]
 name = "cluster"
@@ -24,3 +25,4 @@ auth = { password = "front-cluster-secret", users = [
     { username = "ops", password = "ops-secret" }
 ] }
 backend_password = "backend-cluster-secret"
+backend_resp_version = "resp3"
