@@ -25,8 +25,8 @@ use crate::hotkey::Hotkey;
 use crate::info::{InfoContext, ProxyMode};
 use crate::metrics;
 use crate::protocol::redis::{
-    BlockingKind, MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue, SubCommand,
-    SubResponse, SubscriptionKind,
+    BlockingKind, MultiDispatch, RedisCommand, RedisResponse, RespCodec, RespValue, RespVersion,
+    SubCommand, SubResponse, SubscriptionKind,
 };
 use crate::slowlog::Slowlog;
 use crate::utils::trim_hash_tag;
@@ -79,6 +79,7 @@ impl StandaloneProxy {
             runtime.clone(),
             DEFAULT_TIMEOUT_MS,
             backend_auth.clone(),
+            config.backend_resp_version,
         ));
         let auth = config
             .frontend_auth_users()
@@ -664,6 +665,7 @@ struct RedisConnector {
     max_reconnect_delay: Duration,
     heartbeat_interval: Duration,
     backend_auth: Option<BackendAuth>,
+    backend_resp_version: RespVersion,
 }
 
 impl RedisConnector {
@@ -671,6 +673,7 @@ impl RedisConnector {
         runtime: Arc<ClusterRuntime>,
         default_timeout_ms: u64,
         backend_auth: Option<BackendAuth>,
+        backend_resp_version: RespVersion,
     ) -> Self {
         Self {
             runtime,
@@ -679,6 +682,7 @@ impl RedisConnector {
             max_reconnect_delay: Duration::from_secs(2),
             heartbeat_interval: Duration::from_secs(20),
             backend_auth,
+            backend_resp_version,
         }
     }
 
@@ -710,6 +714,85 @@ impl RedisConnector {
                 .await?;
         }
         Ok(framed)
+    }
+
+    async fn negotiate_resp_version(
+        &self,
+        cluster: &str,
+        node: &BackendNode,
+        framed: &mut Framed<TcpStream, RespCodec>,
+    ) -> Result<RespVersion> {
+        framed.codec_mut().set_version(RespVersion::Resp2);
+        if self.backend_resp_version != RespVersion::Resp3 {
+            return Ok(RespVersion::Resp2);
+        }
+
+        let timeout_duration = self.current_timeout();
+        let mut hello_parts = vec![
+            RespValue::BulkString(Bytes::from_static(b"HELLO")),
+            RespValue::BulkString(Bytes::from_static(b"3")),
+        ];
+        if let Some(auth) = &self.backend_auth {
+            if let Some((username, password)) = auth.hello_credentials() {
+                hello_parts.push(RespValue::BulkString(Bytes::from_static(b"AUTH")));
+                hello_parts.push(RespValue::BulkString(username));
+                hello_parts.push(RespValue::BulkString(password));
+            }
+        }
+        let hello = RespValue::Array(hello_parts);
+
+        match timeout(timeout_duration, framed.send(hello)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(err.context(format!("failed to send RESP3 HELLO to {}", node.as_str())));
+            }
+            Err(_) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(anyhow!(
+                    "backend {} timed out sending RESP3 HELLO",
+                    node.as_str()
+                ));
+            }
+        }
+
+        let reply = match timeout(timeout_duration, framed.next()).await {
+            Ok(Some(Ok(value))) => value,
+            Ok(Some(Err(err))) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(err.context(format!(
+                    "failed to read RESP3 HELLO reply from {}",
+                    node.as_str()
+                )));
+            }
+            Ok(None) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(anyhow!(
+                    "backend {} closed connection during RESP3 HELLO",
+                    node.as_str()
+                ));
+            }
+            Err(_) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(anyhow!(
+                    "backend {} timed out waiting for RESP3 HELLO reply",
+                    node.as_str()
+                ));
+            }
+        };
+
+        if reply.is_error() {
+            info!(
+                cluster = %cluster,
+                backend = %node.as_str(),
+                "backend rejected RESP3 HELLO; falling back to RESP2"
+            );
+            framed.codec_mut().set_version(RespVersion::Resp2);
+            return Ok(RespVersion::Resp2);
+        }
+
+        framed.codec_mut().set_version(RespVersion::Resp3);
+        Ok(RespVersion::Resp3)
     }
 
     async fn execute_request(
@@ -816,7 +899,7 @@ impl Connector<RedisCommand> for RedisConnector {
                     if connection.is_none() {
                         let attempt_start = Instant::now();
                         match self.open_stream(&node).await {
-                            Ok(stream) => {
+                            Ok(mut stream) => {
                                 metrics::backend_probe_duration(
                                     &cluster,
                                     node.as_str(),
@@ -824,8 +907,27 @@ impl Connector<RedisCommand> for RedisConnector {
                                     attempt_start.elapsed(),
                                 );
                                 metrics::backend_probe_result(&cluster, node.as_str(), "connect", true);
-                                connection = Some(stream);
-                                current_delay = self.reconnect_delay;
+                                match self
+                                    .negotiate_resp_version(&cluster, &node, &mut stream)
+                                    .await
+                                {
+                                    Ok(_) => {
+                                        connection = Some(stream);
+                                        current_delay = self.reconnect_delay;
+                                    }
+                                    Err(err) => {
+                                        warn!(
+                                            cluster = %cluster,
+                                            backend = %node.as_str(),
+                                            error = %err,
+                                            "failed to negotiate RESP version with backend"
+                                        );
+                                        let _ = respond_to.send(Err(err));
+                                        current_delay = self.increase_delay(current_delay);
+                                        sleep(current_delay).await;
+                                        continue;
+                                    }
+                                }
                             }
                             Err(err) => {
                                 let elapsed = attempt_start.elapsed();

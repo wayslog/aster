@@ -1,12 +1,14 @@
 use anyhow::{anyhow, Result};
 use bytes::{Buf, Bytes, BytesMut};
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio_util::codec::{Decoder, Encoder};
 
 use super::types::RespValue;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RespVersion {
     Resp2,
     Resp3,
@@ -240,7 +242,10 @@ fn parse_verbatim_string(src: &[u8], pos: &mut usize, start: usize) -> Result<Op
     let mut format = [0u8; 3];
     format.copy_from_slice(&data[..3]);
     let payload = Bytes::copy_from_slice(&data[4..]);
-    Ok(Some(RespValue::VerbatimString { format, data: payload }))
+    Ok(Some(RespValue::VerbatimString {
+        format,
+        data: payload,
+    }))
 }
 
 fn parse_array(src: &[u8], pos: &mut usize, start: usize) -> Result<Option<RespValue>> {
@@ -309,12 +314,7 @@ where
     Ok(Some(ctor(values)))
 }
 
-fn parse_map<F>(
-    src: &[u8],
-    pos: &mut usize,
-    start: usize,
-    ctor: F,
-) -> Result<Option<RespValue>>
+fn parse_map<F>(src: &[u8], pos: &mut usize, start: usize, ctor: F) -> Result<Option<RespValue>>
 where
     F: FnOnce(Vec<(RespValue, RespValue)>) -> RespValue,
 {
@@ -511,7 +511,11 @@ fn write_map(
     }
 }
 
-fn write_map_as_array(entries: &[(RespValue, RespValue)], version: RespVersion, dst: &mut BytesMut) {
+fn write_map_as_array(
+    entries: &[(RespValue, RespValue)],
+    version: RespVersion,
+    dst: &mut BytesMut,
+) {
     dst.extend_from_slice(b"*");
     dst.extend_from_slice((entries.len() * 2).to_string().as_bytes());
     dst.extend_from_slice(b"\r\n");
@@ -538,10 +542,7 @@ mod tests {
         codec.upgrade_to_resp3();
         let mut buf = BytesMut::new();
         codec.encode(map_entry(), &mut buf).unwrap();
-        assert_eq!(
-            buf.as_ref(),
-            b"%1\r\n+mode\r\n$10\r\nstandalone\r\n"
-        );
+        assert_eq!(buf.as_ref(), b"%1\r\n+mode\r\n$10\r\nstandalone\r\n");
     }
 
     #[test]
@@ -549,9 +550,6 @@ mod tests {
         let mut codec = RespCodec::default();
         let mut buf = BytesMut::new();
         codec.encode(map_entry(), &mut buf).unwrap();
-        assert_eq!(
-            buf.as_ref(),
-            b"*2\r\n+mode\r\n$10\r\nstandalone\r\n"
-        );
+        assert_eq!(buf.as_ref(), b"*2\r\n+mode\r\n$10\r\nstandalone\r\n");
     }
 }

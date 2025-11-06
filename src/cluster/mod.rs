@@ -78,6 +78,7 @@ impl ClusterProxy {
             runtime.clone(),
             REQUEST_TIMEOUT_MS,
             backend_auth.clone(),
+            config.backend_resp_version,
         ));
         let pool = Arc::new(ConnectionPool::new(cluster.clone(), connector.clone()));
         let auth = config
@@ -149,7 +150,7 @@ impl ClusterProxy {
         let mut stream = stream.fuse();
         let mut pending: FuturesOrdered<BoxFuture<'static, (RespValue, Option<RespVersion>)>> =
             FuturesOrdered::new();
-        let mut resp3_negotiated = codec_handle.version() == RespVersion::Resp3;
+        let mut _resp3_negotiated = codec_handle.version() == RespVersion::Resp3;
         let mut inflight = 0usize;
         let mut stream_closed = false;
         let mut auth_state = self.auth.as_ref().map(|auth| auth.new_session());
@@ -160,7 +161,7 @@ impl ClusterProxy {
                     inflight -= 1;
                     if let Some(version) = version {
                         codec_handle.set_version(version);
-                        resp3_negotiated = version == RespVersion::Resp3;
+                        _resp3_negotiated = version == RespVersion::Resp3;
                     }
                     sink.send(resp).await?;
                 }
@@ -241,7 +242,7 @@ impl ClusterProxy {
                                                 inflight -= 1;
                                                 if let Some(version) = version {
                                                     codec_handle.set_version(version);
-                                                    resp3_negotiated = version == RespVersion::Resp3;
+                                                    _resp3_negotiated = version == RespVersion::Resp3;
                                                 }
                                                 sink.send(resp).await?;
                                             } else {
@@ -388,7 +389,7 @@ impl ClusterProxy {
         while let Some((resp, version)) = pending.next().await {
             if let Some(version) = version {
                 codec_handle.set_version(version);
-                resp3_negotiated = version == RespVersion::Resp3;
+                _resp3_negotiated = version == RespVersion::Resp3;
             }
             sink.send(resp).await?;
         }
@@ -928,6 +929,7 @@ struct ClusterConnector {
     heartbeat_interval: Duration,
     reconnect_base_delay: Duration,
     max_reconnect_attempts: usize,
+    backend_resp_version: RespVersion,
 }
 
 impl ClusterConnector {
@@ -935,6 +937,7 @@ impl ClusterConnector {
         runtime: Arc<ClusterRuntime>,
         default_timeout_ms: u64,
         backend_auth: Option<BackendAuth>,
+        backend_resp_version: RespVersion,
     ) -> Self {
         Self {
             runtime,
@@ -943,6 +946,7 @@ impl ClusterConnector {
             heartbeat_interval: Duration::from_secs(30),
             reconnect_base_delay: Duration::from_millis(50),
             max_reconnect_attempts: 3,
+            backend_resp_version,
         }
     }
 
@@ -973,6 +977,85 @@ impl ClusterConnector {
                 .await?;
         }
         Ok(framed)
+    }
+
+    async fn negotiate_resp_version(
+        &self,
+        cluster: &str,
+        node: &BackendNode,
+        framed: &mut Framed<TcpStream, RespCodec>,
+    ) -> Result<RespVersion> {
+        framed.codec_mut().set_version(RespVersion::Resp2);
+        if self.backend_resp_version != RespVersion::Resp3 {
+            return Ok(RespVersion::Resp2);
+        }
+
+        let timeout_duration = self.current_timeout();
+        let mut hello_parts = vec![
+            RespValue::BulkString(Bytes::from_static(b"HELLO")),
+            RespValue::BulkString(Bytes::from_static(b"3")),
+        ];
+        if let Some(auth) = &self.backend_auth {
+            if let Some((username, password)) = auth.hello_credentials() {
+                hello_parts.push(RespValue::BulkString(Bytes::from_static(b"AUTH")));
+                hello_parts.push(RespValue::BulkString(username));
+                hello_parts.push(RespValue::BulkString(password));
+            }
+        }
+        let hello = RespValue::Array(hello_parts);
+
+        match timeout(timeout_duration, framed.send(hello)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(err.context(format!("failed to send RESP3 HELLO to {}", node.as_str())));
+            }
+            Err(_) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(anyhow!(
+                    "backend {} timed out sending RESP3 HELLO",
+                    node.as_str()
+                ));
+            }
+        }
+
+        let reply = match timeout(timeout_duration, framed.next()).await {
+            Ok(Some(Ok(value))) => value,
+            Ok(Some(Err(err))) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(err.context(format!(
+                    "failed to read RESP3 HELLO reply from {}",
+                    node.as_str()
+                )));
+            }
+            Ok(None) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(anyhow!(
+                    "backend {} closed connection during RESP3 HELLO",
+                    node.as_str()
+                ));
+            }
+            Err(_) => {
+                metrics::backend_error(cluster, node.as_str(), "resp3_handshake");
+                return Err(anyhow!(
+                    "backend {} timed out waiting for RESP3 HELLO reply",
+                    node.as_str()
+                ));
+            }
+        };
+
+        if reply.is_error() {
+            info!(
+                cluster = %cluster,
+                backend = %node.as_str(),
+                "backend rejected RESP3 HELLO; falling back to RESP2"
+            );
+            framed.codec_mut().set_version(RespVersion::Resp2);
+            return Ok(RespVersion::Resp2);
+        }
+
+        framed.codec_mut().set_version(RespVersion::Resp3);
+        Ok(RespVersion::Resp3)
     }
 
     async fn execute(
@@ -1023,7 +1106,7 @@ impl ClusterConnector {
         for attempt in 0..self.max_reconnect_attempts {
             let attempt_start = Instant::now();
             match self.open_stream(node.as_str()).await {
-                Ok(stream) => {
+                Ok(mut stream) => {
                     metrics::backend_probe_duration(
                         cluster,
                         node.as_str(),
@@ -1031,7 +1114,25 @@ impl ClusterConnector {
                         attempt_start.elapsed(),
                     );
                     metrics::backend_probe_result(cluster, node.as_str(), "connect", true);
-                    return Ok(stream);
+                    match self
+                        .negotiate_resp_version(cluster, node, &mut stream)
+                        .await
+                    {
+                        Ok(_) => return Ok(stream),
+                        Err(err) => {
+                            warn!(
+                                cluster = %cluster,
+                                backend = %node.as_str(),
+                                attempt = attempt + 1,
+                                error = %err,
+                                "failed to negotiate RESP version with backend"
+                            );
+                            last_error = Some(err);
+                            if attempt + 1 < self.max_reconnect_attempts {
+                                sleep(self.reconnect_base_delay).await;
+                            }
+                        }
+                    }
                 }
                 Err(err) => {
                     let elapsed = attempt_start.elapsed();

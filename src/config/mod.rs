@@ -15,7 +15,7 @@ use crate::hotkey::{
     Hotkey, HotkeyConfig, DEFAULT_DECAY, DEFAULT_HOTKEY_CAPACITY, DEFAULT_SAMPLE_EVERY,
     DEFAULT_SKETCH_DEPTH, DEFAULT_SKETCH_WIDTH,
 };
-use crate::protocol::redis::{RedisCommand, RespValue};
+use crate::protocol::redis::{RedisCommand, RespValue, RespVersion};
 use crate::slowlog::Slowlog;
 
 /// Environment variable controlling the default worker thread count when a
@@ -49,6 +49,10 @@ fn default_hotkey_capacity() -> usize {
 
 fn default_hotkey_decay() -> f64 {
     DEFAULT_DECAY
+}
+
+fn default_backend_resp_version() -> RespVersion {
+    RespVersion::Resp2
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -177,6 +181,8 @@ pub struct ClusterConfig {
     pub hotkey_capacity: usize,
     #[serde(default = "default_hotkey_decay")]
     pub hotkey_decay: f64,
+    #[serde(default = "default_backend_resp_version")]
+    pub backend_resp_version: RespVersion,
 }
 
 impl ClusterConfig {

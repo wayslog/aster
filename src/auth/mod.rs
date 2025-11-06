@@ -100,6 +100,17 @@ impl BackendAuth {
             .expect("AUTH command is always valid")
     }
 
+    pub fn hello_credentials(&self) -> Option<(Bytes, Bytes)> {
+        match self.parts.len() {
+            2 => Some((
+                Bytes::from_static(DEFAULT_USER.as_bytes()),
+                self.parts[1].clone(),
+            )),
+            3 => Some((self.parts[1].clone(), self.parts[2].clone())),
+            _ => None,
+        }
+    }
+
     pub async fn apply_to_stream(
         &self,
         framed: &mut Framed<TcpStream, RespCodec>,
