@@ -18,6 +18,7 @@ use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
 use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
+use crate::cache::{tracker::CacheTrackerSet, ClientCache};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::{ClusterConfig, ClusterRuntime, ConfigManager};
@@ -55,6 +56,8 @@ pub struct StandaloneProxy {
     hotkey: Arc<Hotkey>,
     listen_port: u16,
     backend_nodes: usize,
+    client_cache: Arc<ClientCache>,
+    cache_trackers: Arc<CacheTrackerSet>,
 }
 
 impl StandaloneProxy {
@@ -96,6 +99,21 @@ impl StandaloneProxy {
         let hotkey = config_manager
             .hotkey_for(&config.name)
             .ok_or_else(|| anyhow!("missing hotkey state for cluster {}", config.name))?;
+        let client_cache = config_manager
+            .client_cache_for(&config.name)
+            .ok_or_else(|| anyhow!("missing client cache state for cluster {}", config.name))?;
+        let cache_trackers = Arc::new(CacheTrackerSet::new(
+            cluster.clone(),
+            client_cache.clone(),
+            runtime.clone(),
+            backend_auth.clone(),
+            DEFAULT_TIMEOUT_MS,
+        ));
+        let tracker_nodes = nodes
+            .iter()
+            .map(|entry| entry.backend.as_str().to_string())
+            .collect();
+        cache_trackers.set_nodes(tracker_nodes);
 
         Ok(Self {
             cluster,
@@ -110,6 +128,8 @@ impl StandaloneProxy {
             hotkey,
             listen_port,
             backend_nodes,
+            client_cache,
+            cache_trackers,
         })
     }
 
@@ -468,6 +488,16 @@ impl StandaloneProxy {
                 continue;
             }
 
+            if let Some(hit) = self.client_cache.lookup(&command) {
+                self.hotkey.record_command(&command);
+                metrics::front_command(self.cluster.as_ref(), kind_label, true);
+                framed.send(hit).await?;
+                continue;
+            }
+
+            let cache_candidate = command.clone();
+            let cacheable_read = ClientCache::is_cacheable_read(&cache_candidate);
+            let invalidating_write = ClientCache::is_invalidating_write(&cache_candidate);
             let requested_version = command.resp_version_request();
             let response = match self.dispatch(client_id, command).await {
                 Ok(resp) => resp,
@@ -480,6 +510,12 @@ impl StandaloneProxy {
             };
 
             let success = !response.is_error();
+            if success && cacheable_read {
+                self.client_cache.store(&cache_candidate, &response);
+            }
+            if invalidating_write {
+                self.client_cache.invalidate_command(&cache_candidate);
+            }
             if success {
                 if let Some(version) = requested_version {
                     framed.codec_mut().set_version(version);
