@@ -60,7 +60,7 @@ pub struct ClusterProxy {
     listen_port: u16,
     seed_nodes: usize,
     client_cache: Arc<ClientCache>,
-    cache_trackers: Arc<CacheTrackerSet>,
+    _cache_trackers: Arc<CacheTrackerSet>,
 }
 
 impl ClusterProxy {
@@ -123,7 +123,7 @@ impl ClusterProxy {
             listen_port,
             seed_nodes: config.servers.len(),
             client_cache,
-            cache_trackers: cache_trackers.clone(),
+            _cache_trackers: cache_trackers.clone(),
         };
 
         // trigger an immediate topology fetch

@@ -1,12 +1,13 @@
 use std::cmp::{max, Reverse};
 use std::collections::BinaryHeap;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ahash::{AHasher, RandomState};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use hashbrown::HashMap;
@@ -28,7 +29,6 @@ const STATE_ENABLED: u8 = 1;
 const STATE_DRAINING: u8 = 2;
 
 const MAX_MULTI_KEYS: usize = 64;
-const MAX_HASH_FIELD_CACHED: usize = 64;
 
 /// Operational state for the cache, observable by trackers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +65,16 @@ pub struct ClientCache {
     config: RwLock<ClientCacheConfig>,
     drain_handle: Mutex<Option<JoinHandle<()>>>,
     state_tx: watch::Sender<CacheState>,
+}
+
+impl fmt::Debug for ClientCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClientCache")
+            .field("cluster", &self.cluster)
+            .field("state", &self.state())
+            .field("resp3_ready", &self.resp3_ready)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ClientCache {
@@ -303,11 +313,10 @@ impl ClientCache {
             Some(value) => value,
             None => return,
         };
-        let footprint = resp_size(&normalized);
-        if footprint > config.max_value_bytes {
+        if resp_size(&normalized) > config.max_value_bytes {
             return;
         }
-        let entry = CacheEntry::new(normalized, footprint);
+        let entry = CacheEntry::new(normalized);
         let cache_key = CacheKey::new(kind, key.clone(), field.cloned());
         let shards = self.shards.load();
         let index = shard_index(cache_key.primary.as_ref(), shards.len().max(1));
@@ -343,11 +352,6 @@ impl ClientCache {
             .map(|_| CacheShard::new(per_shard))
             .collect::<Vec<_>>();
         self.shards.store(Arc::new(shards));
-    }
-
-    fn total_entries(&self) -> usize {
-        let shards = self.shards.load();
-        shards.iter().map(|shard| shard.len()).sum()
     }
 
     fn start_drain_task(self: &Arc<Self>) {
@@ -468,15 +472,13 @@ impl CacheCommandKind {
 struct CacheEntry {
     value: RespValue,
     access: u64,
-    size: usize,
 }
 
 impl CacheEntry {
-    fn new(value: RespValue, size: usize) -> Self {
+    fn new(value: RespValue) -> Self {
         Self {
             value,
             access: 0,
-            size,
         }
     }
 }
@@ -508,10 +510,6 @@ impl CacheShard {
         Self {
             inner: Mutex::new(CacheShardInner::new(capacity)),
         }
-    }
-
-    fn len(&self) -> usize {
-        self.inner.lock().len()
     }
 
     fn get(
@@ -565,15 +563,15 @@ impl CacheShardInner {
         }
     }
 
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-
     fn touch(&mut self, key: &CacheKey) -> Option<RespValue> {
+        if !self.entries.contains_key(key) {
+            return None;
+        }
+        let next_access = self.next_access();
         if let Some(entry) = self.entries.get_mut(key) {
-            entry.access = self.next_access();
+            entry.access = next_access;
             self.order
-                .push(Reverse(HeapEntry::new(entry.access, key.clone())));
+                .push(Reverse(HeapEntry::new(next_access, key.clone())));
             Some(entry.value.clone())
         } else {
             None
@@ -784,7 +782,7 @@ fn classify_write(command: &RedisCommand) -> Option<CacheWrite<'_>> {
             if args.len() < 2 {
                 return None;
             }
-            let mut keys = SmallVec::<[&Bytes; 1]>::new();
+            let mut keys = SmallVec::<[&Bytes; MAX_MULTI_KEYS]>::new();
             keys.push(&args[1]);
             Some(CacheWrite::Keys(keys))
         }

@@ -57,7 +57,7 @@ pub struct StandaloneProxy {
     listen_port: u16,
     backend_nodes: usize,
     client_cache: Arc<ClientCache>,
-    cache_trackers: Arc<CacheTrackerSet>,
+    _cache_trackers: Arc<CacheTrackerSet>,
 }
 
 impl StandaloneProxy {
@@ -129,7 +129,7 @@ impl StandaloneProxy {
             listen_port,
             backend_nodes,
             client_cache,
-            cache_trackers,
+            _cache_trackers: cache_trackers,
         })
     }
 

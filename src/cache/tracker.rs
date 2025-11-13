@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use futures::{SinkExt, StreamExt};
 use parking_lot::Mutex;
@@ -230,7 +230,6 @@ async fn open_stream(
     stream.set_nodelay(true).context("failed to enable TCP_NODELAY")?;
     #[cfg(any(unix, windows))]
     {
-        use socket2::{SockRef, TcpKeepalive};
         let keepalive = TcpKeepalive::new()
             .with_time(Duration::from_secs(60))
             .with_interval(Duration::from_secs(60));
