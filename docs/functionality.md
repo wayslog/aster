@@ -72,6 +72,7 @@
 - 订阅与阻塞命令：
   - SUBSCRIBE / PSUBSCRIBE 会进入独占会话，按频道哈希槽选择节点，并在 MOVED / ASK 时自动重连与重放订阅；
   - BLPOP 等阻塞类命令复用独占连接，避免被 pipeline 请求阻塞。
+- 备份读（backup request）：仅在 Redis Cluster 模式下可选启用；当 master 读命令在配置阈值上仍未返回时，会复制该请求至对应 replica，优先向客户端返回更快的副本响应，同时继续跟踪 master 延迟以动态更新阈值。
 - 依赖大量 `Rc<RefCell<>>`、`futures::unsync::mpsc`，并使用 `tokio::runtime::current_thread`.
 
 ## 协议与命令抽象

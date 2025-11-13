@@ -82,6 +82,11 @@ fetch = 600
 # read_from_slave is the feature make slave balanced readed by client and ignore side effects.
 read_from_slave = true
 
+# backup_request duplicates slow reads to replica nodes when enabled.
+# trigger_slow_ms decides the fixed delay (set "default" or remove field to rely on moving average).
+# multiplier is applied to the rolling average latency to determine another trigger threshold.
+backup_request = { enabled = false, trigger_slow_ms = 5, multiplier = 2.0 }
+
 ############################# Proxy Mode Special #######################################################
 # ping_fail_limit means when ping fail reach the limit number, the node will be ejected from the cluster
 # until the ping is ok in future.
