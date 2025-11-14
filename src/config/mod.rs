@@ -11,6 +11,7 @@ use tokio::fs;
 use tracing::{info, warn};
 
 use crate::auth::{AuthUserConfig, BackendAuthConfig, FrontendAuthConfig};
+use crate::cache::ClientCache;
 use crate::hotkey::{
     Hotkey, HotkeyConfig, DEFAULT_DECAY, DEFAULT_HOTKEY_CAPACITY, DEFAULT_SAMPLE_EVERY,
     DEFAULT_SKETCH_DEPTH, DEFAULT_SKETCH_WIDTH,
@@ -53,6 +54,26 @@ fn default_hotkey_decay() -> f64 {
 
 fn default_backend_resp_version() -> RespVersion {
     RespVersion::Resp2
+}
+
+fn default_client_cache_max_entries() -> usize {
+    100_000
+}
+
+fn default_client_cache_max_value_bytes() -> usize {
+    512 * 1024
+}
+
+fn default_client_cache_shards() -> usize {
+    32
+}
+
+fn default_client_cache_drain_batch() -> usize {
+    1024
+}
+
+fn default_client_cache_drain_interval_ms() -> u64 {
+    50
 }
 
 fn default_backup_multiplier() -> f64 {
@@ -148,6 +169,56 @@ impl Default for BackupRequestConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClientCacheConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_client_cache_max_entries")]
+    pub max_entries: usize,
+    #[serde(default = "default_client_cache_max_value_bytes")]
+    pub max_value_bytes: usize,
+    #[serde(default = "default_client_cache_shards")]
+    pub shard_count: usize,
+    #[serde(default = "default_client_cache_drain_batch")]
+    pub drain_batch: usize,
+    #[serde(default = "default_client_cache_drain_interval_ms")]
+    pub drain_interval_ms: u64,
+}
+
+impl ClientCacheConfig {
+    pub fn ensure_valid(&self) -> Result<()> {
+        if self.max_entries == 0 {
+            bail!("client cache max_entries must be > 0");
+        }
+        if self.max_value_bytes == 0 {
+            bail!("client cache max_value_bytes must be > 0");
+        }
+        if self.shard_count == 0 {
+            bail!("client cache shard_count must be > 0");
+        }
+        if self.drain_batch == 0 {
+            bail!("client cache drain_batch must be > 0");
+        }
+        if self.drain_interval_ms == 0 {
+            bail!("client cache drain_interval_ms must be > 0");
+        }
+        Ok(())
+    }
+}
+
+impl Default for ClientCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_entries: default_client_cache_max_entries(),
+            max_value_bytes: default_client_cache_max_value_bytes(),
+            shard_count: default_client_cache_shards(),
+            drain_batch: default_client_cache_drain_batch(),
+            drain_interval_ms: default_client_cache_drain_interval_ms(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClusterConfig {
     pub name: String,
     pub listen_addr: String,
@@ -206,6 +277,8 @@ pub struct ClusterConfig {
     #[serde(default = "default_backend_resp_version")]
     pub backend_resp_version: RespVersion,
     #[serde(default)]
+    pub client_cache: ClientCacheConfig,
+    #[serde(default)]
     pub backup_request: BackupRequestConfig,
 }
 
@@ -224,6 +297,8 @@ impl ClusterConfig {
         if self.listen_addr.trim().is_empty() {
             bail!("cluster {} listen_addr cannot be empty", self.name);
         }
+
+        self.client_cache.ensure_valid()?;
 
         parse_port(&self.listen_addr).with_context(|| {
             format!(
@@ -439,6 +514,7 @@ struct ClusterEntry {
     runtime: Arc<ClusterRuntime>,
     slowlog: Arc<Slowlog>,
     hotkey: Arc<Hotkey>,
+    client_cache: Arc<ClientCache>,
     backup: Arc<BackupRequestRuntime>,
 }
 
@@ -470,6 +546,12 @@ impl ConfigManager {
                 decay: cluster.hotkey_decay,
             };
             let hotkey = Arc::new(Hotkey::new(hotkey_config));
+            let cluster_label: Arc<str> = cluster.name.clone().into();
+            let client_cache = Arc::new(ClientCache::new(
+                cluster_label.clone(),
+                cluster.client_cache.clone(),
+                cluster.backend_resp_version == RespVersion::Resp3,
+            ));
             let backup = Arc::new(BackupRequestRuntime::new(&cluster.backup_request));
             clusters.insert(
                 key,
@@ -478,6 +560,7 @@ impl ConfigManager {
                     runtime,
                     slowlog,
                     hotkey,
+                    client_cache,
                     backup,
                 },
             );
@@ -506,6 +589,12 @@ impl ConfigManager {
         self.clusters
             .get(&name.to_ascii_lowercase())
             .map(|entry| entry.hotkey.clone())
+    }
+
+    pub fn client_cache_for(&self, name: &str) -> Option<Arc<ClientCache>> {
+        self.clusters
+            .get(&name.to_ascii_lowercase())
+            .map(|entry| entry.client_cache.clone())
     }
 
     pub fn backup_request_for(&self, name: &str) -> Option<Arc<BackupRequestRuntime>> {
@@ -691,8 +780,81 @@ impl ConfigManager {
                     "cluster hotkey_decay updated via CONFIG SET"
                 );
             }
+            ClusterField::ClientCacheEnabled => {
+                let enabled = parse_bool_flag(value, "client-cache-enabled")?;
+                if enabled {
+                    entry
+                        .client_cache
+                        .enable()
+                        .with_context(|| format!("cluster {} failed to enable client cache", cluster_name))?;
+                } else {
+                    entry.client_cache.disable();
+                }
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].client_cache.enabled = enabled;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster client_cache.enabled updated via CONFIG SET"
+                );
+            }
+            ClusterField::ClientCacheMaxEntries => {
+                let parsed = parse_positive_usize(value, "client-cache-max-entries")?;
+                entry.client_cache.set_max_entries(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].client_cache.max_entries = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster client_cache.max_entries updated via CONFIG SET"
+                );
+            }
+            ClusterField::ClientCacheMaxValueBytes => {
+                let parsed = parse_positive_usize(value, "client-cache-max-value-bytes")?;
+                entry.client_cache.set_max_value_bytes(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].client_cache.max_value_bytes = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster client_cache.max_value_bytes updated via CONFIG SET"
+                );
+            }
+            ClusterField::ClientCacheShardCount => {
+                let parsed = parse_positive_usize(value, "client-cache-shard-count")?;
+                entry.client_cache.set_shard_count(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].client_cache.shard_count = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster client_cache.shard_count updated via CONFIG SET"
+                );
+            }
+            ClusterField::ClientCacheDrainBatch => {
+                let parsed = parse_positive_usize(value, "client-cache-drain-batch")?;
+                entry.client_cache.set_drain_batch(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].client_cache.drain_batch = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster client_cache.drain_batch updated via CONFIG SET"
+                );
+            }
+            ClusterField::ClientCacheDrainIntervalMs => {
+                let parsed = parse_positive_u64(value, "client-cache-drain-interval-ms")?;
+                entry.client_cache.set_drain_interval(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].client_cache.drain_interval_ms = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster client_cache.drain_interval_ms updated via CONFIG SET"
+                );
+            }
             ClusterField::BackupRequestEnabled => {
-                let enabled = parse_bool_flag(value)?;
+                let enabled = parse_bool_flag(value, "backup-request-enabled")?;
                 entry.backup.set_enabled(enabled);
                 let mut guard = self.config.write();
                 guard.clusters_mut()[entry.index].backup_request.enabled = enabled;
@@ -783,6 +945,31 @@ impl ConfigManager {
                     format!("cluster.{}.hotkey-decay", name),
                     hotkey_cfg.decay.to_string(),
                 ));
+                let cache_cfg = &cluster.client_cache;
+                entries.push((
+                    format!("cluster.{}.client-cache-enabled", name),
+                    cache_cfg.enabled.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.client-cache-max-entries", name),
+                    cache_cfg.max_entries.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.client-cache-max-value-bytes", name),
+                    cache_cfg.max_value_bytes.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.client-cache-shard-count", name),
+                    cache_cfg.shard_count.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.client-cache-drain-batch", name),
+                    cache_cfg.drain_batch.to_string(),
+                ));
+                entries.push((
+                    format!("cluster.{}.client-cache-drain-interval-ms", name),
+                    cache_cfg.drain_interval_ms.to_string(),
+                ));
                 entries.push((
                     format!("cluster.{}.backup-request-enabled", name),
                     bool_to_string(entry.backup.enabled()),
@@ -836,6 +1023,12 @@ fn parse_key(key: &str) -> Result<(String, ClusterField)> {
         "hotkey-sketch-depth" => ClusterField::HotkeySketchDepth,
         "hotkey-capacity" => ClusterField::HotkeyCapacity,
         "hotkey-decay" => ClusterField::HotkeyDecay,
+        "client-cache-enabled" => ClusterField::ClientCacheEnabled,
+        "client-cache-max-entries" => ClusterField::ClientCacheMaxEntries,
+        "client-cache-max-value-bytes" => ClusterField::ClientCacheMaxValueBytes,
+        "client-cache-shard-count" => ClusterField::ClientCacheShardCount,
+        "client-cache-drain-batch" => ClusterField::ClientCacheDrainBatch,
+        "client-cache-drain-interval-ms" => ClusterField::ClientCacheDrainIntervalMs,
         "backup-request-enabled" => ClusterField::BackupRequestEnabled,
         "backup-request-threshold-ms" => ClusterField::BackupRequestThreshold,
         "backup-request-multiplier" => ClusterField::BackupRequestMultiplier,
@@ -932,12 +1125,34 @@ fn parse_hotkey_decay(value: &str) -> Result<f64> {
     Ok(parsed)
 }
 
-fn parse_bool_flag(value: &str) -> Result<bool> {
+fn parse_bool_flag(value: &str, field: &str) -> Result<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "yes" | "true" | "1" => Ok(true),
-        "no" | "false" | "0" => Ok(false),
-        other => bail!("invalid boolean value '{}'", other),
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        other => bail!("invalid {} value '{}'", field, other),
     }
+}
+
+fn parse_positive_usize(value: &str, field: &str) -> Result<usize> {
+    let parsed: i64 = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid {} value '{}'", field, value))?;
+    if parsed <= 0 {
+        bail!("{} must be > 0", field);
+    }
+    usize::try_from(parsed).map_err(|_| anyhow!("{} is too large", field))
+}
+
+fn parse_positive_u64(value: &str, field: &str) -> Result<u64> {
+    let parsed: i64 = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid {} value '{}'", field, value))?;
+    if parsed <= 0 {
+        bail!("{} must be > 0", field);
+    }
+    Ok(parsed as u64)
 }
 
 fn parse_backup_multiplier(value: &str) -> Result<f64> {
@@ -989,6 +1204,12 @@ enum ClusterField {
     HotkeySketchDepth,
     HotkeyCapacity,
     HotkeyDecay,
+    ClientCacheEnabled,
+    ClientCacheMaxEntries,
+    ClientCacheMaxValueBytes,
+    ClientCacheShardCount,
+    ClientCacheDrainBatch,
+    ClientCacheDrainIntervalMs,
     BackupRequestEnabled,
     BackupRequestThreshold,
     BackupRequestMultiplier,
