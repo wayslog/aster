@@ -179,6 +179,50 @@ static FRONT_COMMAND_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("front command counter registration must succeed")
 });
 
+static CLIENT_CACHE_LOOKUP: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_client_cache_lookup_total",
+            "client cache lookup results grouped by kind"
+        ),
+        &["cluster", "kind", "result"]
+    )
+    .expect("client cache lookup counter must succeed")
+});
+
+static CLIENT_CACHE_STORE: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_client_cache_store_total",
+            "client cache store operations grouped by kind"
+        ),
+        &["cluster", "kind"]
+    )
+    .expect("client cache store counter must succeed")
+});
+
+static CLIENT_CACHE_INVALIDATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_client_cache_invalidate_total",
+            "client cache invalidations grouped by cluster"
+        ),
+        &["cluster"]
+    )
+    .expect("client cache invalidation counter must succeed")
+});
+
+static CLIENT_CACHE_STATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_client_cache_state_total",
+            "client cache state transitions grouped by cluster"
+        ),
+        &["cluster", "state"]
+    )
+    .expect("client cache state counter must succeed")
+});
+
 static BACKEND_REQUEST_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
     register_int_counter_vec!(
         opts!(
@@ -320,6 +364,35 @@ pub fn front_command(cluster: &str, kind: &str, success: bool) {
     let result = if success { "ok" } else { "fail" };
     FRONT_COMMAND_TOTAL
         .with_label_values(&[cluster, kind, result])
+        .inc();
+}
+
+/// Record a client cache lookup result.
+pub fn client_cache_lookup(cluster: &str, kind: &str, hit: bool) {
+    let result = if hit { "hit" } else { "miss" };
+    CLIENT_CACHE_LOOKUP
+        .with_label_values(&[cluster, kind, result])
+        .inc();
+}
+
+/// Record a client cache store/update event.
+pub fn client_cache_store(cluster: &str, kind: &str) {
+    CLIENT_CACHE_STORE
+        .with_label_values(&[cluster, kind])
+        .inc();
+}
+
+/// Record the number of keys invalidated from the client cache.
+pub fn client_cache_invalidate(cluster: &str, count: usize) {
+    CLIENT_CACHE_INVALIDATE
+        .with_label_values(&[cluster])
+        .inc_by(count as u64);
+}
+
+/// Record a client cache state transition.
+pub fn client_cache_state(cluster: &str, state: &str) {
+    CLIENT_CACHE_STATE
+        .with_label_values(&[cluster, state])
         .inc();
 }
 

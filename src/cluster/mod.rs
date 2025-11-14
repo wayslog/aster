@@ -18,6 +18,7 @@ use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
 use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
+use crate::cache::{tracker::CacheTrackerSet, ClientCache};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::config::{ClusterConfig, ClusterRuntime, ConfigManager};
@@ -58,6 +59,8 @@ pub struct ClusterProxy {
     hotkey: Arc<Hotkey>,
     listen_port: u16,
     seed_nodes: usize,
+    client_cache: Arc<ClientCache>,
+    _cache_trackers: Arc<CacheTrackerSet>,
 }
 
 impl ClusterProxy {
@@ -94,6 +97,16 @@ impl ClusterProxy {
         let hotkey = config_manager
             .hotkey_for(&config.name)
             .ok_or_else(|| anyhow!("missing hotkey state for cluster {}", config.name))?;
+        let client_cache = config_manager
+            .client_cache_for(&config.name)
+            .ok_or_else(|| anyhow!("missing client cache state for cluster {}", config.name))?;
+        let cache_trackers = Arc::new(CacheTrackerSet::new(
+            cluster.clone(),
+            client_cache.clone(),
+            runtime.clone(),
+            backend_auth.clone(),
+            REQUEST_TIMEOUT_MS,
+        ));
         let proxy = Self {
             cluster: cluster.clone(),
             hash_tag,
@@ -109,6 +122,8 @@ impl ClusterProxy {
             hotkey,
             listen_port,
             seed_nodes: config.servers.len(),
+            client_cache,
+            _cache_trackers: cache_trackers.clone(),
         };
 
         // trigger an immediate topology fetch
@@ -119,6 +134,7 @@ impl ClusterProxy {
             connector,
             proxy.slots.clone(),
             trigger_rx,
+            Some(cache_trackers),
         ));
 
         Ok(proxy)
@@ -339,6 +355,18 @@ impl ClusterProxy {
                                             success,
                                         );
                                         let fut = async move { (response, None) };
+                                        pending.push_back(Box::pin(fut));
+                                        inflight += 1;
+                                        continue;
+                                    }
+                                    if let Some(hit) = self.client_cache.lookup(&cmd) {
+                                        self.hotkey.record_command(&cmd);
+                                        metrics::front_command(
+                                            self.cluster.as_ref(),
+                                            cmd.kind_label(),
+                                            true,
+                                        );
+                                        let fut = async move { (hit, None) };
                                         pending.push_back(Box::pin(fut));
                                         inflight += 1;
                                         continue;
@@ -728,7 +756,11 @@ impl ClusterProxy {
         let slowlog = self.slowlog.clone();
         let hotkey = self.hotkey.clone();
         let kind_label = command.kind_label();
+        let cache = self.client_cache.clone();
         Box::pin(async move {
+            let cache_candidate = command.clone();
+            let cacheable_read = ClientCache::is_cacheable_read(&cache_candidate);
+            let invalidating_write = ClientCache::is_invalidating_write(&cache_candidate);
             match dispatch_with_context(
                 hash_tag,
                 read_from_slave,
@@ -744,10 +776,19 @@ impl ClusterProxy {
             {
                 Ok(resp) => {
                     let success = !matches!(resp, RespValue::Error(_));
+                    if success && cacheable_read {
+                        cache.store(&cache_candidate, &resp);
+                    }
+                    if invalidating_write {
+                        cache.invalidate_command(&cache_candidate);
+                    }
                     metrics::front_command(cluster.as_ref(), kind_label, success);
                     resp
                 }
                 Err(err) => {
+                    if invalidating_write {
+                        cache.invalidate_command(&cache_candidate);
+                    }
                     metrics::global_error_incr();
                     metrics::front_command(cluster.as_ref(), kind_label, false);
                     metrics::front_error(cluster.as_ref(), "dispatch");
@@ -1341,6 +1382,7 @@ async fn fetch_topology(
     connector: Arc<ClusterConnector>,
     slots: Arc<watch::Sender<SlotMap>>,
     mut trigger: mpsc::UnboundedReceiver<()>,
+    tracker: Option<Arc<CacheTrackerSet>>,
 ) {
     let mut ticker = tokio::time::interval(FETCH_INTERVAL);
     loop {
@@ -1349,7 +1391,7 @@ async fn fetch_topology(
             _ = trigger.recv() => {},
         }
 
-        if let Err(err) = fetch_once(&cluster, &seeds, connector.clone(), slots.clone()).await {
+        if let Err(err) = fetch_once(&cluster, &seeds, connector.clone(), slots.clone(), tracker.clone()).await {
             warn!(cluster = %cluster, error = %err, "failed to refresh cluster topology");
         }
     }
@@ -1360,6 +1402,7 @@ async fn fetch_once(
     seeds: &[String],
     connector: Arc<ClusterConnector>,
     slots: Arc<watch::Sender<SlotMap>>,
+    tracker: Option<Arc<CacheTrackerSet>>,
 ) -> Result<()> {
     let mut shuffled = seeds.to_vec();
     {
@@ -1371,6 +1414,9 @@ async fn fetch_once(
         match fetch_from_seed(&seed, connector.clone()).await {
             Ok(map) => {
                 slots.send_replace(map.clone());
+                if let Some(ref watchers) = tracker {
+                    watchers.set_nodes(map.all_nodes());
+                }
                 info!(cluster = %cluster, seed = %seed, "cluster slots refreshed");
                 return Ok(());
             }
