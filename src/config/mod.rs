@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -76,6 +76,10 @@ fn default_client_cache_drain_interval_ms() -> u64 {
     50
 }
 
+fn default_backup_multiplier() -> f64 {
+    2.0
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default)]
@@ -143,6 +147,24 @@ pub enum CacheType {
 impl Default for CacheType {
     fn default() -> Self {
         CacheType::RedisCluster
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct BackupRequestConfig {
+    pub enabled: bool,
+    pub trigger_slow_ms: Option<u64>,
+    pub multiplier: f64,
+}
+
+impl Default for BackupRequestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            trigger_slow_ms: None,
+            multiplier: default_backup_multiplier(),
+        }
     }
 }
 
@@ -256,6 +278,8 @@ pub struct ClusterConfig {
     pub backend_resp_version: RespVersion,
     #[serde(default)]
     pub client_cache: ClientCacheConfig,
+    #[serde(default)]
+    pub backup_request: BackupRequestConfig,
 }
 
 impl ClusterConfig {
@@ -309,6 +333,12 @@ impl ClusterConfig {
         }
         if !(self.hotkey_decay > 0.0 && self.hotkey_decay <= 1.0) {
             bail!("cluster {} hotkey_decay must be in (0, 1]", self.name);
+        }
+        if self.backup_request.multiplier <= 0.0 {
+            bail!(
+                "cluster {} backup_request.multiplier must be greater than 0",
+                self.name
+            );
         }
         Ok(())
     }
@@ -420,6 +450,49 @@ impl ClusterRuntime {
     }
 }
 
+#[derive(Debug)]
+pub struct BackupRequestRuntime {
+    enabled: AtomicBool,
+    threshold_ms: AtomicI64,
+    multiplier_bits: AtomicU64,
+}
+
+impl BackupRequestRuntime {
+    fn new(config: &BackupRequestConfig) -> Self {
+        Self {
+            enabled: AtomicBool::new(config.enabled),
+            threshold_ms: AtomicI64::new(option_to_atomic(config.trigger_slow_ms)),
+            multiplier_bits: AtomicU64::new(config.multiplier.to_bits()),
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    pub fn set_enabled(&self, value: bool) {
+        self.enabled.store(value, Ordering::Relaxed);
+    }
+
+    pub fn threshold_ms(&self) -> Option<u64> {
+        atomic_to_option(self.threshold_ms.load(Ordering::Relaxed))
+    }
+
+    pub fn set_threshold_ms(&self, value: Option<u64>) {
+        self.threshold_ms
+            .store(option_to_atomic(value), Ordering::Relaxed);
+    }
+
+    pub fn multiplier(&self) -> f64 {
+        f64::from_bits(self.multiplier_bits.load(Ordering::Relaxed))
+    }
+
+    pub fn set_multiplier(&self, value: f64) {
+        self.multiplier_bits
+            .store(value.to_bits(), Ordering::Relaxed);
+    }
+}
+
 fn option_to_atomic(value: Option<u64>) -> i64 {
     match value {
         Some(v) => v as i64,
@@ -442,6 +515,7 @@ struct ClusterEntry {
     slowlog: Arc<Slowlog>,
     hotkey: Arc<Hotkey>,
     client_cache: Arc<ClientCache>,
+    backup: Arc<BackupRequestRuntime>,
 }
 
 #[derive(Debug)]
@@ -478,6 +552,7 @@ impl ConfigManager {
                 cluster.client_cache.clone(),
                 cluster.backend_resp_version == RespVersion::Resp3,
             ));
+            let backup = Arc::new(BackupRequestRuntime::new(&cluster.backup_request));
             clusters.insert(
                 key,
                 ClusterEntry {
@@ -486,6 +561,7 @@ impl ConfigManager {
                     slowlog,
                     hotkey,
                     client_cache,
+                    backup,
                 },
             );
         }
@@ -519,6 +595,12 @@ impl ConfigManager {
         self.clusters
             .get(&name.to_ascii_lowercase())
             .map(|entry| entry.client_cache.clone())
+    }
+
+    pub fn backup_request_for(&self, name: &str) -> Option<Arc<BackupRequestRuntime>> {
+        self.clusters
+            .get(&name.to_ascii_lowercase())
+            .map(|entry| entry.backup.clone())
     }
 
     pub async fn handle_command(&self, command: &RedisCommand) -> Option<RespValue> {
@@ -771,6 +853,41 @@ impl ConfigManager {
                     "cluster client_cache.drain_interval_ms updated via CONFIG SET"
                 );
             }
+            ClusterField::BackupRequestEnabled => {
+                let enabled = parse_bool_flag(value, "backup-request-enabled")?;
+                entry.backup.set_enabled(enabled);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].backup_request.enabled = enabled;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster backup_request.enabled updated via CONFIG SET"
+                );
+            }
+            ClusterField::BackupRequestThreshold => {
+                let parsed = parse_timeout_value(value)?;
+                entry.backup.set_threshold_ms(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index]
+                    .backup_request
+                    .trigger_slow_ms = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster backup_request.trigger_slow_ms updated via CONFIG SET"
+                );
+            }
+            ClusterField::BackupRequestMultiplier => {
+                let parsed = parse_backup_multiplier(value)?;
+                entry.backup.set_multiplier(parsed);
+                let mut guard = self.config.write();
+                guard.clusters_mut()[entry.index].backup_request.multiplier = parsed;
+                info!(
+                    cluster = cluster_name,
+                    value = value,
+                    "cluster backup_request.multiplier updated via CONFIG SET"
+                );
+            }
         }
         Ok(())
     }
@@ -853,6 +970,18 @@ impl ConfigManager {
                     format!("cluster.{}.client-cache-drain-interval-ms", name),
                     cache_cfg.drain_interval_ms.to_string(),
                 ));
+                entries.push((
+                    format!("cluster.{}.backup-request-enabled", name),
+                    bool_to_string(entry.backup.enabled()),
+                ));
+                entries.push((
+                    format!("cluster.{}.backup-request-threshold-ms", name),
+                    option_to_string(entry.backup.threshold_ms()),
+                ));
+                entries.push((
+                    format!("cluster.{}.backup-request-multiplier", name),
+                    entry.backup.multiplier().to_string(),
+                ));
             }
         }
         entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -900,6 +1029,9 @@ fn parse_key(key: &str) -> Result<(String, ClusterField)> {
         "client-cache-shard-count" => ClusterField::ClientCacheShardCount,
         "client-cache-drain-batch" => ClusterField::ClientCacheDrainBatch,
         "client-cache-drain-interval-ms" => ClusterField::ClientCacheDrainIntervalMs,
+        "backup-request-enabled" => ClusterField::BackupRequestEnabled,
+        "backup-request-threshold-ms" => ClusterField::BackupRequestThreshold,
+        "backup-request-multiplier" => ClusterField::BackupRequestMultiplier,
         unknown => bail!("unknown cluster field '{}'", unknown),
     };
     Ok((cluster.to_string(), field))
@@ -1023,10 +1155,29 @@ fn parse_positive_u64(value: &str, field: &str) -> Result<u64> {
     Ok(parsed as u64)
 }
 
+fn parse_backup_multiplier(value: &str) -> Result<f64> {
+    let parsed: f64 = value
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid backup-request-multiplier value '{}'", value))?;
+    if parsed <= 0.0 {
+        bail!("backup-request-multiplier must be > 0");
+    }
+    Ok(parsed)
+}
+
 fn option_to_string(value: Option<u64>) -> String {
     value
         .map(|v| v.to_string())
         .unwrap_or_else(|| DUMP_VALUE_DEFAULT.to_string())
+}
+
+fn bool_to_string(value: bool) -> String {
+    if value {
+        "yes".to_string()
+    } else {
+        "no".to_string()
+    }
 }
 
 fn flatten_pairs(entries: Vec<(String, String)>) -> Vec<RespValue> {
@@ -1059,6 +1210,9 @@ enum ClusterField {
     ClientCacheShardCount,
     ClientCacheDrainBatch,
     ClientCacheDrainIntervalMs,
+    BackupRequestEnabled,
+    BackupRequestThreshold,
+    BackupRequestMultiplier,
 }
 
 fn wildcard_match(pattern: &str, target: &str) -> bool {

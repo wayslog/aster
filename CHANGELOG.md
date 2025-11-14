@@ -1,6 +1,10 @@
 
 # change log
 
+## Unreleased
+
+- add backup request config + dispatcher to duplicate slow master reads to replicas in Redis Cluster mode
+
 # 1.3.3
 
 - avoid infinite call when cluster endpoint was down

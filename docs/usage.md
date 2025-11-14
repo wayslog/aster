@@ -26,6 +26,11 @@ cargo build --release
 - `hash_tag`：一致性 hash 标签，例如 `{}`。
 - `read_timeout` / `write_timeout`：后端超时（毫秒）。
 - `read_from_slave`：Cluster 模式下允许从 replica 读取。
+- `backup_request`：Cluster 模式下用于配置“副本兜底读”策略的表，包含：
+  - `enabled`：是否开启该策略（默认 `false`）。
+  - `trigger_slow_ms`：固定延迟阈值（毫秒，可写 `"default"` 关闭固定阈值），超过该延迟仍未返回则发送副本备份请求。
+  - `multiplier`：相对阈值，等于“master 累计平均耗时 × multiplier”；当满足固定阈值或相对阈值任意条件即派发备份请求。
+- `backup_request` 的三个字段均可通过 `CONFIG SET cluster.<name>.backup-request-*` 在线调整。
 - `slowlog_log_slower_than`：慢查询阈值（微秒，默认 `10000`，设为 `-1` 关闭记录）。
 - `slowlog_max_len`：慢查询日志最大保留条数（默认 `128`）。
 - `hotkey_sample_every`：热点 Key 采样间隔（默认 `32`，越大代表对请求采样越稀疏）。

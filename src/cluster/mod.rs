@@ -1,4 +1,5 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,11 +9,12 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::FuturesOrdered;
 use futures::{SinkExt, StreamExt};
+use parking_lot::RwLock;
 use rand::{seq::SliceRandom, thread_rng};
 #[cfg(any(unix, windows))]
 use socket2::{SockRef, TcpKeepalive};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{interval, sleep, timeout, MissedTickBehavior};
 use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
@@ -21,7 +23,7 @@ use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::cache::{tracker::CacheTrackerSet, ClientCache};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
-use crate::config::{ClusterConfig, ClusterRuntime, ConfigManager};
+use crate::config::{BackupRequestRuntime, ClusterConfig, ClusterRuntime, ConfigManager};
 use crate::hotkey::Hotkey;
 use crate::info::{InfoContext, ProxyMode};
 use crate::metrics;
@@ -57,6 +59,7 @@ pub struct ClusterProxy {
     config_manager: Arc<ConfigManager>,
     slowlog: Arc<Slowlog>,
     hotkey: Arc<Hotkey>,
+    backup: Arc<BackupRequestController>,
     listen_port: u16,
     seed_nodes: usize,
     client_cache: Arc<ClientCache>,
@@ -97,6 +100,10 @@ impl ClusterProxy {
         let hotkey = config_manager
             .hotkey_for(&config.name)
             .ok_or_else(|| anyhow!("missing hotkey state for cluster {}", config.name))?;
+        let backup_runtime = config_manager
+            .backup_request_for(&config.name)
+            .ok_or_else(|| anyhow!("missing backup request state for cluster {}", config.name))?;
+        let backup = Arc::new(BackupRequestController::new(backup_runtime));
         let client_cache = config_manager
             .client_cache_for(&config.name)
             .ok_or_else(|| anyhow!("missing client cache state for cluster {}", config.name))?;
@@ -120,6 +127,7 @@ impl ClusterProxy {
             config_manager,
             slowlog,
             hotkey,
+            backup,
             listen_port,
             seed_nodes: config.servers.len(),
             client_cache,
@@ -755,6 +763,7 @@ impl ClusterProxy {
         let cluster = self.cluster.clone();
         let slowlog = self.slowlog.clone();
         let hotkey = self.hotkey.clone();
+        let backup = self.backup.clone();
         let kind_label = command.kind_label();
         let cache = self.client_cache.clone();
         Box::pin(async move {
@@ -770,6 +779,8 @@ impl ClusterProxy {
                 client_id,
                 slowlog,
                 hotkey,
+                backup,
+                cluster.clone(),
                 command,
             )
             .await
@@ -1471,6 +1482,8 @@ async fn dispatch_with_context(
     client_id: ClientId,
     slowlog: Arc<Slowlog>,
     hotkey: Arc<Hotkey>,
+    backup: Arc<BackupRequestController>,
+    cluster: Arc<str>,
     command: RedisCommand,
 ) -> Result<RespValue> {
     let command_snapshot = command.clone();
@@ -1484,6 +1497,8 @@ async fn dispatch_with_context(
             pool,
             fetch_trigger,
             client_id,
+            backup,
+            cluster,
             multi,
         )
         .await
@@ -1495,6 +1510,8 @@ async fn dispatch_with_context(
             pool,
             fetch_trigger,
             client_id,
+            backup,
+            cluster,
             command,
         )
         .await
@@ -1511,6 +1528,8 @@ async fn dispatch_multi(
     pool: Arc<ConnectionPool<RedisCommand>>,
     fetch_trigger: mpsc::UnboundedSender<()>,
     client_id: ClientId,
+    backup: Arc<BackupRequestController>,
+    cluster: Arc<str>,
     multi: MultiDispatch,
 ) -> Result<RespValue> {
     let mut tasks: FuturesOrdered<BoxFuture<'static, Result<SubResponse>>> = FuturesOrdered::new();
@@ -1519,6 +1538,8 @@ async fn dispatch_multi(
         let slots = slots.clone();
         let pool = pool.clone();
         let fetch_trigger = fetch_trigger.clone();
+        let backup = backup.clone();
+        let cluster = cluster.clone();
         let SubCommand { positions, command } = sub;
         tasks.push_back(Box::pin(async move {
             let response = dispatch_single(
@@ -1528,6 +1549,8 @@ async fn dispatch_multi(
                 pool,
                 fetch_trigger,
                 client_id,
+                backup,
+                cluster,
                 command,
             )
             .await?;
@@ -1552,9 +1575,12 @@ async fn dispatch_single(
     pool: Arc<ConnectionPool<RedisCommand>>,
     fetch_trigger: mpsc::UnboundedSender<()>,
     client_id: ClientId,
+    backup: Arc<BackupRequestController>,
+    cluster: Arc<str>,
     command: RedisCommand,
 ) -> Result<RespValue> {
     let blocking = command.as_blocking();
+    let is_read_only = command.is_read_only();
     let mut slot = command
         .hash_slot(hash_tag.as_deref())
         .ok_or_else(|| anyhow!("command missing key"))?;
@@ -1596,34 +1622,177 @@ async fn dispatch_single(
                 Err(_) => return Err(anyhow!("backend session closed")),
             }
         } else {
-            let response_rx = pool
-                .dispatch(target.clone(), client_id, command.clone())
-                .await?;
+            let backup_plan = if target_override.is_none()
+                && !read_from_slave
+                && is_read_only
+                && matches!(blocking, BlockingKind::None)
+            {
+                replica_node_for_slot(&slots, slot)
+                    .and_then(|replica| backup.plan(&target, Some(replica)))
+            } else {
+                None
+            };
+            if backup_plan.is_some() {
+                metrics::backup_event(cluster.as_ref(), "planned");
+            }
 
-            match response_rx.await {
-                Ok(Ok(resp)) => match parse_redirect(resp.clone())? {
-                    Some(Redirect::Moved {
-                        slot: new_slot,
-                        address,
-                    }) => {
-                        let _ = fetch_trigger.send(());
-                        slot = new_slot;
-                        target_override = Some(BackendNode::new(address));
-                        continue;
-                    }
-                    Some(Redirect::Ask { address }) => {
-                        target_override = Some(BackendNode::new(address));
-                        continue;
-                    }
-                    None => return Ok(resp),
-                },
-                Ok(Err(err)) => return Err(err),
-                Err(_) => return Err(anyhow!("backend session closed")),
+            let resp = execute_with_backup(
+                pool.clone(),
+                client_id,
+                &command,
+                target.clone(),
+                cluster.clone(),
+                backup_plan,
+                backup.clone(),
+            )
+            .await?;
+
+            match parse_redirect(resp.clone())? {
+                Some(Redirect::Moved {
+                    slot: new_slot,
+                    address,
+                }) => {
+                    let _ = fetch_trigger.send(());
+                    slot = new_slot;
+                    target_override = Some(BackendNode::new(address));
+                    continue;
+                }
+                Some(Redirect::Ask { address }) => {
+                    target_override = Some(BackendNode::new(address));
+                    continue;
+                }
+                None => return Ok(resp),
             }
         }
     }
 
     Err(anyhow!("too many cluster redirects"))
+}
+
+#[derive(Clone)]
+struct BackupPlan {
+    replica: BackendNode,
+    delay: Duration,
+}
+
+async fn execute_with_backup(
+    pool: Arc<ConnectionPool<RedisCommand>>,
+    client_id: ClientId,
+    command: &RedisCommand,
+    target: BackendNode,
+    cluster: Arc<str>,
+    plan: Option<BackupPlan>,
+    controller: Arc<BackupRequestController>,
+) -> Result<RespValue> {
+    let primary_rx = pool
+        .dispatch(target.clone(), client_id, command.clone())
+        .await?;
+    if let Some(plan) = plan {
+        race_with_backup(
+            pool,
+            client_id,
+            command,
+            target,
+            primary_rx,
+            cluster,
+            plan,
+            controller,
+        )
+        .await
+    } else {
+        let started = Instant::now();
+        let result = primary_rx.await;
+        if result.is_ok() {
+            controller.record_primary(&target, started.elapsed());
+        }
+        result?
+    }
+}
+
+async fn race_with_backup(
+    pool: Arc<ConnectionPool<RedisCommand>>,
+    client_id: ClientId,
+    command: &RedisCommand,
+    master: BackendNode,
+    primary_rx: oneshot::Receiver<Result<RespValue>>,
+    cluster: Arc<str>,
+    plan: BackupPlan,
+    controller: Arc<BackupRequestController>,
+) -> Result<RespValue> {
+    let master_start = Instant::now();
+    let mut primary_future = Box::pin(primary_rx);
+    let mut delay_future = Box::pin(tokio::time::sleep(plan.delay));
+
+    if let Some(result) = tokio::select! {
+        res = primary_future.as_mut() => Some(res),
+        _ = delay_future.as_mut() => None,
+    } {
+        if result.is_ok() {
+            controller.record_primary(&master, master_start.elapsed());
+        }
+        metrics::backup_event(cluster.as_ref(), "primary-before");
+        return result?;
+    }
+
+    let backup_rx = match pool
+        .dispatch(plan.replica.clone(), client_id, command.clone())
+        .await
+    {
+        Ok(rx) => {
+            metrics::backup_event(cluster.as_ref(), "dispatched");
+            rx
+        }
+        Err(err) => {
+            metrics::backup_event(cluster.as_ref(), "dispatch-fail");
+            warn!(
+                master = %master.as_str(),
+                replica = %plan.replica.as_str(),
+                error = %err,
+                "failed to dispatch backup request; falling back to primary"
+            );
+            return await_primary_only(primary_future, controller, master, master_start).await;
+        }
+    };
+    let mut backup_future = Box::pin(backup_rx);
+
+    tokio::select! {
+        res = primary_future.as_mut() => {
+            if res.is_ok() {
+                controller.record_primary(&master, master_start.elapsed());
+            }
+            metrics::backup_event(cluster.as_ref(), "primary-after");
+            res?
+        }
+        res = backup_future.as_mut() => {
+            metrics::backup_event(cluster.as_ref(), "replica-win");
+            let remaining = primary_future;
+            let controller_clone = controller.clone();
+            let master_clone = master.clone();
+            tokio::spawn(async move {
+                let mut future = remaining;
+                if let Ok(Ok(_)) = future.as_mut().await {
+                    controller_clone.record_primary(&master_clone, master_start.elapsed());
+                }
+            });
+            res?
+        }
+    }
+}
+
+async fn await_primary_only(
+    mut primary_future: Pin<Box<oneshot::Receiver<Result<RespValue>>>>,
+    controller: Arc<BackupRequestController>,
+    master: BackendNode,
+    master_start: Instant,
+) -> Result<RespValue> {
+    match primary_future.as_mut().await {
+        Ok(Ok(resp)) => {
+            controller.record_primary(&master, master_start.elapsed());
+            Ok(resp)
+        }
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err(anyhow!("backend session closed")),
+    }
 }
 
 fn select_node_for_slot(
@@ -1641,6 +1810,85 @@ fn select_node_for_slot(
         return Ok(BackendNode::new(master.to_string()));
     }
     bail!("slot {} not covered", slot)
+}
+
+fn replica_node_for_slot(slots: &watch::Sender<SlotMap>, slot: u16) -> Option<BackendNode> {
+    slots
+        .borrow()
+        .replica_for_slot(slot)
+        .map(|addr| BackendNode::new(addr.to_string()))
+}
+
+#[derive(Clone)]
+struct BackupRequestController {
+    runtime: Arc<BackupRequestRuntime>,
+    averages: Arc<RwLock<HashMap<String, LatencyAverage>>>,
+}
+
+impl BackupRequestController {
+    fn new(runtime: Arc<BackupRequestRuntime>) -> Self {
+        Self {
+            runtime,
+            averages: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn plan(&self, master: &BackendNode, replica: Option<BackendNode>) -> Option<BackupPlan> {
+        let replica = replica?;
+        let delay = self.delay_for(master)?;
+        Some(BackupPlan { replica, delay })
+    }
+
+    fn record_primary(&self, master: &BackendNode, elapsed: Duration) {
+        let micros = elapsed.as_secs_f64() * 1_000_000.0;
+        let mut guard = self.averages.write();
+        let entry = guard
+            .entry(master.as_str().to_string())
+            .or_insert_with(LatencyAverage::default);
+        entry.update(micros);
+    }
+
+    fn delay_for(&self, master: &BackendNode) -> Option<Duration> {
+        if !self.runtime.enabled() {
+            return None;
+        }
+        let mut candidates = Vec::new();
+        if let Some(ms) = self.runtime.threshold_ms() {
+            candidates.push(Duration::from_millis(ms));
+        }
+        if let Some(avg) = self.average_for(master) {
+            let multiplier = self.runtime.multiplier();
+            if multiplier > 0.0 {
+                let scaled = (avg * multiplier).clamp(0.0, u64::MAX as f64);
+                let micros = scaled as u64;
+                candidates.push(Duration::from_micros(micros));
+            }
+        }
+        candidates.into_iter().min()
+    }
+
+    fn average_for(&self, master: &BackendNode) -> Option<f64> {
+        let guard = self.averages.read();
+        guard.get(master.as_str()).map(|stats| stats.avg_micros)
+    }
+}
+
+#[derive(Default, Clone)]
+struct LatencyAverage {
+    avg_micros: f64,
+    samples: u64,
+}
+
+impl LatencyAverage {
+    fn update(&mut self, sample: f64) {
+        self.samples = self.samples.saturating_add(1);
+        if self.samples == 1 {
+            self.avg_micros = sample;
+        } else {
+            let count = self.samples as f64;
+            self.avg_micros += (sample - self.avg_micros) / count;
+        }
+    }
 }
 
 fn subscription_count(resp: &RespValue) -> Option<(SubscriptionKind, i64)> {

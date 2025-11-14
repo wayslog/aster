@@ -44,6 +44,7 @@
     fetch_interval = 1800000 # 1800s , 30 minutes
     fetch_since_latest_cmd = 1000 # 3600s , 1 hour
     read_from_slave = false
+    backup_request = { enabled = false, trigger_slow_ms = 5, multiplier = 2.0 }
 
     ping_fail_limit = 10
     ping_interval = 300

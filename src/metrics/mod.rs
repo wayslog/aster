@@ -254,6 +254,17 @@ static REMOTE_TIMER: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("remote timer histogram registration must succeed")
 });
 
+static BACKUP_REQUEST_EVENTS: Lazy<IntCounterVec> = Lazy::new(|| {
+    register_int_counter_vec!(
+        opts!(
+            "aster_backup_request_total",
+            "backup request events grouped by cluster and event"
+        ),
+        &["cluster", "event"]
+    )
+    .expect("backup request counter registration must succeed")
+});
+
 /// Register the running version with metrics.
 pub fn register_version(version: &str) {
     VERSION_GAUGE.with_label_values(&[version]).set(1.0);
@@ -400,6 +411,13 @@ pub fn client_cache_state(cluster: &str, state: &str) {
 pub fn backend_request_result(cluster: &str, backend: &str, result: &str) {
     BACKEND_REQUEST_TOTAL
         .with_label_values(&[cluster, backend, result])
+        .inc();
+}
+
+/// Record a backup request related event for observability.
+pub fn backup_event(cluster: &str, event: &str) {
+    BACKUP_REQUEST_EVENTS
+        .with_label_values(&[cluster, event])
         .inc();
 }
 
