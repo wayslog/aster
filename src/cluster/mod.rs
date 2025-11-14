@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -779,6 +780,7 @@ impl ClusterProxy {
                 slowlog,
                 hotkey,
                 backup,
+                cluster.clone(),
                 command,
             )
             .await
@@ -1481,6 +1483,7 @@ async fn dispatch_with_context(
     slowlog: Arc<Slowlog>,
     hotkey: Arc<Hotkey>,
     backup: Arc<BackupRequestController>,
+    cluster: Arc<str>,
     command: RedisCommand,
 ) -> Result<RespValue> {
     let command_snapshot = command.clone();
@@ -1495,6 +1498,7 @@ async fn dispatch_with_context(
             fetch_trigger,
             client_id,
             backup,
+            cluster,
             multi,
         )
         .await
@@ -1507,6 +1511,7 @@ async fn dispatch_with_context(
             fetch_trigger,
             client_id,
             backup,
+            cluster,
             command,
         )
         .await
@@ -1524,6 +1529,7 @@ async fn dispatch_multi(
     fetch_trigger: mpsc::UnboundedSender<()>,
     client_id: ClientId,
     backup: Arc<BackupRequestController>,
+    cluster: Arc<str>,
     multi: MultiDispatch,
 ) -> Result<RespValue> {
     let mut tasks: FuturesOrdered<BoxFuture<'static, Result<SubResponse>>> = FuturesOrdered::new();
@@ -1533,6 +1539,7 @@ async fn dispatch_multi(
         let pool = pool.clone();
         let fetch_trigger = fetch_trigger.clone();
         let backup = backup.clone();
+        let cluster = cluster.clone();
         let SubCommand { positions, command } = sub;
         tasks.push_back(Box::pin(async move {
             let response = dispatch_single(
@@ -1543,6 +1550,7 @@ async fn dispatch_multi(
                 fetch_trigger,
                 client_id,
                 backup,
+                cluster,
                 command,
             )
             .await?;
@@ -1568,6 +1576,7 @@ async fn dispatch_single(
     fetch_trigger: mpsc::UnboundedSender<()>,
     client_id: ClientId,
     backup: Arc<BackupRequestController>,
+    cluster: Arc<str>,
     command: RedisCommand,
 ) -> Result<RespValue> {
     let blocking = command.as_blocking();
@@ -1623,12 +1632,16 @@ async fn dispatch_single(
             } else {
                 None
             };
+            if backup_plan.is_some() {
+                metrics::backup_event(cluster.as_ref(), "planned");
+            }
 
             let resp = execute_with_backup(
                 pool.clone(),
                 client_id,
                 &command,
                 target.clone(),
+                cluster.clone(),
                 backup_plan,
                 backup.clone(),
             )
@@ -1667,6 +1680,7 @@ async fn execute_with_backup(
     client_id: ClientId,
     command: &RedisCommand,
     target: BackendNode,
+    cluster: Arc<str>,
     plan: Option<BackupPlan>,
     controller: Arc<BackupRequestController>,
 ) -> Result<RespValue> {
@@ -1675,7 +1689,14 @@ async fn execute_with_backup(
         .await?;
     if let Some(plan) = plan {
         race_with_backup(
-            pool, client_id, command, target, primary_rx, plan, controller,
+            pool,
+            client_id,
+            command,
+            target,
+            primary_rx,
+            cluster,
+            plan,
+            controller,
         )
         .await
     } else {
@@ -1694,6 +1715,7 @@ async fn race_with_backup(
     command: &RedisCommand,
     master: BackendNode,
     primary_rx: oneshot::Receiver<Result<RespValue>>,
+    cluster: Arc<str>,
     plan: BackupPlan,
     controller: Arc<BackupRequestController>,
 ) -> Result<RespValue> {
@@ -1708,12 +1730,29 @@ async fn race_with_backup(
         if result.is_ok() {
             controller.record_primary(&master, master_start.elapsed());
         }
+        metrics::backup_event(cluster.as_ref(), "primary-before");
         return result?;
     }
 
-    let backup_rx = pool
+    let backup_rx = match pool
         .dispatch(plan.replica.clone(), client_id, command.clone())
-        .await?;
+        .await
+    {
+        Ok(rx) => {
+            metrics::backup_event(cluster.as_ref(), "dispatched");
+            rx
+        }
+        Err(err) => {
+            metrics::backup_event(cluster.as_ref(), "dispatch-fail");
+            warn!(
+                master = %master.as_str(),
+                replica = %plan.replica.as_str(),
+                error = %err,
+                "failed to dispatch backup request; falling back to primary"
+            );
+            return await_primary_only(primary_future, controller, master, master_start).await;
+        }
+    };
     let mut backup_future = Box::pin(backup_rx);
 
     tokio::select! {
@@ -1721,9 +1760,11 @@ async fn race_with_backup(
             if res.is_ok() {
                 controller.record_primary(&master, master_start.elapsed());
             }
+            metrics::backup_event(cluster.as_ref(), "primary-after");
             res?
         }
         res = backup_future.as_mut() => {
+            metrics::backup_event(cluster.as_ref(), "replica-win");
             let remaining = primary_future;
             let controller_clone = controller.clone();
             let master_clone = master.clone();
@@ -1735,6 +1776,22 @@ async fn race_with_backup(
             });
             res?
         }
+    }
+}
+
+async fn await_primary_only(
+    mut primary_future: Pin<Box<oneshot::Receiver<Result<RespValue>>>>,
+    controller: Arc<BackupRequestController>,
+    master: BackendNode,
+    master_start: Instant,
+) -> Result<RespValue> {
+    match primary_future.as_mut().await {
+        Ok(Ok(resp)) => {
+            controller.record_primary(&master, master_start.elapsed());
+            Ok(resp)
+        }
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err(anyhow!("backend session closed")),
     }
 }
 
