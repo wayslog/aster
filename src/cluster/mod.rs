@@ -20,9 +20,9 @@ use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
 use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
-use crate::cache::{tracker::CacheTrackerSet, ClientCache};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
+use crate::cache::{tracker::CacheTrackerSet, ClientCache};
 use crate::config::{BackupRequestRuntime, ClusterConfig, ClusterRuntime, ConfigManager};
 use crate::hotkey::Hotkey;
 use crate::info::{InfoContext, ProxyMode};
@@ -1402,7 +1402,15 @@ async fn fetch_topology(
             _ = trigger.recv() => {},
         }
 
-        if let Err(err) = fetch_once(&cluster, &seeds, connector.clone(), slots.clone(), tracker.clone()).await {
+        if let Err(err) = fetch_once(
+            &cluster,
+            &seeds,
+            connector.clone(),
+            slots.clone(),
+            tracker.clone(),
+        )
+        .await
+        {
             warn!(cluster = %cluster, error = %err, "failed to refresh cluster topology");
         }
     }
@@ -1453,6 +1461,8 @@ async fn fetch_from_seed(seed: &str, connector: Arc<ClusterConnector>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::{crc16, trim_hash_tag};
+    use std::collections::HashSet;
 
     #[test]
     fn parse_moved_redirect() {
@@ -1465,6 +1475,121 @@ mod tests {
             }
             _ => panic!("expected MOVED"),
         }
+    }
+
+    #[test]
+    fn classify_backend_error_detects_categories() {
+        assert_eq!(
+            classify_backend_error(&anyhow!("timed out waiting")),
+            "timeout"
+        );
+        assert_eq!(
+            classify_backend_error(&anyhow!("closed connection")),
+            "closed"
+        );
+        assert_eq!(
+            classify_backend_error(&anyhow!("unexpected heartbeat reply")),
+            "protocol"
+        );
+        assert_eq!(classify_backend_error(&anyhow!("other")), "execute");
+    }
+
+    #[test]
+    fn subscription_slot_tracks_hash_slot() {
+        let command = RedisCommand::new(vec![
+            Bytes::from_static(b"SUBSCRIBE"),
+            Bytes::from_static(b"channel"),
+        ])
+        .unwrap();
+        let slot = subscription_slot_for_command(&command, None, None)
+            .unwrap()
+            .unwrap();
+        let expected = crc16(trim_hash_tag(b"channel", None)) % SLOT_COUNT;
+        assert_eq!(slot, expected);
+
+        let unsubscribe = RedisCommand::new(vec![Bytes::from_static(b"UNSUBSCRIBE")]).unwrap();
+        let current = subscription_slot_for_command(&unsubscribe, None, Some(slot))
+            .unwrap()
+            .unwrap();
+        assert_eq!(current, slot);
+    }
+
+    #[test]
+    fn subscription_slot_errors_on_conflicting_channels() {
+        let command = RedisCommand::new(vec![
+            Bytes::from_static(b"SUBSCRIBE"),
+            Bytes::from_static(b"foo"),
+            Bytes::from_static(b"bar"),
+        ])
+        .unwrap();
+        assert!(subscription_slot_for_command(&command, None, None).is_err());
+    }
+
+    #[test]
+    fn expected_ack_count_matches_subscription_kind() {
+        let subscribe = RedisCommand::new(vec![
+            Bytes::from_static(b"SUBSCRIBE"),
+            Bytes::from_static(b"foo"),
+            Bytes::from_static(b"bar"),
+        ])
+        .unwrap();
+        assert_eq!(expected_ack_count(&subscribe, 0, 0), 2);
+
+        let unsubscribe = RedisCommand::new(vec![Bytes::from_static(b"UNSUBSCRIBE")]).unwrap();
+        assert_eq!(expected_ack_count(&unsubscribe, 3, 1), 3);
+    }
+
+    #[test]
+    fn apply_subscription_membership_updates_sets() {
+        let mut channels = HashSet::new();
+        let mut patterns = HashSet::new();
+        let resp = RespValue::Array(vec![
+            RespValue::BulkString(Bytes::from_static(b"subscribe")),
+            RespValue::BulkString(Bytes::from_static(b"chan")),
+            RespValue::Integer(1),
+        ]);
+        assert!(apply_subscription_membership(
+            &resp,
+            &mut channels,
+            &mut patterns
+        ));
+        assert!(channels.contains(&Bytes::from_static(b"chan")));
+
+        let resp = RespValue::Array(vec![
+            RespValue::BulkString(Bytes::from_static(b"unsubscribe")),
+            RespValue::BulkString(Bytes::from_static(b"chan")),
+            RespValue::Integer(0),
+        ]);
+        assert!(apply_subscription_membership(
+            &resp,
+            &mut channels,
+            &mut patterns
+        ));
+        assert!(channels.is_empty());
+    }
+
+    #[test]
+    fn derive_slot_from_args_returns_consistent_value() {
+        let args = vec![Bytes::from_static(b"foo"), Bytes::from_static(b"foo")];
+        let slot = derive_slot_from_args(&args, None).unwrap().unwrap();
+        let expected = crc16(trim_hash_tag(b"foo", None)) % SLOT_COUNT;
+        assert_eq!(slot, expected);
+    }
+
+    #[test]
+    fn derive_slot_from_args_fails_for_mixed_slots() {
+        let args = vec![Bytes::from_static(b"foo"), Bytes::from_static(b"bar")];
+        assert!(derive_slot_from_args(&args, None).is_err());
+    }
+
+    #[test]
+    fn resp_value_to_bytes_handles_bulk_and_null() {
+        let value = RespValue::BulkString(Bytes::from_static(b"key"));
+        assert_eq!(
+            resp_value_to_bytes(&value),
+            Some(Bytes::from_static(b"key"))
+        );
+        assert!(resp_value_to_bytes(&RespValue::NullBulk).is_none());
     }
 }
 #[derive(Debug)]
@@ -1689,14 +1814,7 @@ async fn execute_with_backup(
         .await?;
     if let Some(plan) = plan {
         race_with_backup(
-            pool,
-            client_id,
-            command,
-            target,
-            primary_rx,
-            cluster,
-            plan,
-            controller,
+            pool, client_id, command, target, primary_rx, cluster, plan, controller,
         )
         .await
     } else {

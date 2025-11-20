@@ -388,9 +388,7 @@ pub fn client_cache_lookup(cluster: &str, kind: &str, hit: bool) {
 
 /// Record a client cache store/update event.
 pub fn client_cache_store(cluster: &str, kind: &str) {
-    CLIENT_CACHE_STORE
-        .with_label_values(&[cluster, kind])
-        .inc();
+    CLIENT_CACHE_STORE.with_label_values(&[cluster, kind]).inc();
 }
 
 /// Record the number of keys invalidated from the client cache.
@@ -573,4 +571,42 @@ async fn system_monitor_loop(interval: Duration) -> Result<()> {
         time::sleep(interval).await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn front_connections_counters_reflect_updates() {
+        let cluster = "metrics-test";
+        front_conn_open(cluster);
+        front_conn_open(cluster);
+        front_conn_close(cluster);
+        assert_eq!(front_connections_current(cluster), 1);
+        assert!(front_connections_total(cluster) >= 2);
+    }
+
+    #[test]
+    fn front_command_stats_aggregates_totals() {
+        let cluster = "metrics-stats";
+        front_command(cluster, "read", true);
+        front_command(cluster, "read", false);
+        front_command(cluster, "invalid", false);
+        let stats = front_command_stats(cluster);
+        assert_eq!(stats.read_ok, 1);
+        assert_eq!(stats.read_fail, 1);
+        assert_eq!(stats.invalid_fail, 1);
+        assert_eq!(stats.total(), 3);
+    }
+
+    #[test]
+    fn global_usage_accessors_reflect_gauges() {
+        MEMORY_USAGE.set(1024.0);
+        CPU_USAGE.set(12.5);
+        GLOBAL_ERROR.inc_by(5);
+        assert_eq!(memory_usage_bytes(), 1024 * 1024);
+        assert_eq!(cpu_usage_percent(), 12.5);
+        assert!(global_error_count() >= 5);
+    }
 }

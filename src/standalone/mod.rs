@@ -18,9 +18,9 @@ use tokio_util::codec::{Framed, FramedParts};
 use tracing::{debug, info, warn};
 
 use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
-use crate::cache::{tracker::CacheTrackerSet, ClientCache};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
+use crate::cache::{tracker::CacheTrackerSet, ClientCache};
 use crate::config::{ClusterConfig, ClusterRuntime, ConfigManager};
 use crate::hotkey::Hotkey;
 use crate::info::{InfoContext, ProxyMode};
@@ -690,6 +690,89 @@ fn subscription_action_kind(kind: &[u8]) -> Option<SubscriptionKind> {
         b"unsubscribe" => Some(SubscriptionKind::Unsubscribe),
         b"punsubscribe" => Some(SubscriptionKind::Punsub),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    fn node_entry(address: &str, display: &str, weight: usize) -> NodeEntry {
+        NodeEntry {
+            backend: BackendNode::new(address.to_string()),
+            display: Arc::<str>::from(display.to_string()),
+            weight,
+        }
+    }
+
+    #[test]
+    fn parse_address_weight_extracts_suffix() {
+        let (addr, weight) = parse_address_weight("127.0.0.1:6379:3").unwrap();
+        assert_eq!(addr, "127.0.0.1:6379");
+        assert_eq!(weight, 3);
+
+        let (addr, weight) = parse_address_weight("10.0.0.1:6380").unwrap();
+        assert_eq!(addr, "10.0.0.1:6380");
+        assert_eq!(weight, 1);
+    }
+
+    #[test]
+    fn parse_servers_respects_alias_and_weight() {
+        let input = vec!["127.0.0.1:6379:2 main".to_string()];
+        let entries = parse_servers(&input).expect("servers");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].backend.as_str(), "127.0.0.1:6379");
+        assert_eq!(entries[0].weight, 2);
+        assert_eq!(&*entries[0].display, "main");
+    }
+
+    #[test]
+    fn build_ring_reflects_weight() {
+        let entries = vec![node_entry("127.0.0.1:6379", "node", 2)];
+        let ring = build_ring(&entries);
+        assert_eq!(ring.len(), 2 * VIRTUAL_NODE_FACTOR);
+        assert!(ring.windows(2).all(|w| w[0].0 <= w[1].0));
+    }
+
+    #[test]
+    fn subscription_action_kind_maps_known_values() {
+        assert_eq!(
+            subscription_action_kind(b"subscribe"),
+            Some(SubscriptionKind::Channel)
+        );
+        assert_eq!(
+            subscription_action_kind(b"psubscribe"),
+            Some(SubscriptionKind::Pattern)
+        );
+        assert!(subscription_action_kind(b"unknown").is_none());
+    }
+
+    #[test]
+    fn subscription_count_parses_arrays() {
+        let resp = RespValue::Array(vec![
+            RespValue::BulkString(Bytes::from_static(b"psubscribe")),
+            RespValue::BulkString(Bytes::from_static(b"chan")),
+            RespValue::Integer(3),
+        ]);
+        assert_eq!(
+            subscription_count(&resp),
+            Some((SubscriptionKind::Pattern, 3))
+        );
+    }
+
+    #[test]
+    fn subscription_count_rejects_invalid_payload() {
+        let resp = RespValue::Array(vec![RespValue::Integer(1)]);
+        assert!(subscription_count(&resp).is_none());
+    }
+
+    #[test]
+    fn hash_key_differs_for_distinct_inputs() {
+        let a = hash_key(b"alpha");
+        let b = hash_key(b"beta");
+        assert_ne!(a, b);
+        assert_eq!(hash_key(b"alpha"), a);
     }
 }
 
