@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 
 use crate::auth::{AuthAction, BackendAuth, FrontendAuthenticator};
 use crate::backend::client::{ClientId, FrontConnectionGuard};
+use crate::backend::executor::{BackendExecutor, PoolBackendExecutor};
 use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
 use crate::cache::{tracker::CacheTrackerSet, ClientCache};
 use crate::config::{ClusterConfig, ClusterRuntime, ConfigManager};
@@ -49,7 +50,7 @@ pub struct StandaloneProxy {
     ring: Vec<(u64, BackendNode)>,
     auth: Option<Arc<FrontendAuthenticator>>,
     backend_auth: Option<BackendAuth>,
-    pool: Arc<ConnectionPool<RedisCommand>>,
+    backend: Arc<dyn BackendExecutor<RedisCommand>>,
     runtime: Arc<ClusterRuntime>,
     config_manager: Arc<ConfigManager>,
     slowlog: Arc<Slowlog>,
@@ -66,6 +67,15 @@ impl StandaloneProxy {
         runtime: Arc<ClusterRuntime>,
         config_manager: Arc<ConfigManager>,
     ) -> Result<Self> {
+        Self::new_with_backend(config, runtime, config_manager, None)
+    }
+
+    fn new_with_backend(
+        config: &ClusterConfig,
+        runtime: Arc<ClusterRuntime>,
+        config_manager: Arc<ConfigManager>,
+        backend_override: Option<Arc<dyn BackendExecutor<RedisCommand>>>,
+    ) -> Result<Self> {
         let cluster: Arc<str> = config.name.clone().into();
         let hash_tag = config.hash_tag.as_ref().map(|tag| tag.as_bytes().to_vec());
         let nodes = parse_servers(&config.servers)?;
@@ -78,18 +88,25 @@ impl StandaloneProxy {
         let ring = build_ring(&nodes);
 
         let backend_auth = config.backend_auth_config().map(BackendAuth::from);
-        let connector = Arc::new(RedisConnector::new(
-            runtime.clone(),
-            DEFAULT_TIMEOUT_MS,
-            backend_auth.clone(),
-            config.backend_resp_version,
-        ));
+
+        let backend: Arc<dyn BackendExecutor<RedisCommand>> =
+            if let Some(backend) = backend_override {
+                backend
+            } else {
+                let connector = Arc::new(RedisConnector::new(
+                    runtime.clone(),
+                    DEFAULT_TIMEOUT_MS,
+                    backend_auth.clone(),
+                    config.backend_resp_version,
+                ));
+                let pool = Arc::new(ConnectionPool::new(cluster.clone(), connector));
+                Arc::new(PoolBackendExecutor::new(pool))
+            };
         let auth = config
             .frontend_auth_users()
             .map(FrontendAuthenticator::from_users)
             .transpose()?
             .map(Arc::new);
-        let pool = Arc::new(ConnectionPool::new(cluster.clone(), connector));
 
         let backend_nodes = nodes.len();
         let listen_port = config.listen_port()?;
@@ -121,7 +138,7 @@ impl StandaloneProxy {
             ring,
             auth,
             backend_auth,
-            pool,
+            backend,
             runtime,
             config_manager,
             slowlog,
@@ -182,22 +199,11 @@ impl StandaloneProxy {
         match command.as_blocking() {
             BlockingKind::Queue { .. } | BlockingKind::Stream { .. } => {
                 let node = self.select_node(client_id, &command)?;
-                let mut exclusive = self.pool.acquire_exclusive(&node);
-                let response_rx = exclusive.send(command).await?;
-                let outcome = response_rx.await;
-                drop(exclusive);
-                match outcome {
-                    Ok(result) => result,
-                    Err(_) => Err(anyhow!("backend session closed unexpectedly")),
-                }
+                self.backend.dispatch_blocking(node, command).await
             }
             BlockingKind::None => {
                 let node = self.select_node(client_id, &command)?;
-                let response_rx = self.pool.dispatch(node, client_id, command).await?;
-                match response_rx.await {
-                    Ok(result) => result,
-                    Err(_) => Err(anyhow!("backend session closed unexpectedly")),
-                }
+                self.backend.dispatch(node, client_id, command).await
             }
         }
     }
@@ -211,17 +217,14 @@ impl StandaloneProxy {
             FuturesOrdered::new();
         for sub in multi.subcommands.into_iter() {
             let node = self.select_node(client_id, &sub.command)?;
-            let pool = self.pool.clone();
+            let backend = self.backend.clone();
             let SubCommand { positions, command } = sub;
             tasks.push_back(Box::pin(async move {
-                let response_rx = pool.dispatch(node, client_id, command).await?;
-                match response_rx.await {
-                    Ok(result) => Ok(SubResponse {
-                        positions,
-                        response: result?,
-                    }),
-                    Err(_) => Err(anyhow!("backend session closed unexpectedly")),
-                }
+                let response = backend.dispatch(node, client_id, command).await?;
+                Ok(SubResponse {
+                    positions,
+                    response,
+                })
             }));
         }
 
@@ -697,6 +700,16 @@ fn subscription_action_kind(kind: &[u8]) -> Option<SubscriptionKind> {
 mod tests {
     use super::*;
     use bytes::Bytes;
+    use std::collections::VecDeque;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+
+    use crate::backend::client::ClientId;
+    use crate::backend::executor::BackendExecutor;
+    use crate::config::{Config, ConfigManager};
+    use anyhow::anyhow;
+    use async_trait::async_trait;
 
     fn node_entry(address: &str, display: &str, weight: usize) -> NodeEntry {
         NodeEntry {
@@ -773,6 +786,168 @@ mod tests {
         let b = hash_key(b"beta");
         assert_ne!(a, b);
         assert_eq!(hash_key(b"alpha"), a);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_sends_requests_to_backend_executor() {
+        let backend = Arc::new(MockBackend::default());
+        backend.push_shared(Ok(RespValue::SimpleString(Bytes::from_static(b"PONG"))));
+        let proxy = build_proxy_with_backend(backend.clone());
+        let response = proxy
+            .dispatch(ClientId::new(), redis_cmd(&["PING"]))
+            .await
+            .expect("response");
+        assert_eq!(
+            response,
+            RespValue::SimpleString(Bytes::from_static(b"PONG"))
+        );
+        assert_eq!(backend.calls(), vec![MockCall::Shared("PING".into())]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_blocking_commands_use_exclusive_path() {
+        let backend = Arc::new(MockBackend::default());
+        backend.push_blocking(Ok(RespValue::Array(vec![])));
+        let proxy = build_proxy_with_backend(backend.clone());
+        let response = proxy
+            .dispatch(ClientId::new(), redis_cmd(&["BLPOP", "queue", "0"]))
+            .await
+            .expect("response");
+        assert_eq!(response, RespValue::Array(vec![]));
+        assert_eq!(backend.calls(), vec![MockCall::Blocking("BLPOP".into())]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_multi_combines_subresponses() {
+        let backend = Arc::new(MockBackend::default());
+        backend.push_shared(Ok(RespValue::BulkString(Bytes::from_static(b"foo"))));
+        backend.push_shared(Ok(RespValue::BulkString(Bytes::from_static(b"bar"))));
+        let proxy = build_proxy_with_backend(backend.clone());
+        let response = proxy
+            .dispatch(ClientId::new(), redis_cmd(&["MGET", "k1", "k2"]))
+            .await
+            .expect("response");
+        assert_eq!(
+            response,
+            RespValue::Array(vec![
+                RespValue::BulkString(Bytes::from_static(b"foo")),
+                RespValue::BulkString(Bytes::from_static(b"bar")),
+            ])
+        );
+        assert_eq!(backend.calls().len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_propagates_backend_errors() {
+        let backend = Arc::new(MockBackend::default());
+        backend.push_shared(Err(anyhow!("backend boom")));
+        let proxy = build_proxy_with_backend(backend.clone());
+        let error = proxy
+            .dispatch(ClientId::new(), redis_cmd(&["GET", "missing"]))
+            .await
+            .expect_err("error");
+        assert!(error.to_string().contains("backend boom"));
+        assert_eq!(backend.calls(), vec![MockCall::Shared("GET".into())]);
+    }
+
+    fn redis_cmd(parts: &[&str]) -> RedisCommand {
+        let bytes = parts
+            .iter()
+            .map(|p| Bytes::copy_from_slice(p.as_bytes()))
+            .collect();
+        RedisCommand::new(bytes).expect("command")
+    }
+
+    fn build_proxy_with_backend(backend: Arc<MockBackend>) -> StandaloneProxy {
+        let raw = r#"
+            [[clusters]]
+            name = "standalone-mock"
+            listen_addr = "127.0.0.1:6400"
+            cache_type = "redis"
+            thread = 1
+            servers = ["127.0.0.1:6379", "127.0.0.1:6380"]
+            client_cache = { enabled = false }
+        "#;
+        let config: Config = toml::from_str(raw).expect("config");
+        config.ensure_valid().expect("valid config");
+        let cluster = config.clusters()[0].clone();
+        let manager = Arc::new(ConfigManager::new(
+            PathBuf::from("standalone-mock.toml"),
+            &config,
+        ));
+        let runtime = manager.runtime_for(&cluster.name).expect("cluster runtime");
+        let backend_trait: Arc<dyn BackendExecutor<RedisCommand>> = backend;
+        StandaloneProxy::new_with_backend(&cluster, runtime, manager, Some(backend_trait))
+            .expect("proxy")
+    }
+
+    type BackendResult = anyhow::Result<RespValue>;
+
+    #[derive(Default)]
+    struct MockBackend {
+        shared: Mutex<VecDeque<BackendResult>>,
+        blocking: Mutex<VecDeque<BackendResult>>,
+        calls: Mutex<Vec<MockCall>>,
+    }
+
+    impl MockBackend {
+        fn push_shared(&self, value: BackendResult) {
+            self.shared.lock().unwrap().push_back(value);
+        }
+
+        fn push_blocking(&self, value: BackendResult) {
+            self.blocking.lock().unwrap().push_back(value);
+        }
+
+        fn calls(&self) -> Vec<MockCall> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn next(queue: &Mutex<VecDeque<BackendResult>>, kind: &str) -> BackendResult {
+            queue
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| panic!("missing {} response", kind))
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum MockCall {
+        Shared(String),
+        Blocking(String),
+    }
+
+    fn command_label(command: &RedisCommand) -> String {
+        String::from_utf8_lossy(command.command_name()).to_string()
+    }
+
+    #[async_trait]
+    impl BackendExecutor<RedisCommand> for MockBackend {
+        async fn dispatch(
+            &self,
+            _node: BackendNode,
+            _client_id: ClientId,
+            request: RedisCommand,
+        ) -> anyhow::Result<RespValue> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(MockCall::Shared(command_label(&request)));
+            Self::next(&self.shared, "shared")
+        }
+
+        async fn dispatch_blocking(
+            &self,
+            _node: BackendNode,
+            request: RedisCommand,
+        ) -> anyhow::Result<RespValue> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(MockCall::Blocking(command_label(&request)));
+            Self::next(&self.blocking, "blocking")
+        }
     }
 }
 
