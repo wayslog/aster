@@ -345,3 +345,132 @@ impl<'a, T: BackendRequest> Drop for ExclusiveConnection<'a, T> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct TestConnector {
+        started: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl Connector<TestRequest> for TestConnector {
+        async fn run_session(
+            self: Arc<Self>,
+            _node: BackendNode,
+            _cluster: Arc<str>,
+            mut rx: mpsc::Receiver<SessionCommand<TestRequest>>,
+        ) {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            while let Some(cmd) = rx.recv().await {
+                let _ = cmd.respond_to.send(Ok(cmd.request.payload));
+            }
+        }
+    }
+
+    impl TestConnector {
+        fn started(&self) -> usize {
+            self.started.load(Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Clone)]
+    struct CallRecorder {
+        values: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl CallRecorder {
+        fn new() -> Self {
+            Self {
+                values: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn record(&self, value: &str) {
+            self.values.lock().unwrap().push(value.to_string());
+        }
+
+        fn entries(&self) -> Vec<String> {
+            self.values.lock().unwrap().clone()
+        }
+    }
+
+    #[derive(Clone)]
+    struct TestRequest {
+        payload: &'static str,
+        total: CallRecorder,
+        remote: CallRecorder,
+    }
+
+    impl TestRequest {
+        fn new(payload: &'static str, total: CallRecorder, remote: CallRecorder) -> Self {
+            Self {
+                payload,
+                total,
+                remote,
+            }
+        }
+    }
+
+    impl BackendRequest for TestRequest {
+        type Response = &'static str;
+
+        fn apply_total_tracker(&mut self, cluster: &str) {
+            self.total.record(cluster);
+        }
+
+        fn apply_remote_tracker(&mut self, cluster: &str) {
+            self.remote.record(cluster);
+        }
+    }
+
+    fn cluster_name() -> Arc<str> {
+        Arc::<str>::from("cluster-backend-tests".to_string())
+    }
+
+    fn backend_node() -> BackendNode {
+        BackendNode::new("127.0.0.1:7000".into())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_sends_request_and_tracks_cluster() {
+        let connector = Arc::new(TestConnector::default());
+        let total = CallRecorder::new();
+        let remote = CallRecorder::new();
+        let request = TestRequest::new("ok", total.clone(), remote.clone());
+        let pool = ConnectionPool::with_slots(cluster_name(), connector.clone(), 2);
+        let node = backend_node();
+        let rx = pool
+            .dispatch(node.clone(), ClientId::new(), request)
+            .await
+            .expect("dispatch");
+        let response = rx.await.expect("oneshot").expect("response");
+        assert_eq!(response, "ok");
+        assert_eq!(connector.started(), 1);
+        assert_eq!(total.entries(), vec!["cluster-backend-tests".to_string()]);
+        assert_eq!(remote.entries(), vec!["cluster-backend-tests".to_string()]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exclusive_connections_are_reused() {
+        let connector = Arc::new(TestConnector::default());
+        let pool = ConnectionPool::<TestRequest>::with_slots(cluster_name(), connector.clone(), 1);
+        let node = backend_node();
+
+        {
+            let _conn = pool.acquire_exclusive(&node);
+            tokio::task::yield_now().await;
+            assert_eq!(connector.started(), 1);
+        }
+
+        {
+            let _conn = pool.acquire_exclusive(&node);
+            tokio::task::yield_now().await;
+            assert_eq!(connector.started(), 1);
+        }
+    }
+}

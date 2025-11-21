@@ -24,3 +24,23 @@ impl Drop for Tracker {
         self.histogram.observe(micros);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prometheus::{Histogram, HistogramOpts};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn tracker_records_elapsed_time_on_drop() {
+        let histogram = Histogram::with_opts(HistogramOpts::new("tracker_test", "test")).unwrap();
+        let before = histogram.get_sample_count();
+        {
+            let _tracker = Tracker::new(histogram.clone());
+            thread::sleep(Duration::from_millis(1));
+        }
+        let after = histogram.get_sample_count();
+        assert!(after > before);
+    }
+}

@@ -10,14 +10,16 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use clap::Parser;
+use futures::future::pending;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Builder;
+use tokio::sync::oneshot;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 pub mod auth;
-pub mod cache;
 pub mod backend;
+pub mod cache;
 pub mod cluster;
 pub mod config;
 pub mod hotkey;
@@ -195,23 +197,45 @@ async fn accept_loop<P>(listener: TcpListener, proxy: Arc<P>, cluster: Arc<str>)
 where
     P: ProxyService,
 {
+    accept_loop_with_shutdown(listener, proxy, cluster, None).await;
+}
+
+async fn accept_loop_with_shutdown<P>(
+    listener: TcpListener,
+    proxy: Arc<P>,
+    cluster: Arc<str>,
+    mut shutdown: Option<oneshot::Receiver<()>>,
+) where
+    P: ProxyService,
+{
     loop {
-        match listener.accept().await {
-            Ok((socket, addr)) => {
-                let proxy = proxy.clone();
-                let cluster_name = cluster.clone();
-                tokio::spawn(async move {
-                    if let Err(err) = proxy.handle(socket).await {
-                        metrics::global_error_incr();
-                        metrics::front_error(cluster_name.as_ref(), "connection");
-                        warn!(cluster = %cluster_name, peer = %addr, error = %err, "connection closed with error");
+        tokio::select! {
+            _ = async {
+                if let Some(rx) = shutdown.as_mut() {
+                    let _ = rx.await;
+                } else {
+                    pending::<()>().await;
+                }
+            } => break,
+            result = listener.accept() => {
+                match result {
+                    Ok((socket, addr)) => {
+                        let proxy = proxy.clone();
+                        let cluster_name = cluster.clone();
+                        tokio::spawn(async move {
+                            if let Err(err) = proxy.handle(socket).await {
+                                metrics::global_error_incr();
+                                metrics::front_error(cluster_name.as_ref(), "connection");
+                                warn!(cluster = %cluster_name, peer = %addr, error = %err, "connection closed with error");
+                            }
+                        });
                     }
-                });
-            }
-            Err(err) => {
-                metrics::global_error_incr();
-                metrics::front_error(cluster.as_ref(), "accept");
-                warn!(cluster = %cluster, error = %err, "failed to accept incoming connection");
+                    Err(err) => {
+                        metrics::global_error_incr();
+                        metrics::front_error(cluster.as_ref(), "accept");
+                        warn!(cluster = %cluster, error = %err, "failed to accept incoming connection");
+                    }
+                }
             }
         }
     }
@@ -233,5 +257,62 @@ impl ProxyService for StandaloneProxy {
 impl ProxyService for ClusterProxy {
     async fn handle(&self, socket: TcpStream) -> Result<()> {
         self.handle_connection(socket).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::ErrorKind;
+    use tokio::sync::Mutex;
+    use tokio::time::{sleep, Duration};
+
+    #[derive(Default)]
+    struct MockProxy {
+        handled: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl ProxyService for MockProxy {
+        async fn handle(&self, _socket: TcpStream) -> Result<()> {
+            let mut guard = self.handled.lock().await;
+            *guard += 1;
+            Ok(())
+        }
+    }
+
+    impl MockProxy {
+        async fn count(&self) -> usize {
+            *self.handled.lock().await
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn accept_loop_processes_connections_and_respects_shutdown() -> Result<()> {
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+                eprintln!("accept loop test skipped: {err}");
+                return Ok(());
+            }
+            Err(err) => return Err(err.into()),
+        };
+        let addr = listener.local_addr()?;
+        let proxy = Arc::new(MockProxy::default());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let cluster = Arc::<str>::from("test-cluster");
+        let loop_task = tokio::spawn(accept_loop_with_shutdown(
+            listener,
+            proxy.clone(),
+            cluster,
+            Some(shutdown_rx),
+        ));
+
+        let _client = TcpStream::connect(addr).await?;
+        sleep(Duration::from_millis(10)).await;
+        shutdown_tx.send(()).ok();
+        loop_task.await.unwrap();
+        assert_eq!(proxy.count().await, 1);
+        Ok(())
     }
 }

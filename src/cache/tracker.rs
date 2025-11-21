@@ -59,7 +59,8 @@ impl CacheTrackerSet {
 
     pub fn set_nodes(&self, nodes: Vec<String>) {
         let mut guard = self.handles.lock();
-        let desired: HashSet<Arc<str>> = nodes.iter().map(|n| Arc::<str>::from(n.clone())).collect();
+        let desired: HashSet<Arc<str>> =
+            nodes.iter().map(|n| Arc::<str>::from(n.clone())).collect();
 
         guard.retain(|addr, handle| {
             if desired.contains(addr) {
@@ -194,7 +195,14 @@ async fn listen_once(
 ) -> Result<()> {
     let timeout_duration = runtime.request_timeout(timeout_ms);
     let mut framed = open_stream(&address, timeout_duration, backend_auth.clone()).await?;
-    negotiate_resp3(&cluster, &address, timeout_duration, &mut framed, backend_auth.clone()).await?;
+    negotiate_resp3(
+        &cluster,
+        &address,
+        timeout_duration,
+        &mut framed,
+        backend_auth.clone(),
+    )
+    .await?;
     enable_tracking(&cluster, &address, timeout_duration, &mut framed).await?;
 
     loop {
@@ -227,7 +235,9 @@ async fn open_stream(
     let stream = timeout(timeout_duration, TcpStream::connect(address))
         .await
         .with_context(|| format!("connect to {address} timed out"))??;
-    stream.set_nodelay(true).context("failed to enable TCP_NODELAY")?;
+    stream
+        .set_nodelay(true)
+        .context("failed to enable TCP_NODELAY")?;
     #[cfg(any(unix, windows))]
     {
         let keepalive = TcpKeepalive::new()
@@ -301,7 +311,10 @@ async fn enable_tracking(
     match timeout(timeout_duration, framed.next()).await {
         Ok(Some(Ok(resp))) => match resp {
             RespValue::SimpleString(ref s) | RespValue::BulkString(ref s)
-                if s.eq_ignore_ascii_case(b"OK") => Ok(()),
+                if s.eq_ignore_ascii_case(b"OK") =>
+            {
+                Ok(())
+            }
             RespValue::Error(err) => Err(anyhow!(
                 "backend {backend} rejected CLIENT TRACKING for cluster {cluster}: {}",
                 String::from_utf8_lossy(&err)
@@ -313,7 +326,9 @@ async fn enable_tracking(
         },
         Ok(Some(Err(err))) => Err(err.context("CLIENT TRACKING failed")),
         Ok(None) => Err(anyhow!("backend {backend} closed during CLIENT TRACKING")),
-        Err(_) => Err(anyhow!("backend {backend} timed out waiting for CLIENT TRACKING")),
+        Err(_) => Err(anyhow!(
+            "backend {backend} timed out waiting for CLIENT TRACKING"
+        )),
     }
 }
 
@@ -336,4 +351,72 @@ fn parse_invalidation(items: &[RespValue]) -> Option<Vec<Bytes>> {
         }
     }
     Some(keys)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::watch;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_for_enabled_returns_on_state_change() {
+        let (state_tx, mut state_rx) = watch::channel(CacheState::Disabled);
+        let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let handle =
+            tokio::spawn(async move { wait_for_enabled(&mut state_rx, &mut shutdown_rx).await });
+        state_tx.send(CacheState::Enabled).unwrap();
+        let result = tokio::time::timeout(Duration::from_millis(100), handle)
+            .await
+            .expect("wait task finished")
+            .expect("wait result");
+        assert!(result);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_for_enabled_exits_on_shutdown() {
+        let (_state_tx, mut state_rx) = watch::channel(CacheState::Disabled);
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let handle =
+            tokio::spawn(async move { wait_for_enabled(&mut state_rx, &mut shutdown_rx).await });
+        shutdown_tx.send(true).unwrap();
+        let result = tokio::time::timeout(Duration::from_millis(100), handle)
+            .await
+            .expect("wait task finished")
+            .expect("wait result");
+        assert!(!result);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_with_shutdown_obeys_delay() {
+        let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        let result = wait_with_shutdown(Duration::from_millis(10), &mut shutdown_rx).await;
+        assert!(!result);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_with_shutdown_detects_signal() {
+        let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+        shutdown_tx.send(true).unwrap();
+        let result = wait_with_shutdown(Duration::from_secs(1), &mut shutdown_rx).await;
+        assert!(result);
+    }
+
+    #[test]
+    fn parse_invalidation_collects_keys() {
+        let payload = vec![
+            RespValue::BulkString(Bytes::from_static(b"invalidate")),
+            RespValue::BulkString(Bytes::from_static(b"foo")),
+            RespValue::SimpleString(Bytes::from_static(b"bar")),
+        ];
+        let keys = parse_invalidation(&payload).expect("keys");
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], Bytes::from_static(b"foo"));
+        assert_eq!(keys[1], Bytes::from_static(b"bar"));
+    }
+
+    #[test]
+    fn parse_invalidation_rejects_unexpected_labels() {
+        let payload = vec![RespValue::BulkString(Bytes::from_static(b"ignore"))];
+        assert!(parse_invalidation(&payload).is_none());
+    }
 }

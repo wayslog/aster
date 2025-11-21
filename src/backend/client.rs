@@ -46,3 +46,34 @@ impl<'a> Drop for FrontConnectionGuard<'a> {
         metrics::front_conn_close(self.cluster);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics;
+
+    #[test]
+    fn client_ids_are_monotonic() {
+        let a = ClientId::new();
+        let b = ClientId::new();
+        assert!(b.as_u64() > a.as_u64());
+    }
+
+    #[test]
+    fn front_connection_guard_updates_metrics() {
+        let cluster = "guard-cluster";
+        let initial_current = metrics::front_connections_current(cluster);
+        let initial_total = metrics::front_connections_total(cluster);
+
+        {
+            let _guard = FrontConnectionGuard::new(cluster);
+            assert_eq!(
+                metrics::front_connections_current(cluster),
+                initial_current + 1
+            );
+        }
+
+        assert_eq!(metrics::front_connections_current(cluster), initial_current);
+        assert_eq!(metrics::front_connections_total(cluster), initial_total + 1);
+    }
+}

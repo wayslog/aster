@@ -95,7 +95,10 @@ impl ClientCache {
             state: AtomicU8::new(initial_state.as_u8()),
             resp3_ready,
             shards: ArcSwap::from_pointee(shards),
-            config: RwLock::new(ClientCacheConfig { enabled: initial_state == CacheState::Enabled, ..config }),
+            config: RwLock::new(ClientCacheConfig {
+                enabled: initial_state == CacheState::Enabled,
+                ..config
+            }),
             drain_handle: Mutex::new(None),
             state_tx,
         };
@@ -119,9 +122,7 @@ impl ClientCache {
         if !self.resp3_ready {
             bail!("client cache requires RESP3 backend support");
         }
-        let prev = self
-            .state
-            .swap(STATE_ENABLED, Ordering::SeqCst);
+        let prev = self.state.swap(STATE_ENABLED, Ordering::SeqCst);
         self.stop_drain_task();
         self.state_tx.send_replace(CacheState::Enabled);
         if prev != STATE_ENABLED {
@@ -135,9 +136,7 @@ impl ClientCache {
     }
 
     pub fn disable(self: &Arc<Self>) {
-        let prev = self
-            .state
-            .swap(STATE_DRAINING, Ordering::SeqCst);
+        let prev = self.state.swap(STATE_DRAINING, Ordering::SeqCst);
         if prev == STATE_DISABLED {
             self.state_tx.send_replace(CacheState::Disabled);
             return;
@@ -158,11 +157,7 @@ impl ClientCache {
         match classify_read(command) {
             CacheRead::Single { kind, key, field } => {
                 let hit = self.lookup_single(kind, key, field);
-                metrics::client_cache_lookup(
-                    self.cluster.as_ref(),
-                    kind.label(),
-                    hit.is_some(),
-                );
+                metrics::client_cache_lookup(self.cluster.as_ref(), kind.label(), hit.is_some());
                 hit
             }
             CacheRead::Multi { keys } => {
@@ -324,12 +319,7 @@ impl ClientCache {
         metrics::client_cache_store(self.cluster.as_ref(), kind.label());
     }
 
-    fn store_multi(
-        &self,
-        config: &ClientCacheConfig,
-        keys: &[&Bytes],
-        response: &RespValue,
-    ) {
+    fn store_multi(&self, config: &ClientCacheConfig, keys: &[&Bytes], response: &RespValue) {
         let values = match response.as_array() {
             Some(values) if values.len() == keys.len() => values,
             _ => return,
@@ -402,13 +392,17 @@ impl ClientCache {
 fn normalize_value(kind: CacheCommandKind, resp: &RespValue) -> Option<RespValue> {
     match kind {
         CacheCommandKind::Value => match resp {
-            RespValue::BulkString(_) | RespValue::SimpleString(_) | RespValue::Null | RespValue::NullBulk =>
-                Some(resp.clone()),
+            RespValue::BulkString(_)
+            | RespValue::SimpleString(_)
+            | RespValue::Null
+            | RespValue::NullBulk => Some(resp.clone()),
             _ => None,
         },
         CacheCommandKind::HashField => match resp {
-            RespValue::BulkString(_) | RespValue::SimpleString(_) | RespValue::Null | RespValue::NullBulk =>
-                Some(resp.clone()),
+            RespValue::BulkString(_)
+            | RespValue::SimpleString(_)
+            | RespValue::Null
+            | RespValue::NullBulk => Some(resp.clone()),
             _ => None,
         },
     }
@@ -423,13 +417,12 @@ fn resp_size(value: &RespValue) -> usize {
         | RespValue::Double(data)
         | RespValue::BigNumber(data) => data.len(),
         RespValue::Integer(_) => std::mem::size_of::<i64>(),
-        RespValue::Null
-        | RespValue::NullBulk
-        | RespValue::NullArray => 1,
+        RespValue::Null | RespValue::NullBulk | RespValue::NullArray => 1,
         RespValue::Boolean(_) => 1,
-        RespValue::Map(entries) | RespValue::Attribute(entries) => {
-            entries.iter().map(|(k, v)| resp_size(k) + resp_size(v)).sum()
-        }
+        RespValue::Map(entries) | RespValue::Attribute(entries) => entries
+            .iter()
+            .map(|(k, v)| resp_size(k) + resp_size(v))
+            .sum(),
         RespValue::Array(values) | RespValue::Set(values) | RespValue::Push(values) => {
             values.iter().map(resp_size).sum()
         }
@@ -476,10 +469,7 @@ struct CacheEntry {
 
 impl CacheEntry {
     fn new(value: RespValue) -> Self {
-        Self {
-            value,
-            access: 0,
-        }
+        Self { value, access: 0 }
     }
 }
 
@@ -512,12 +502,7 @@ impl CacheShard {
         }
     }
 
-    fn get(
-        &self,
-        kind: CacheCommandKind,
-        key: &Bytes,
-        field: Option<&Bytes>,
-    ) -> Option<RespValue> {
+    fn get(&self, kind: CacheCommandKind, key: &Bytes, field: Option<&Bytes>) -> Option<RespValue> {
         let mut guard = self.inner.lock();
         guard.touch(&CacheKey::new(kind, key.clone(), field.cloned()))
     }
@@ -652,7 +637,10 @@ impl CacheShardInner {
             if let Some(stored) = self.entries.get(&entry.key) {
                 if stored.access == entry.access {
                     self.detach(&entry.key);
-                    return self.entries.remove(&entry.key).map(|value| (entry.key, value));
+                    return self
+                        .entries
+                        .remove(&entry.key)
+                        .map(|value| (entry.key, value));
                 }
             }
         }
@@ -802,5 +790,83 @@ fn classify_write(command: &RedisCommand) -> Option<CacheWrite<'_>> {
             Some(CacheWrite::Keys(keys))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use std::sync::Arc;
+
+    fn config() -> ClientCacheConfig {
+        ClientCacheConfig {
+            enabled: true,
+            max_entries: 32,
+            max_value_bytes: 1024,
+            shard_count: 2,
+            drain_batch: 8,
+            drain_interval_ms: 10,
+        }
+    }
+
+    fn cache() -> ClientCache {
+        ClientCache::new(
+            Arc::<str>::from("cache-cluster".to_string()),
+            config(),
+            true,
+        )
+    }
+
+    fn command(parts: &[&[u8]]) -> RedisCommand {
+        let parts = parts
+            .iter()
+            .map(|p| Bytes::copy_from_slice(p))
+            .collect::<Vec<_>>();
+        RedisCommand::new(parts).expect("command")
+    }
+
+    #[test]
+    fn cache_store_and_lookup_value() {
+        let cache = cache();
+        let cmd = command(&[b"GET", b"foo"]);
+        assert!(cache.lookup(&cmd).is_none());
+        let value = RespValue::bulk("bar");
+        cache.store(&cmd, &value);
+        assert_eq!(cache.lookup(&cmd), Some(value));
+    }
+
+    #[test]
+    fn cache_store_multi_populates_individual_keys() {
+        let cache = cache();
+        let mget = command(&[b"MGET", b"foo", b"bar"]);
+        let resp = RespValue::array(vec![RespValue::bulk("v1"), RespValue::bulk("v2")]);
+        cache.store(&mget, &resp);
+        let foo = command(&[b"GET", b"foo"]);
+        let bar = command(&[b"GET", b"bar"]);
+        assert_eq!(cache.lookup(&foo), Some(RespValue::bulk("v1")));
+        assert_eq!(cache.lookup(&bar), Some(RespValue::bulk("v2")));
+    }
+
+    #[test]
+    fn cache_invalidate_command_clears_entries() {
+        let cache = cache();
+        let get = command(&[b"GET", b"key"]);
+        let resp = RespValue::bulk("value");
+        cache.store(&get, &resp);
+        assert!(cache.lookup(&get).is_some());
+        let del = command(&[b"DEL", b"key"]);
+        cache.invalidate_command(&del);
+        assert!(cache.lookup(&get).is_none());
+    }
+
+    #[test]
+    fn classification_helpers_identify_cacheable_commands() {
+        let get = command(&[b"GET", b"key"]);
+        let set = command(&[b"SET", b"key", b"value"]);
+        assert!(ClientCache::is_cacheable_read(&get));
+        assert!(!ClientCache::is_cacheable_read(&set));
+        assert!(ClientCache::is_invalidating_write(&set));
+        assert!(!ClientCache::is_invalidating_write(&command(&[b"PING"])));
     }
 }

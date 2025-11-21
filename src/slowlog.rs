@@ -199,6 +199,63 @@ fn slowlog_value_error() -> RespValue {
     ))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slowlog_with_entries() -> Slowlog {
+        let log = Slowlog::new(0, 4);
+        let cmd = RedisCommand::new(vec![Bytes::from_static(b"PING")]).unwrap();
+        log.maybe_record(&cmd, Duration::from_micros(10));
+        log
+    }
+
+    #[test]
+    fn handle_get_returns_entries() {
+        let log = slowlog_with_entries();
+        let result = handle_command(
+            &log,
+            &[Bytes::from_static(b"slowlog"), Bytes::from_static(b"get")],
+        );
+        match result {
+            RespValue::Array(values) => assert!(!values.is_empty()),
+            other => panic!("unexpected response: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn handle_len_reports_length() {
+        let log = slowlog_with_entries();
+        let result = handle_command(
+            &log,
+            &[Bytes::from_static(b"slowlog"), Bytes::from_static(b"len")],
+        );
+        assert!(matches!(result, RespValue::Integer(value) if value >= 1));
+    }
+
+    #[test]
+    fn handle_reset_clears_entries() {
+        let log = slowlog_with_entries();
+        let _ = handle_command(
+            &log,
+            &[Bytes::from_static(b"slowlog"), Bytes::from_static(b"reset")],
+        );
+        let result = handle_command(
+            &log,
+            &[Bytes::from_static(b"slowlog"), Bytes::from_static(b"len")],
+        );
+        assert_eq!(result, RespValue::Integer(0));
+    }
+
+    #[test]
+    fn parse_non_negative_validates_input() {
+        let value = Bytes::from_static(b"5");
+        assert_eq!(parse_non_negative(&value).unwrap(), 5);
+        let invalid = Bytes::from_static(b"-1");
+        assert!(parse_non_negative(&invalid).is_err());
+    }
+}
+
 struct RingBuffer<T> {
     buf: Vec<T>,
     capacity: usize,

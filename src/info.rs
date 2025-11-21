@@ -232,3 +232,41 @@ fn format_bytes(bytes: u64) -> String {
         format!("{value:.2}{unit}")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_mode_labels_are_stable() {
+        assert_eq!(ProxyMode::Standalone.as_str(), "standalone");
+        assert_eq!(ProxyMode::Cluster.as_str(), "cluster");
+    }
+
+    #[test]
+    fn format_bytes_handles_units() {
+        assert_eq!(format_bytes(0), "0B");
+        assert_eq!(format_bytes(512), "512B");
+        assert_eq!(format_bytes(1024), "1.00KB");
+    }
+
+    #[test]
+    fn render_info_includes_expected_sections() {
+        register_info_metrics();
+        let context = InfoContext {
+            cluster: "info-test",
+            mode: ProxyMode::Standalone,
+            listen_port: 7000,
+            backend_nodes: 2,
+        };
+        let payload = render_info(context, Some("server"));
+        let text = String::from_utf8(payload.to_vec()).unwrap();
+        assert!(text.contains("# Server"));
+        assert!(text.contains("cluster_name:info-test"));
+    }
+
+    fn register_info_metrics() {
+        metrics::front_conn_open("info-test");
+        metrics::front_command("info-test", "read", true);
+    }
+}

@@ -466,6 +466,11 @@ impl BackupRequestRuntime {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test(config: BackupRequestConfig) -> Self {
+        Self::new(&config)
+    }
+
     pub fn enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
     }
@@ -783,10 +788,9 @@ impl ConfigManager {
             ClusterField::ClientCacheEnabled => {
                 let enabled = parse_bool_flag(value, "client-cache-enabled")?;
                 if enabled {
-                    entry
-                        .client_cache
-                        .enable()
-                        .with_context(|| format!("cluster {} failed to enable client cache", cluster_name))?;
+                    entry.client_cache.enable().with_context(|| {
+                        format!("cluster {} failed to enable client cache", cluster_name)
+                    })?;
                 } else {
                     entry.client_cache.disable();
                 }
@@ -813,7 +817,9 @@ impl ConfigManager {
                 let parsed = parse_positive_usize(value, "client-cache-max-value-bytes")?;
                 entry.client_cache.set_max_value_bytes(parsed);
                 let mut guard = self.config.write();
-                guard.clusters_mut()[entry.index].client_cache.max_value_bytes = parsed;
+                guard.clusters_mut()[entry.index]
+                    .client_cache
+                    .max_value_bytes = parsed;
                 info!(
                     cluster = cluster_name,
                     value = value,
@@ -846,7 +852,9 @@ impl ConfigManager {
                 let parsed = parse_positive_u64(value, "client-cache-drain-interval-ms")?;
                 entry.client_cache.set_drain_interval(parsed);
                 let mut guard = self.config.write();
-                guard.clusters_mut()[entry.index].client_cache.drain_interval_ms = parsed;
+                guard.clusters_mut()[entry.index]
+                    .client_cache
+                    .drain_interval_ms = parsed;
                 info!(
                     cluster = cluster_name,
                     value = value,
@@ -1245,4 +1253,196 @@ fn wildcard_match(pattern: &str, target: &str) -> bool {
     }
 
     p == pattern.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::{AuthUserConfig, BackendAuthConfig, FrontendAuthConfig, FrontendAuthTable};
+    use crate::protocol::redis::RespVersion;
+    use std::env;
+    use std::sync::Mutex;
+
+    static ENV_GUARD: Mutex<()> = Mutex::new(());
+
+    fn base_cluster() -> ClusterConfig {
+        ClusterConfig {
+            name: "alpha".into(),
+            listen_addr: "127.0.0.1:7000".into(),
+            hash_tag: None,
+            thread: Some(2),
+            cache_type: CacheType::Redis,
+            read_timeout: Some(1500),
+            write_timeout: Some(1500),
+            servers: vec!["127.0.0.1:6379".into()],
+            fetch_interval: None,
+            read_from_slave: None,
+            ping_fail_limit: Some(1),
+            ping_interval: Some(60),
+            ping_succ_interval: Some(120),
+            dial_timeout: None,
+            listen_proto: None,
+            node_connections: Some(2),
+            auth: None,
+            password: None,
+            backend_auth: None,
+            backend_password: None,
+            slowlog_log_slower_than: default_slowlog_log_slower_than(),
+            slowlog_max_len: default_slowlog_max_len(),
+            hotkey_sample_every: default_hotkey_sample_every(),
+            hotkey_sketch_width: default_hotkey_sketch_width(),
+            hotkey_sketch_depth: default_hotkey_sketch_depth(),
+            hotkey_capacity: default_hotkey_capacity(),
+            hotkey_decay: default_hotkey_decay(),
+            backend_resp_version: RespVersion::Resp2,
+            client_cache: ClientCacheConfig::default(),
+            backup_request: BackupRequestConfig::default(),
+        }
+    }
+
+    fn config_with_single_cluster(cluster: ClusterConfig) -> Config {
+        Config {
+            clusters: vec![cluster],
+        }
+    }
+
+    #[test]
+    fn cluster_config_validation_succeeds_for_minimal_setup() {
+        let cfg = base_cluster();
+        cfg.ensure_valid().expect("valid cluster");
+    }
+
+    #[test]
+    fn cluster_config_validation_detects_missing_servers() {
+        let mut cfg = base_cluster();
+        cfg.servers.clear();
+        assert!(cfg.ensure_valid().is_err());
+    }
+
+    #[test]
+    fn listen_port_parses_hostname_style_addresses() {
+        let mut cfg = base_cluster();
+        cfg.listen_addr = "cache.example.com:8888".into();
+        assert_eq!(cfg.listen_port().unwrap(), 8888);
+    }
+
+    #[test]
+    fn frontend_auth_users_prefers_explicit_acl_config() {
+        let mut cfg = base_cluster();
+        cfg.auth = Some(FrontendAuthConfig::Detailed(FrontendAuthTable {
+            password: Some("shared".into()),
+            users: vec![AuthUserConfig {
+                username: "extra".into(),
+                password: "xyz".into(),
+            }],
+        }));
+        cfg.password = Some("legacy".into());
+        let users = cfg.frontend_auth_users().expect("auth users");
+        assert_eq!(users.len(), 2);
+        assert_eq!(users[0].username, "default");
+        assert_eq!(users[0].password, "shared");
+    }
+
+    #[test]
+    fn frontend_auth_users_falls_back_to_password_field() {
+        let mut cfg = base_cluster();
+        cfg.password = Some("legacy".into());
+        let users = cfg.frontend_auth_users().expect("auth users");
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].username, "default");
+        assert_eq!(users[0].password, "legacy");
+    }
+
+    #[test]
+    fn backend_auth_prefers_acl_config() {
+        let mut cfg = base_cluster();
+        cfg.backend_auth = Some(BackendAuthConfig::Credential {
+            username: "user".into(),
+            password: "pw".into(),
+        });
+        cfg.backend_password = Some("legacy".into());
+        let auth = cfg.backend_auth_config().expect("backend auth");
+        match auth {
+            BackendAuthConfig::Credential { username, password } => {
+                assert_eq!(username, "user");
+                assert_eq!(password, "pw");
+            }
+            BackendAuthConfig::Password(_) => panic!("expected credential variant"),
+        }
+    }
+
+    #[test]
+    fn backend_auth_falls_back_to_password_field() {
+        let mut cfg = base_cluster();
+        cfg.backend_password = Some("legacy".into());
+        let auth = cfg.backend_auth_config().expect("backend auth");
+        match auth {
+            BackendAuthConfig::Password(password) => assert_eq!(password, "legacy"),
+            _ => panic!("expected password variant"),
+        }
+    }
+
+    #[test]
+    fn apply_defaults_uses_env_override_for_threads() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let previous = env::var(ENV_DEFAULT_THREADS).ok();
+        env::set_var(ENV_DEFAULT_THREADS, "11");
+        let mut cfg = config_with_single_cluster(ClusterConfig {
+            thread: None,
+            ..base_cluster()
+        });
+        cfg.apply_defaults();
+        let thread = cfg.clusters()[0].thread.expect("thread assigned");
+        if let Some(val) = previous {
+            env::set_var(ENV_DEFAULT_THREADS, val);
+        } else {
+            env::remove_var(ENV_DEFAULT_THREADS);
+        }
+        assert_eq!(thread, 11);
+    }
+
+    #[test]
+    fn parse_port_handles_ipv6_endpoints() {
+        let port = parse_port("[2001:db8::1]:7100").expect("ipv6 port");
+        assert_eq!(port, 7100);
+    }
+
+    #[test]
+    fn parse_key_recognizes_known_fields() {
+        let (cluster, field) = parse_key("cluster.alpha.hotkey-decay").expect("key parsed");
+        assert_eq!(cluster, "alpha");
+        assert!(matches!(field, ClusterField::HotkeyDecay));
+    }
+
+    #[test]
+    fn parse_key_rejects_unknown_fields() {
+        assert!(parse_key("cluster.alpha.unknown").is_err());
+    }
+
+    #[test]
+    fn parse_timeout_value_handles_default_marker() {
+        assert_eq!(parse_timeout_value("default").unwrap(), None);
+        assert_eq!(parse_timeout_value("250").unwrap(), Some(250));
+        assert!(parse_timeout_value("oops").is_err());
+    }
+
+    #[test]
+    fn parse_bool_flag_understands_common_aliases() {
+        assert!(parse_bool_flag("YES", "flag").unwrap());
+        assert!(!parse_bool_flag("0", "flag").unwrap());
+        assert!(parse_bool_flag("maybe", "flag").is_err());
+    }
+
+    #[test]
+    fn wildcard_match_supports_basic_patterns() {
+        assert!(wildcard_match("cluster.*", "cluster.alpha"));
+        assert!(wildcard_match("cache-?", "cache-a"));
+        assert!(!wildcard_match("cache-?", "cache-long"));
+    }
+
+    #[test]
+    fn option_atomic_roundtrip() {
+        assert_eq!(atomic_to_option(option_to_atomic(Some(42))), Some(42));
+        assert_eq!(atomic_to_option(option_to_atomic(None)), None);
+    }
 }
