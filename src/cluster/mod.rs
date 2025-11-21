@@ -1461,12 +1461,16 @@ async fn fetch_from_seed(seed: &str, connector: Arc<ClusterConnector>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::client::ClientId;
+    use crate::backend::pool::{BackendNode, ConnectionPool, Connector, SessionCommand};
     use crate::config::BackupRequestConfig;
     use crate::utils::{crc16, trim_hash_tag};
-    use std::collections::HashSet;
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::watch;
+    use anyhow::anyhow;
+    use bytes::Bytes;
+    use std::collections::{HashMap, HashSet, VecDeque};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+    use tokio::sync::{mpsc, oneshot, watch};
 
     #[test]
     fn parse_moved_redirect() {
@@ -1668,6 +1672,351 @@ mod tests {
         assert!(subscription_action_kind(b"foobar").is_none());
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn backup_request_prefers_replica_on_slow_primary() {
+        let master = BackendNode::new("127.0.0.1:7000".to_string());
+        let replica = BackendNode::new("127.0.0.1:7001".to_string());
+        let connector = Arc::new(TestConnector::new(HashMap::from([
+            (
+                master.as_str().to_string(),
+                VecDeque::from(vec![TestResponse::Delayed(
+                    Duration::from_millis(30),
+                    Ok(RespValue::BulkString(Bytes::from_static(b"master"))),
+                )]),
+            ),
+            (
+                replica.as_str().to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Ok(RespValue::BulkString(
+                    Bytes::from_static(b"replica"),
+                )))]),
+            ),
+        ])));
+        let pool = Arc::new(ConnectionPool::with_slots(
+            Arc::<str>::from("cluster-backup"),
+            connector.clone(),
+            1,
+        ));
+        let runtime = Arc::new(BackupRequestRuntime::new_for_test(BackupRequestConfig {
+            enabled: true,
+            trigger_slow_ms: Some(1),
+            multiplier: 0.0,
+        }));
+        let controller = Arc::new(BackupRequestController::new(runtime));
+        let key = key_for_slot_id(0);
+        let command = RedisCommand::new(vec![Bytes::from_static(b"GET"), key.clone()]).unwrap();
+        let plan = BackupPlan {
+            replica: replica.clone(),
+            delay: Duration::from_millis(1),
+        };
+        let response = execute_with_backup(
+            pool,
+            ClientId::new(),
+            &command,
+            master.clone(),
+            Arc::<str>::from("cluster-backup"),
+            Some(plan),
+            controller,
+        )
+        .await
+        .expect("backup response");
+        assert_eq!(
+            response,
+            RespValue::BulkString(Bytes::from_static(b"replica"))
+        );
+        assert_eq!(connector.calls(master.as_str()), 1);
+        assert_eq!(connector.calls(replica.as_str()), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn backup_request_skips_replica_when_primary_fast() {
+        let master = BackendNode::new("127.0.0.1:7002".to_string());
+        let replica = BackendNode::new("127.0.0.1:7003".to_string());
+        let connector = Arc::new(TestConnector::new(HashMap::from([
+            (
+                master.as_str().to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Ok(RespValue::BulkString(
+                    Bytes::from_static(b"master-fast"),
+                )))]),
+            ),
+            (
+                replica.as_str().to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Ok(RespValue::BulkString(
+                    Bytes::from_static(b"replica-unused"),
+                )))]),
+            ),
+        ])));
+        let pool = Arc::new(ConnectionPool::with_slots(
+            Arc::<str>::from("cluster-primary"),
+            connector.clone(),
+            1,
+        ));
+        let runtime = Arc::new(BackupRequestRuntime::new_for_test(BackupRequestConfig {
+            enabled: true,
+            trigger_slow_ms: Some(50),
+            multiplier: 0.0,
+        }));
+        let controller = Arc::new(BackupRequestController::new(runtime));
+        let key = key_for_slot_id(1);
+        let command = RedisCommand::new(vec![Bytes::from_static(b"GET"), key.clone()]).unwrap();
+        let plan = BackupPlan {
+            replica: replica.clone(),
+            delay: Duration::from_millis(10),
+        };
+        let response = execute_with_backup(
+            pool,
+            ClientId::new(),
+            &command,
+            master.clone(),
+            Arc::<str>::from("cluster-primary"),
+            Some(plan),
+            controller,
+        )
+        .await
+        .expect("primary response");
+        assert_eq!(
+            response,
+            RespValue::BulkString(Bytes::from_static(b"master-fast"))
+        );
+        assert_eq!(connector.calls(replica.as_str()), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn backup_request_propagates_replica_error_when_it_finishes_first() {
+        let master = BackendNode::new("127.0.0.1:7004".to_string());
+        let replica = BackendNode::new("127.0.0.1:7005".to_string());
+        let connector = Arc::new(TestConnector::new(HashMap::from([
+            (
+                master.as_str().to_string(),
+                VecDeque::from(vec![TestResponse::Delayed(
+                    Duration::from_millis(20),
+                    Ok(RespValue::BulkString(Bytes::from_static(b"master"))),
+                )]),
+            ),
+            (
+                replica.as_str().to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Err(anyhow!(
+                    "replica offline"
+                )))]),
+            ),
+        ])));
+        let pool = Arc::new(ConnectionPool::with_slots(
+            Arc::<str>::from("cluster-fallback"),
+            connector.clone(),
+            1,
+        ));
+        let runtime = Arc::new(BackupRequestRuntime::new_for_test(BackupRequestConfig {
+            enabled: true,
+            trigger_slow_ms: Some(1),
+            multiplier: 0.0,
+        }));
+        let controller = Arc::new(BackupRequestController::new(runtime));
+        let command =
+            RedisCommand::new(vec![Bytes::from_static(b"GET"), Bytes::from_static(b"baz")])
+                .unwrap();
+        let plan = BackupPlan {
+            replica: replica.clone(),
+            delay: Duration::from_millis(1),
+        };
+        let error = execute_with_backup(
+            pool,
+            ClientId::new(),
+            &command,
+            master.clone(),
+            Arc::<str>::from("cluster-fallback"),
+            Some(plan),
+            controller,
+        )
+        .await
+        .expect_err("replica error");
+        assert!(error.to_string().contains("replica offline"));
+        assert_eq!(connector.calls(replica.as_str()), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn await_primary_only_returns_primary_result() {
+        let runtime = Arc::new(BackupRequestRuntime::new_for_test(BackupRequestConfig {
+            enabled: true,
+            trigger_slow_ms: Some(1),
+            multiplier: 1.0,
+        }));
+        let controller = Arc::new(BackupRequestController::new(runtime));
+        let master = BackendNode::new("127.0.0.1:7006".to_string());
+        let (tx, rx) = oneshot::channel();
+        tx.send(Ok(RespValue::BulkString(Bytes::from_static(b"primary"))))
+            .unwrap();
+        let response = await_primary_only(
+            Box::pin(rx),
+            controller.clone(),
+            master.clone(),
+            Instant::now(),
+        )
+        .await
+        .expect("primary response");
+        assert_eq!(
+            response,
+            RespValue::BulkString(Bytes::from_static(b"primary"))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_single_retries_on_moved_redirect() {
+        let connector = Arc::new(TestConnector::new(HashMap::from([
+            (
+                "127.0.0.1:7000".to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Ok(RespValue::error(
+                    "MOVED 0 127.0.0.1:7100",
+                )))]),
+            ),
+            (
+                "127.0.0.1:7100".to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Ok(RespValue::SimpleString(
+                    Bytes::from_static(b"OK"),
+                )))]),
+            ),
+        ])));
+        let pool = Arc::new(ConnectionPool::with_slots(
+            Arc::<str>::from("cluster-moved"),
+            connector.clone(),
+            1,
+        ));
+        let (slots_tx, _rx) = watch::channel(full_slot_map(7000, 7001));
+        let slots = Arc::new(slots_tx);
+        let (fetch_tx, mut fetch_rx) = mpsc::unbounded_channel();
+        let runtime = Arc::new(BackupRequestRuntime::new_for_test(BackupRequestConfig {
+            enabled: false,
+            trigger_slow_ms: None,
+            multiplier: 0.0,
+        }));
+        let controller = Arc::new(BackupRequestController::new(runtime));
+        let command =
+            RedisCommand::new(vec![Bytes::from_static(b"GET"), Bytes::from_static(b"foo")])
+                .unwrap();
+        let response = dispatch_single(
+            None,
+            false,
+            slots.clone(),
+            pool.clone(),
+            fetch_tx,
+            ClientId::new(),
+            controller.clone(),
+            Arc::<str>::from("cluster-moved"),
+            command,
+        )
+        .await
+        .expect("redirected response");
+        assert_eq!(response, RespValue::SimpleString(Bytes::from_static(b"OK")));
+        assert!(fetch_rx.try_recv().is_ok());
+        assert_eq!(connector.calls("127.0.0.1:7000"), 1);
+        assert_eq!(connector.calls("127.0.0.1:7100"), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_single_handles_ask_redirect() {
+        let connector = Arc::new(TestConnector::new(HashMap::from([
+            (
+                "127.0.0.1:7000".to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Ok(RespValue::error(
+                    "ASK 0 127.0.0.1:7200",
+                )))]),
+            ),
+            (
+                "127.0.0.1:7200".to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Ok(RespValue::BulkString(
+                    Bytes::from_static(b"value"),
+                )))]),
+            ),
+        ])));
+        let pool = Arc::new(ConnectionPool::with_slots(
+            Arc::<str>::from("cluster-ask"),
+            connector.clone(),
+            1,
+        ));
+        let (slots_tx, _rx) = watch::channel(full_slot_map(7000, 7001));
+        let slots = Arc::new(slots_tx);
+        let (fetch_tx, mut fetch_rx) = mpsc::unbounded_channel();
+        let runtime = Arc::new(BackupRequestRuntime::new_for_test(BackupRequestConfig {
+            enabled: false,
+            trigger_slow_ms: None,
+            multiplier: 0.0,
+        }));
+        let controller = Arc::new(BackupRequestController::new(runtime));
+        let command =
+            RedisCommand::new(vec![Bytes::from_static(b"GET"), Bytes::from_static(b"bar")])
+                .unwrap();
+        let response = dispatch_single(
+            None,
+            false,
+            slots.clone(),
+            pool.clone(),
+            fetch_tx,
+            ClientId::new(),
+            controller.clone(),
+            Arc::<str>::from("cluster-ask"),
+            command,
+        )
+        .await
+        .expect("ask response");
+        assert_eq!(
+            response,
+            RespValue::BulkString(Bytes::from_static(b"value"))
+        );
+        assert!(fetch_rx.try_recv().is_err());
+        assert_eq!(connector.calls("127.0.0.1:7200"), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_single_uses_backup_plan_for_reads() {
+        let connector = Arc::new(TestConnector::new(HashMap::from([
+            (
+                "127.0.0.1:7000".to_string(),
+                VecDeque::from(vec![TestResponse::Delayed(
+                    Duration::from_millis(30),
+                    Ok(RespValue::BulkString(Bytes::from_static(b"slow"))),
+                )]),
+            ),
+            (
+                "127.0.0.1:7001".to_string(),
+                VecDeque::from(vec![TestResponse::Immediate(Ok(RespValue::BulkString(
+                    Bytes::from_static(b"replica"),
+                )))]),
+            ),
+        ])));
+        let pool = Arc::new(ConnectionPool::with_slots(
+            Arc::<str>::from("cluster-backups"),
+            connector.clone(),
+            1,
+        ));
+        let (slots_tx, _rx) = watch::channel(full_slot_map(7000, 7001));
+        let slots = Arc::new(slots_tx);
+        let (fetch_tx, _fetch_rx) = mpsc::unbounded_channel();
+        let runtime = Arc::new(BackupRequestRuntime::new_for_test(BackupRequestConfig {
+            enabled: true,
+            trigger_slow_ms: Some(1),
+            multiplier: 0.0,
+        }));
+        let controller = Arc::new(BackupRequestController::new(runtime));
+        let key = key_for_slot_id(2);
+        let command = RedisCommand::new(vec![Bytes::from_static(b"GET"), key.clone()]).unwrap();
+        let response = dispatch_single(
+            None,
+            false,
+            slots.clone(),
+            pool.clone(),
+            fetch_tx,
+            ClientId::new(),
+            controller.clone(),
+            Arc::<str>::from("cluster-backups"),
+            command,
+        )
+        .await
+        .expect("backup response");
+        assert_eq!(
+            response,
+            RespValue::BulkString(Bytes::from_static(b"replica"))
+        );
+        assert_eq!(connector.calls("127.0.0.1:7001"), 1);
+    }
+
     fn sample_slot_map() -> SlotMap {
         SlotMap::from_slots_response(RespValue::Array(vec![RespValue::Array(vec![
             RespValue::Integer(0),
@@ -1678,11 +2027,91 @@ mod tests {
         .expect("slot map")
     }
 
+    fn full_slot_map(master: i64, replica: i64) -> SlotMap {
+        SlotMap::from_slots_response(RespValue::Array(vec![RespValue::Array(vec![
+            RespValue::Integer(0),
+            RespValue::Integer((SLOT_COUNT - 1) as i64),
+            endpoint("127.0.0.1", master),
+            endpoint("127.0.0.1", replica),
+        ])]))
+        .expect("slot map")
+    }
+
+    fn key_for_slot_id(slot: u16) -> Bytes {
+        for idx in 0..50_000u32 {
+            let candidate = format!("key-{idx}");
+            if crc16(candidate.as_bytes()) % SLOT_COUNT == slot {
+                return Bytes::from(candidate);
+            }
+        }
+        panic!("unable to synthesize key for slot {}", slot);
+    }
+
     fn endpoint(host: &str, port: i64) -> RespValue {
         RespValue::Array(vec![
             RespValue::BulkString(Bytes::copy_from_slice(host.as_bytes())),
             RespValue::Integer(port),
         ])
+    }
+
+    #[derive(Clone)]
+    struct TestConnector {
+        responses: Arc<Mutex<HashMap<String, VecDeque<TestResponse>>>>,
+        calls: Arc<Mutex<HashMap<String, usize>>>,
+    }
+
+    impl TestConnector {
+        fn new(responses: HashMap<String, VecDeque<TestResponse>>) -> Self {
+            Self {
+                responses: Arc::new(Mutex::new(responses)),
+                calls: Arc::new(Mutex::new(HashMap::new())),
+            }
+        }
+
+        fn calls(&self, node: &str) -> usize {
+            self.calls.lock().unwrap().get(node).copied().unwrap_or(0)
+        }
+
+        fn next_response(&self, node: &str) -> TestResponse {
+            let mut guard = self.responses.lock().unwrap();
+            guard
+                .get_mut(node)
+                .and_then(|queue| queue.pop_front())
+                .unwrap_or_else(|| panic!("missing test response for {}", node))
+        }
+
+        fn record_call(&self, node: &str) {
+            let mut guard = self.calls.lock().unwrap();
+            *guard.entry(node.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    enum TestResponse {
+        Immediate(anyhow::Result<RespValue>),
+        Delayed(Duration, anyhow::Result<RespValue>),
+    }
+
+    #[async_trait]
+    impl Connector<RedisCommand> for TestConnector {
+        async fn run_session(
+            self: Arc<Self>,
+            node: BackendNode,
+            _cluster: Arc<str>,
+            mut rx: mpsc::Receiver<SessionCommand<RedisCommand>>,
+        ) {
+            while let Some(cmd) = rx.recv().await {
+                self.record_call(node.as_str());
+                let action = self.next_response(node.as_str());
+                let result = match action {
+                    TestResponse::Immediate(res) => res,
+                    TestResponse::Delayed(delay, res) => {
+                        tokio::time::sleep(delay).await;
+                        res
+                    }
+                };
+                let _ = cmd.respond_to.send(result);
+            }
+        }
     }
 }
 #[derive(Debug)]

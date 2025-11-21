@@ -625,9 +625,7 @@ mod tests {
                 >= 1
         );
         assert_eq!(
-            BACKEND_HEALTH
-                .with_label_values(&[cluster, backend])
-                .get(),
+            BACKEND_HEALTH.with_label_values(&[cluster, backend]).get(),
             1.0
         );
         assert!(
@@ -642,12 +640,7 @@ mod tests {
     fn backend_probe_duration_accumulates_samples() {
         let cluster = "metrics-probe";
         let backend = "127.0.0.1:9001";
-        backend_probe_duration(
-            cluster,
-            backend,
-            "latency",
-            Duration::from_micros(1500),
-        );
+        backend_probe_duration(cluster, backend, "latency", Duration::from_micros(1500));
         let histogram = BACKEND_PROBE_DURATION.with_label_values(&[cluster, backend, "latency"]);
         assert!(histogram.get_sample_count() >= 1);
         assert!(histogram.get_sample_sum() >= 1_500.0);
@@ -679,12 +672,7 @@ mod tests {
                 .get()
                 >= 1
         );
-        assert!(
-            CLIENT_CACHE_INVALIDATE
-                .with_label_values(&[cluster])
-                .get()
-                >= 2
-        );
+        assert!(CLIENT_CACHE_INVALIDATE.with_label_values(&[cluster]).get() >= 2);
         assert!(
             CLIENT_CACHE_STATE
                 .with_label_values(&[cluster, "enabled"])
@@ -698,10 +686,7 @@ mod tests {
         register_version("9.9.9");
         backend_request_result("metrics-req", "backend-a", "ok");
         backup_event("metrics-req", "planned");
-        assert_eq!(
-            VERSION_GAUGE.with_label_values(&["9.9.9"]).get(),
-            1.0
-        );
+        assert_eq!(VERSION_GAUGE.with_label_values(&["9.9.9"]).get(), 1.0);
         assert!(
             BACKEND_REQUEST_TOTAL
                 .with_label_values(&["metrics-req", "backend-a", "ok"])
