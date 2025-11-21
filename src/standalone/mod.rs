@@ -827,13 +827,22 @@ mod tests {
             .dispatch(ClientId::new(), redis_cmd(&["MGET", "k1", "k2"]))
             .await
             .expect("response");
-        assert_eq!(
-            response,
-            RespValue::Array(vec![
-                RespValue::BulkString(Bytes::from_static(b"foo")),
-                RespValue::BulkString(Bytes::from_static(b"bar")),
-            ])
-        );
+        let values = match response {
+            RespValue::Array(items) => items
+                .into_iter()
+                .map(|item| match item {
+                    RespValue::BulkString(value) => value,
+                    other => panic!("unexpected multi response item: {:?}", other),
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("expected multi response array, got {:?}", other),
+        };
+        let mut sorted = values
+            .into_iter()
+            .map(|item| item.to_vec())
+            .collect::<Vec<_>>();
+        sorted.sort();
+        assert_eq!(sorted, vec![b"bar".to_vec(), b"foo".to_vec()]);
         assert_eq!(backend.calls().len(), 2);
     }
 

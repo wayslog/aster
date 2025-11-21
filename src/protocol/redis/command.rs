@@ -230,7 +230,7 @@ impl BackendRequest for RedisCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Bytes;
+    use bytes::{Bytes, BytesMut};
 
     fn cmd(parts: &[&[u8]]) -> RedisCommand {
         RedisCommand::new(parts.iter().map(|p| Bytes::copy_from_slice(p)).collect()).unwrap()
@@ -258,6 +258,107 @@ mod tests {
 
         let other_command = cmd(&[b"PING"]);
         assert_eq!(other_command.resp_version_request(), None);
+    }
+
+    #[test]
+    fn command_kind_classifies_known_variants() {
+        assert_eq!(command_kind(b"get"), CommandKind::Read);
+        assert_eq!(command_kind(b"SET"), CommandKind::Write);
+        assert_eq!(command_kind(b"custom"), CommandKind::Other);
+    }
+
+    #[test]
+    fn timeout_and_block_parsers_handle_variants() {
+        let timeout_bytes = Bytes::from_static(b"1.5");
+        let invalid = Bytes::from_static(b"foo");
+        assert_eq!(parse_timeout(Some(&timeout_bytes)), Some(1.5));
+        assert_eq!(parse_timeout(Some(&invalid)), None);
+
+        let args = vec![
+            Bytes::from_static(b"XREAD"),
+            BytesMut::from("block").freeze(),
+            Bytes::from_static(b"2"),
+        ];
+        assert_eq!(has_block_option(&args), Some(2.0));
+    }
+
+    #[test]
+    fn hash_slot_respects_hash_tags() {
+        let without_tag = hash_slot_for_key(b"plain", None);
+        let with_tag = hash_slot_for_key(b"key{shared}", Some(b"{}"));
+        assert_eq!(with_tag, hash_slot_for_key(b"shared", None));
+        assert_ne!(without_tag, with_tag);
+    }
+
+    #[test]
+    fn expand_mget_and_aggregator_preserve_original_order() {
+        let command = cmd(&[b"MGET", b"alpha", b"beta"]);
+        let mut idx = 0u64;
+        let multi = command
+            .expand_for_multi_with(|_| {
+                idx += 1;
+                idx
+            })
+            .expect("multi");
+        assert_eq!(multi.subcommands.len(), 2);
+        let mut responses = Vec::new();
+        for sub in multi.subcommands.iter() {
+            let key = sub.command.args()[1].clone();
+            let value = if key.as_ref() == b"alpha" {
+                RespValue::BulkString(Bytes::from_static(b"1"))
+            } else {
+                RespValue::BulkString(Bytes::from_static(b"2"))
+            };
+            responses.push(SubResponse {
+                positions: sub.positions.clone(),
+                response: value,
+            });
+        }
+        let combined = multi.aggregator.combine(responses).expect("response");
+        match combined {
+            RespValue::Array(items) => {
+                assert_eq!(items.len(), 2);
+                match &items[0] {
+                    RespValue::BulkString(value) => assert_eq!(value.as_ref(), b"1"),
+                    other => panic!("unexpected value {:?}", other),
+                }
+                match &items[1] {
+                    RespValue::BulkString(value) => assert_eq!(value.as_ref(), b"2"),
+                    other => panic!("unexpected value {:?}", other),
+                }
+            }
+            other => panic!("unexpected aggregated response: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn aggregator_array_detects_length_mismatch() {
+        let aggregator = Aggregator::Array { key_count: 1 };
+        let responses = vec![SubResponse {
+            positions: vec![0],
+            response: RespValue::Array(vec![
+                RespValue::BulkString(Bytes::from_static(b"a")),
+                RespValue::BulkString(Bytes::from_static(b"b")),
+            ]),
+        }];
+        assert!(aggregator.combine(responses).is_err());
+    }
+
+    #[test]
+    fn aggregator_setnx_all_reports_partial_success() {
+        let aggregator = Aggregator::SetnxAll;
+        let responses = vec![
+            SubResponse {
+                positions: vec![],
+                response: RespValue::Integer(1),
+            },
+            SubResponse {
+                positions: vec![],
+                response: RespValue::Integer(0),
+            },
+        ];
+        let combined = aggregator.combine(responses).expect("combined");
+        assert_eq!(combined, RespValue::Integer(0));
     }
 }
 

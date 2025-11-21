@@ -1461,8 +1461,12 @@ async fn fetch_from_seed(seed: &str, connector: Arc<ClusterConnector>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::BackupRequestConfig;
     use crate::utils::{crc16, trim_hash_tag};
     use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::sync::watch;
 
     #[test]
     fn parse_moved_redirect() {
@@ -1474,6 +1478,16 @@ mod tests {
                 assert_eq!(address, "127.0.0.1:6381");
             }
             _ => panic!("expected MOVED"),
+        }
+    }
+
+    #[test]
+    fn parse_redirect_handles_ask() {
+        let value = RespValue::Error(Bytes::from_static(b"ASK 3999 10.0.0.1:6381"));
+        let redirect = parse_redirect(value).unwrap().unwrap();
+        match redirect {
+            Redirect::Ask { address } => assert_eq!(address, "10.0.0.1:6381"),
+            other => panic!("unexpected redirect: {:?}", other),
         }
     }
 
@@ -1590,6 +1604,85 @@ mod tests {
             Some(Bytes::from_static(b"key"))
         );
         assert!(resp_value_to_bytes(&RespValue::NullBulk).is_none());
+    }
+
+    #[test]
+    fn select_node_for_slot_prefers_replica_when_allowed() {
+        let (slots, _rx) = watch::channel(sample_slot_map());
+        let replica = select_node_for_slot(&slots, true, 1).expect("replica");
+        assert!(replica.as_str().ends_with(":7001"));
+        let master = select_node_for_slot(&slots, false, 1).expect("master");
+        assert!(master.as_str().ends_with(":7000"));
+    }
+
+    #[test]
+    fn select_node_for_slot_errors_when_slot_missing() {
+        let (slots, _rx) = watch::channel(SlotMap::new());
+        assert!(select_node_for_slot(&slots, false, 42).is_err());
+        assert!(replica_node_for_slot(&slots, 42).is_none());
+    }
+
+    #[test]
+    fn backup_controller_computes_delays_and_averages() {
+        let runtime = Arc::new(BackupRequestRuntime::new_for_test(BackupRequestConfig {
+            enabled: true,
+            trigger_slow_ms: Some(50),
+            multiplier: 0.5,
+        }));
+        let controller = BackupRequestController::new(runtime.clone());
+        let master = BackendNode::new("127.0.0.1:7000".to_string());
+        let replica = BackendNode::new("127.0.0.1:7001".to_string());
+        let plan = controller
+            .plan(&master, Some(replica.clone()))
+            .expect("plan available");
+        assert_eq!(plan.replica.as_str(), replica.as_str());
+        assert_eq!(plan.delay, Duration::from_millis(50));
+
+        controller.record_primary(&master, Duration::from_millis(4));
+        let avg = controller.average_for(&master).expect("average recorded");
+        assert!(avg > 0.0);
+
+        runtime.set_threshold_ms(None);
+        runtime.set_multiplier(2.0);
+        let delay = controller.delay_for(&master).expect("delay");
+        assert!(delay >= Duration::from_micros(1));
+    }
+
+    #[test]
+    fn subscription_count_parses_string_counts() {
+        let resp = RespValue::Array(vec![
+            RespValue::BulkString(Bytes::from_static(b"psubscribe")),
+            RespValue::BulkString(Bytes::from_static(b"pattern")),
+            RespValue::BulkString(Bytes::from_static(b"5")),
+        ]);
+        let (kind, count) = subscription_count(&resp).expect("count");
+        assert_eq!(kind, SubscriptionKind::Pattern);
+        assert_eq!(count, 5);
+
+        let invalid = RespValue::Array(vec![RespValue::BulkString(Bytes::from_static(b"foo"))]);
+        assert!(subscription_count(&invalid).is_none());
+    }
+
+    #[test]
+    fn subscription_action_kind_rejects_unknown() {
+        assert!(subscription_action_kind(b"foobar").is_none());
+    }
+
+    fn sample_slot_map() -> SlotMap {
+        SlotMap::from_slots_response(RespValue::Array(vec![RespValue::Array(vec![
+            RespValue::Integer(0),
+            RespValue::Integer(10),
+            endpoint("127.0.0.1", 7000),
+            endpoint("127.0.0.1", 7001),
+        ])]))
+        .expect("slot map")
+    }
+
+    fn endpoint(host: &str, port: i64) -> RespValue {
+        RespValue::Array(vec![
+            RespValue::BulkString(Bytes::copy_from_slice(host.as_bytes())),
+            RespValue::Integer(port),
+        ])
     }
 }
 #[derive(Debug)]

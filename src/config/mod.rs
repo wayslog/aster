@@ -466,6 +466,11 @@ impl BackupRequestRuntime {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_for_test(config: BackupRequestConfig) -> Self {
+        Self::new(&config)
+    }
+
     pub fn enabled(&self) -> bool {
         self.enabled.load(Ordering::Relaxed)
     }

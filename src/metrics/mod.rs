@@ -576,6 +576,7 @@ async fn system_monitor_loop(interval: Duration) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn front_connections_counters_reflect_updates() {
@@ -608,5 +609,110 @@ mod tests {
         assert_eq!(memory_usage_bytes(), 1024 * 1024);
         assert_eq!(cpu_usage_percent(), 12.5);
         assert!(global_error_count() >= 5);
+    }
+
+    #[test]
+    fn backend_metrics_track_error_and_health() {
+        let cluster = "metrics-backend";
+        let backend = "127.0.0.1:9000";
+        backend_error(cluster, backend, "timeout");
+        backend_probe_result(cluster, backend, "ping", false);
+        backend_heartbeat(cluster, backend, true);
+        assert!(
+            BACKEND_ERRORS
+                .with_label_values(&[cluster, backend, "timeout"])
+                .get()
+                >= 1
+        );
+        assert_eq!(
+            BACKEND_HEALTH
+                .with_label_values(&[cluster, backend])
+                .get(),
+            1.0
+        );
+        assert!(
+            BACKEND_PROBES
+                .with_label_values(&[cluster, backend, "ping", "fail"])
+                .get()
+                >= 1
+        );
+    }
+
+    #[test]
+    fn backend_probe_duration_accumulates_samples() {
+        let cluster = "metrics-probe";
+        let backend = "127.0.0.1:9001";
+        backend_probe_duration(
+            cluster,
+            backend,
+            "latency",
+            Duration::from_micros(1500),
+        );
+        let histogram = BACKEND_PROBE_DURATION.with_label_values(&[cluster, backend, "latency"]);
+        assert!(histogram.get_sample_count() >= 1);
+        assert!(histogram.get_sample_sum() >= 1_500.0);
+    }
+
+    #[test]
+    fn client_cache_metrics_capture_states() {
+        let cluster = "metrics-cache";
+        client_cache_lookup(cluster, "get", true);
+        client_cache_lookup(cluster, "get", false);
+        client_cache_store(cluster, "set");
+        client_cache_invalidate(cluster, 2);
+        client_cache_state(cluster, "enabled");
+        assert!(
+            CLIENT_CACHE_LOOKUP
+                .with_label_values(&[cluster, "get", "hit"])
+                .get()
+                >= 1
+        );
+        assert!(
+            CLIENT_CACHE_LOOKUP
+                .with_label_values(&[cluster, "get", "miss"])
+                .get()
+                >= 1
+        );
+        assert!(
+            CLIENT_CACHE_STORE
+                .with_label_values(&[cluster, "set"])
+                .get()
+                >= 1
+        );
+        assert!(
+            CLIENT_CACHE_INVALIDATE
+                .with_label_values(&[cluster])
+                .get()
+                >= 2
+        );
+        assert!(
+            CLIENT_CACHE_STATE
+                .with_label_values(&[cluster, "enabled"])
+                .get()
+                >= 1
+        );
+    }
+
+    #[test]
+    fn register_version_and_backup_events_increment_metrics() {
+        register_version("9.9.9");
+        backend_request_result("metrics-req", "backend-a", "ok");
+        backup_event("metrics-req", "planned");
+        assert_eq!(
+            VERSION_GAUGE.with_label_values(&["9.9.9"]).get(),
+            1.0
+        );
+        assert!(
+            BACKEND_REQUEST_TOTAL
+                .with_label_values(&["metrics-req", "backend-a", "ok"])
+                .get()
+                >= 1
+        );
+        assert!(
+            BACKUP_REQUEST_EVENTS
+                .with_label_values(&["metrics-req", "planned"])
+                .get()
+                >= 1
+        );
     }
 }
